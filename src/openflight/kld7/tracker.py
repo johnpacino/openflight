@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Optional
+from typing import Any, Optional
 
 from .types import KLD7Angle, KLD7Frame
 
@@ -300,11 +300,20 @@ class KLD7Tracker:
         self,
         ball_speed_mph: float,
         shot_timestamp: Optional[float] = None,
+        ball_position: Optional[Any] = None,
     ) -> Optional[KLD7Angle]:
         """Extract ball launch angle via RADC phase interferometry.
 
         Uses the OPS243-measured ball speed to narrow the FFT velocity
         search band, then extracts angle from F1A/F2A phase difference.
+
+        Args:
+            ball_position: Optional BallPosition from the camera. When
+                supplied AND the tracker is horizontal, the per-frame
+                geometric bearing is subtracted from each measured
+                bearing before the SNR²-weighted average. The vertical
+                radar ignores this for now (vertical aim correction is
+                a future phase).
         """
         from .radc import extract_launch_angle
 
@@ -333,6 +342,21 @@ class KLD7Tracker:
         if self.orientation == "horizontal":
             energy_attempts.append(0.5)
 
+        # Only horizontal radar gets camera-based geometric correction.
+        # Vertical correction is symmetric but scoped as a future phase.
+        if self.orientation == "horizontal" and ball_position is not None:
+            ball_kwargs = {
+                "ball_lateral_offset_in": float(ball_position.L_in),
+                "ball_initial_range_in": float(ball_position.d_initial_in),
+                "impact_timestamp": (
+                    float(shot_timestamp)
+                    if shot_timestamp is not None
+                    else float(ball_position.timestamp)
+                ),
+            }
+        else:
+            ball_kwargs = {}
+
         results = []
         relaxed_retry = False
         for attempt_idx, energy_threshold in enumerate(energy_attempts):
@@ -343,6 +367,7 @@ class KLD7Tracker:
                 speed_tolerance_mph=10.0,
                 impact_energy_threshold=energy_threshold,
                 orientation=self.orientation,
+                **ball_kwargs,
             )
             if results:
                 best_attempt = results[0]
@@ -387,6 +412,7 @@ class KLD7Tracker:
             best["avg_snr_db"], best["confidence"], best["frame_count"],
         )
 
+        aim_correction = best.get("aim_correction")  # only populated for horizontal + ball_position
         if self.orientation == "vertical":
             return KLD7Angle(
                 vertical_deg=best["launch_angle_deg"],
@@ -398,6 +424,7 @@ class KLD7Tracker:
                 frames_ignored_stale=frames_ignored_stale,
                 magnitude=best["avg_snr_db"],
                 detection_class="ball",
+                aim_correction=aim_correction,
             )
         return KLD7Angle(
             vertical_deg=None,
@@ -409,13 +436,23 @@ class KLD7Tracker:
             frames_ignored_stale=frames_ignored_stale,
             magnitude=best["avg_snr_db"],
             detection_class="ball",
+            aim_correction=aim_correction,
         )
 
-    def get_angle_for_shot(self, shot_timestamp: Optional[float] = None, ball_speed_mph: Optional[float] = None) -> Optional[KLD7Angle]:
+    def get_angle_for_shot(
+        self,
+        shot_timestamp: Optional[float] = None,
+        ball_speed_mph: Optional[float] = None,
+        ball_position: Optional[Any] = None,
+    ) -> Optional[KLD7Angle]:
         """Search the ring buffer for the ball launch angle using RADC phase interferometry.
 
         Requires ball_speed_mph from OPS243 to narrow the FFT velocity search.
         Returns None if RADC extraction fails or ball_speed_mph not provided.
+
+        When `ball_position` is provided AND this tracker is horizontal,
+        the per-frame geometric bearing implied by the ball's L/d is
+        subtracted from each frame's measured bearing before averaging.
         """
         logger.info("[KLD7] Angle extraction: ball_speed=%s mph, buffer=%d frames",
                      "%.1f" % ball_speed_mph if ball_speed_mph else "None", len(self._ring_buffer))
@@ -425,7 +462,11 @@ class KLD7Tracker:
             return None
 
         try:
-            result = self._extract_ball_radc(ball_speed_mph, shot_timestamp=shot_timestamp)
+            result = self._extract_ball_radc(
+                ball_speed_mph,
+                shot_timestamp=shot_timestamp,
+                ball_position=ball_position,
+            )
             if result is not None:
                 return result
             logger.info("[KLD7] RADC extraction returned None (no detections at %.1f mph)", ball_speed_mph)

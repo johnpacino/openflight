@@ -302,6 +302,8 @@ class SessionLogger:
         club_path_deg: Optional[float] = None,
         spin_axis_deg: Optional[float] = None,
         pipeline_ms: Optional[Dict] = None,
+        aim_correction: Optional[Dict] = None,
+        ball_position: Optional[Dict] = None,
     ):
         """
         Log a detected shot with all metrics.
@@ -390,6 +392,10 @@ class SessionLogger:
             data["spin_axis_deg"] = spin_axis_deg
         if pipeline_ms is not None:
             data["pipeline_ms"] = pipeline_ms
+        if aim_correction is not None:
+            data["aim_correction"] = aim_correction
+        if ball_position is not None:
+            data["ball_position"] = ball_position
 
         self._write_entry("shot_detected", data)
 

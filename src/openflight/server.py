@@ -67,6 +67,10 @@ camera: Optional["Picamera2"] = None
 camera_tracker: Optional["CameraTracker"] = None
 camera_enabled: bool = False
 camera_streaming: bool = False
+
+# Ball watcher (camera-based aim correction; off by default).
+# Populated by init_ball_watcher() when --camera-aim is set.
+ball_watcher = None
 camera_thread: Optional[threading.Thread] = None
 camera_stop_event: Optional[threading.Event] = None
 ball_detected: bool = False
@@ -561,6 +565,120 @@ def init_kld7(port=None, orientation="vertical", angle_offset_deg=0.0, base_freq
         return False
 
 
+def _parse_range_pair(s, label):
+    """Parse a 'MIN,MAX' string into a (float, float) tuple."""
+    try:
+        a, b = s.split(",")
+        a_f, b_f = float(a), float(b)
+        if a_f >= b_f:
+            raise ValueError("MIN must be < MAX")
+        return (a_f, b_f)
+    except (ValueError, AttributeError) as e:
+        raise ValueError(f"--{label}: invalid range '{s}' ({e})")
+
+
+def init_ball_watcher(
+    calibration_path=None,
+    x_range_str="-8,4",
+    d_range_str="48,72",
+) -> bool:
+    """Initialize the BallWatcher for camera-based aim correction.
+
+    Returns True if the watcher loaded extrinsics and started successfully.
+    Returns False (with a logged warning) if:
+      - calibration JSON is missing or malformed
+      - the horizontal_kld7 radar isn't in the extrinsics
+      - picamera2 / opencv unavailable
+
+    Sets the module-level `ball_watcher` global on success.
+    """
+    global ball_watcher  # pylint: disable=global-statement
+    try:
+        from openflight.camera.extrinsics import load_extrinsics
+        from openflight.camera.ball_watcher import BallWatcher
+        from openflight.camera.capture import CameraCapture
+        from openflight.camera.detector import BallDetector, DetectorConfig
+    except ImportError as e:
+        logger.warning("[SERVER] camera-aim: dependencies unavailable (%s); disabling", e)
+        return False
+
+    ext = load_extrinsics(calibration_path)
+    if ext is None:
+        logger.warning("[SERVER] camera-aim: no calibration loaded; disabling")
+        return False
+    if "horizontal_kld7" not in ext.radars:
+        logger.warning(
+            "[SERVER] camera-aim: calibration has no horizontal_kld7 radar; disabling. "
+            "Run scripts/setup/calibrate_camera_extrinsics.py --radar horizontal_kld7."
+        )
+        return False
+
+    try:
+        x_range = _parse_range_pair(x_range_str, "camera-aim-x-range")
+        d_range = _parse_range_pair(d_range_str, "camera-aim-d-range")
+    except ValueError as e:
+        logger.warning("[SERVER] camera-aim: %s; disabling", e)
+        return False
+
+    # Open a dedicated camera for the watcher. The existing camera_processing_loop
+    # is for trajectory tracking and may not be running; the watcher uses a
+    # single-frame capture interface that's fine to share if needed.
+    try:
+        capture = CameraCapture()
+        capture.start()
+    except Exception as e:
+        logger.warning("[SERVER] camera-aim: failed to open camera (%s); disabling", e)
+        return False
+
+    # Detector tuned for ball-on-mat (matches the values established
+    # during scripts/vision/camera_aim_viewer.py calibration).
+    detector = BallDetector(DetectorConfig(
+        brightness_threshold=220,
+        hough_param2=8,
+        min_radius=8,
+        max_radius=18,
+        min_confidence=0.05,
+    ))
+
+    def emit_status(status):
+        try:
+            payload = {
+                "state": status.state,
+                "reason": status.reason,
+                "timestamp": status.timestamp,
+            }
+            if status.ball_position is not None:
+                payload["ball_position"] = {
+                    "L_in": status.ball_position.L_in,
+                    "d_initial_in": status.ball_position.d_initial_in,
+                    "h_in": status.ball_position.h_in,
+                    "confidence": status.ball_position.confidence,
+                }
+            socketio.emit("aim_status", payload)
+        except Exception as exc:
+            logger.warning("[SERVER] failed to emit aim_status: %s", exc)
+
+    watcher = BallWatcher(
+        frame_provider=lambda: capture.capture_single(),
+        extrinsics=ext,
+        radar_name="horizontal_kld7",
+        detector=detector,
+        rotate_180=True,
+        ball_x_range=x_range,
+        ball_d_range=d_range,
+        poll_interval_s=0.5,
+        stale_after_s=3.0,
+        status_callback=emit_status,
+    )
+    watcher.start()
+    ball_watcher = watcher
+    logger.info(
+        "[SERVER] camera-aim enabled: focal_px=%.0f, x_range=%s, d_range=%s",
+        ext.focal_px, x_range, d_range,
+    )
+    return True
+
+
 def camera_processing_loop():
     """Background thread for camera processing."""
     global ball_detected, ball_detection_confidence, latest_frame  # pylint: disable=global-statement
@@ -1051,6 +1169,8 @@ def on_shot_detected(shot: Shot):
     logger.info("[SERVER] Shot callback: %.1f mph", shot.ball_speed_mph)
 
     kld7_ms = None
+    aim_correction_payload = None  # populated when camera-aim is applied this shot
+    ball_position_payload = None
     # Process K-LD7 angle radars (vertical = launch angle, horizontal = club path)
     try:
         if shot.mode != "mock":
@@ -1131,10 +1251,44 @@ def on_shot_detected(shot: Shot):
             if kld7_horizontal:
                 raw_buffer_h = kld7_horizontal.snapshot_buffer()
                 _warn_if_kld7_buffer_underfilled("horizontal", len(raw_buffer_h))
+
+                # Camera-based aim correction: read the cached ball position
+                # from the watcher (if running). None when no recent in-range
+                # detection, in which case the tracker falls back to its
+                # pre-camera behavior automatically.
+                cam_ball_pos = None
+                cam_ball_age_ms = None
+                if ball_watcher is not None:
+                    cam_ball_pos, cam_ball_age_ms = (
+                        ball_watcher.latest_ball_position_with_age_ms(at_time=shot_ts)
+                    )
+                    if cam_ball_pos is not None:
+                        logger.info(
+                            "[SERVER] camera-aim: using ball at L=%+.2fin d=%.1fin "
+                            "(age=%.0fms, conf=%.2f)",
+                            cam_ball_pos.L_in, cam_ball_pos.d_initial_in,
+                            cam_ball_age_ms, cam_ball_pos.confidence,
+                        )
+
+                ball_pos_kwargs = (
+                    {"ball_position": cam_ball_pos} if cam_ball_pos is not None else {}
+                )
                 kld7_angle_h = kld7_horizontal.get_angle_for_shot(
                     shot_timestamp=shot_ts,
                     ball_speed_mph=shot.ball_speed_mph,
+                    **ball_pos_kwargs,
                 )
+                if kld7_angle_h is not None and kld7_angle_h.aim_correction is not None:
+                    aim_correction_payload = kld7_angle_h.aim_correction
+                if cam_ball_pos is not None:
+                    ball_position_payload = {
+                        "L_in": cam_ball_pos.L_in,
+                        "d_initial_in": cam_ball_pos.d_initial_in,
+                        "h_in": cam_ball_pos.h_in,
+                        "confidence": cam_ball_pos.confidence,
+                        "timestamp": cam_ball_pos.timestamp,
+                        "age_at_impact_ms": cam_ball_age_ms,
+                    }
                 if kld7_angle_h and kld7_angle_h.horizontal_deg is not None:
                     if (
                         abs(kld7_angle_h.horizontal_deg) <= 15.0
@@ -1321,6 +1475,8 @@ def on_shot_detected(shot: Shot):
                 pipeline_ms={
                     "kld7": round(kld7_ms, 1) if kld7_ms is not None else None,
                 },
+                aim_correction=aim_correction_payload,
+                ball_position=ball_position_payload,
             )
     except Exception as e:
         logger.warning("[SERVER] Failed to log shot: %s", e, exc_info=True)
@@ -1779,6 +1935,31 @@ def main():
         default=0.0,
         help="K-LD7 horizontal angle offset in degrees (default: 0.0)",
     )
+    parser.add_argument(
+        "--camera-aim",
+        action="store_true",
+        help="Enable camera-based aim correction for the horizontal K-LD7. "
+             "Reads ~/openflight_calibration.json for extrinsics; falls back "
+             "to legacy static-offset behavior if calibration is missing.",
+    )
+    parser.add_argument(
+        "--camera-aim-calibration",
+        type=str,
+        default=None,
+        help="Path to extrinsics calibration JSON (default: ~/openflight_calibration.json)",
+    )
+    parser.add_argument(
+        "--camera-aim-x-range",
+        type=str,
+        default="-8,4",
+        help="Allowed lateral range for ball position, MIN,MAX inches (default: -8,4)",
+    )
+    parser.add_argument(
+        "--camera-aim-d-range",
+        type=str,
+        default="48,72",
+        help="Allowed forward range for ball position, MIN,MAX inches (default: 48,72)",
+    )
     args = parser.parse_args()
 
     # Configure logging - always show INFO and above for openflight modules
@@ -1869,6 +2050,18 @@ def main():
             print("ERROR: K-LD7 horizontal requested but failed to connect. Exiting.")
             sys.exit(1)
 
+    if args.camera_aim:
+        if init_ball_watcher(
+            calibration_path=args.camera_aim_calibration,
+            x_range_str=args.camera_aim_x_range,
+            d_range_str=args.camera_aim_d_range,
+        ):
+            print(f"Camera-aim correction enabled (x_range={args.camera_aim_x_range}, "
+                  f"d_range={args.camera_aim_d_range})")
+        else:
+            print("WARNING: --camera-aim requested but watcher failed to start; "
+                  "continuing without camera correction.")
+
     start_monitor(
         port=args.port,
         mock=args.mock,
@@ -1896,6 +2089,11 @@ def main():
             kld7_vertical.stop()
         if kld7_horizontal:
             kld7_horizontal.stop()
+        if ball_watcher is not None:
+            try:
+                ball_watcher.stop()
+            except Exception:
+                pass
         stop_camera_thread()
         if camera:
             camera.stop()

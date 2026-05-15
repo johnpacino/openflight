@@ -216,6 +216,70 @@ class TestLogShot:
         assert entry["launch_angle_vertical_source"] == "radar"
         assert entry["launch_angle_horizontal_source"] == "estimated"
 
+    def test_shot_without_aim_correction_omits_key(self, tmp_path):
+        """Existing shot logs should NOT include aim_correction when no
+        camera correction was applied. Regression check: pre-camera
+        consumers must keep working unchanged."""
+        logger = SessionLogger(log_dir=tmp_path, enabled=True)
+        logger.start_session(mode="rolling-buffer", trigger_type="sound")
+
+        logger.log_shot(
+            ball_speed_mph=120.0, club_speed_mph=None, smash_factor=None,
+            estimated_carry_yards=0.0, club="7-iron",
+            peak_magnitude=None, readings_count=0,
+        )
+
+        lines = logger.session_path.read_text().strip().split("\n")
+        entry = json.loads(lines[-1])
+        assert entry["type"] == "shot_detected"
+        assert "aim_correction" not in entry
+        assert "ball_position" not in entry
+
+    def test_shot_with_aim_correction_roundtrips(self, tmp_path):
+        """When the server passes aim_correction + ball_position to
+        log_shot, both blocks should appear verbatim in the JSONL entry."""
+        logger = SessionLogger(log_dir=tmp_path, enabled=True)
+        logger.start_session(mode="rolling-buffer", trigger_type="sound")
+
+        aim_block = {
+            "applied": True,
+            "ball_lateral_offset_in": 4.2,
+            "ball_initial_range_in": 58.7,
+            "impact_timestamp": 1715000000.123,
+            "uncorrected_radar_angle_deg": -4.83,
+            "geometric_bearing_deg": -4.71,
+            "corrected_radar_angle_deg": -0.12,
+            "per_frame": [
+                {
+                    "raw_bearing_deg": -4.83,
+                    "geometric_bearing_deg": -4.71,
+                    "corrected_bearing_deg": -0.12,
+                    "t_after_impact_s": 0.028,
+                },
+            ],
+        }
+        ball_pos = {
+            "L_in": 4.2,
+            "d_initial_in": 58.7,
+            "h_in": -3.1,
+            "confidence": 0.18,
+            "timestamp": 1715000000.0,
+            "age_at_impact_ms": 123,
+        }
+
+        logger.log_shot(
+            ball_speed_mph=120.0, club_speed_mph=None, smash_factor=None,
+            estimated_carry_yards=0.0, club="7-iron",
+            peak_magnitude=None, readings_count=0,
+            aim_correction=aim_block,
+            ball_position=ball_pos,
+        )
+
+        lines = logger.session_path.read_text().strip().split("\n")
+        entry = json.loads(lines[-1])
+        assert entry["aim_correction"] == aim_block
+        assert entry["ball_position"] == ball_pos
+
 
 class TestLogKld7Buffer:
     """Tests for the K-LD7 ring buffer logging method."""

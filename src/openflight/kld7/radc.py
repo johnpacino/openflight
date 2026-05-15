@@ -7,6 +7,7 @@ angle extraction from K-LD7 24 GHz radar raw ADC data.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -976,6 +977,44 @@ def find_impact_frames(
     return impact_indices
 
 
+def apply_geometric_correction(
+    raw_angle_deg: float,
+    L_in: float,
+    d_initial_in: float,
+    t_after_impact_s: float,
+    ball_speed_mph: float,
+) -> tuple[float, float]:
+    """Subtract the geometric bearing introduced by a ball off the antenna centerline.
+
+    The K-LD7 reports angle-of-arrival (bearing to the ball), which equals
+    the true aim direction only when the ball is on the antenna centerline.
+    For a ball at lateral offset L and forward distance d, the bearing is
+    arctan(L / d). As the ball moves forward at v_ball, d(t) grows so the
+    geometric bearing shrinks — we account for that per-frame here.
+
+    Args:
+        raw_angle_deg: Measured bearing for this frame, in degrees.
+        L_in: Ball lateral offset from antenna centerline, signed inches.
+            (+ right of centerline)
+        d_initial_in: Forward distance from antenna face to ball at impact,
+            inches.
+        t_after_impact_s: Time elapsed between impact and this frame.
+        ball_speed_mph: Ball speed in mph; used to advance d(t).
+
+    Returns:
+        (corrected_angle_deg, geometric_bearing_deg). If d(t) <= 0
+        (ball has already passed the antenna plane), returns the raw
+        angle unchanged and 0 for geometric bearing — there's no valid
+        geometry to correct against in that case.
+    """
+    ball_speed_in_per_s = ball_speed_mph * 17.6  # 1 mph = 17.6 in/s
+    d_t_in = d_initial_in + ball_speed_in_per_s * t_after_impact_s
+    if d_t_in <= 0:
+        return raw_angle_deg, 0.0
+    geometric_bearing_deg = math.degrees(math.atan2(L_in, d_t_in))
+    return raw_angle_deg - geometric_bearing_deg, geometric_bearing_deg
+
+
 def extract_launch_angle(
     frames: list[dict],
     fft_size: int = 2048,
@@ -989,6 +1028,9 @@ def extract_launch_angle(
     ops_bin_outlier_tol: int = 25,
     ops_bin_outlier_penalty: float = 10.0,
     centroid_floor_frac: float = 0.5,
+    ball_lateral_offset_in: float | None = None,
+    ball_initial_range_in: float | None = None,
+    impact_timestamp: float | None = None,
 ) -> list[dict]:
     """Extract vertical launch angle per shot from RADC frames.
 
@@ -1100,6 +1142,17 @@ def extract_launch_angle(
         peak_snrs = []
         peak_speeds_mph = []
         peak_bins: list[int] = []
+        # Per-frame aim-correction details (populated only when the
+        # camera-based ball position kwargs are provided). The lengths
+        # mirror peak_angles so they can be zipped after outlier reject.
+        per_frame_raw_angles: list[float] = []
+        per_frame_geom_bearings: list[float] = []
+        per_frame_t_after_impact: list[float | None] = []
+        aim_correction_active = (
+            ball_lateral_offset_in is not None
+            and ball_initial_range_in is not None
+            and impact_timestamp is not None
+        )
 
         for fi in sorted(frame_set):
             radc_raw = frames[fi].get("radc")
@@ -1197,11 +1250,38 @@ def extract_launch_angle(
                 # single-peak-bin angle for exact backward compatibility.
                 centroid_angle = float(angles[peak_bin])
 
+            # Speed of *this* frame's peak — used both for the result
+            # summary below and (when active) for advancing d(t) in the
+            # per-frame geometric correction.
+            vel = bin_to_velocity_kmh(peak_bin, fft_size, max_speed_kmh)
+            frame_speed_mph = (200.0 + vel) / 1.609
+
+            raw_centroid_angle = centroid_angle
+            geom_bearing_deg = 0.0
+            t_after_impact: float | None = None
+            if aim_correction_active:
+                frame_ts = _optional_float(frames[fi].get("timestamp"))
+                if frame_ts is not None:
+                    t_after_impact = frame_ts - float(impact_timestamp)  # type: ignore[arg-type]
+                    correction_speed = (
+                        ops243_ball_speed_mph if ops243_ball_speed_mph is not None
+                        else frame_speed_mph
+                    )
+                    centroid_angle, geom_bearing_deg = apply_geometric_correction(
+                        raw_angle_deg=centroid_angle,
+                        L_in=float(ball_lateral_offset_in),  # type: ignore[arg-type]
+                        d_initial_in=float(ball_initial_range_in),  # type: ignore[arg-type]
+                        t_after_impact_s=t_after_impact,
+                        ball_speed_mph=correction_speed,
+                    )
+
             peak_angles.append(centroid_angle)
             peak_snrs.append(snr)
             peak_bins.append(peak_bin)
-            vel = bin_to_velocity_kmh(peak_bin, fft_size, max_speed_kmh)
-            peak_speeds_mph.append((200.0 + vel) / 1.609)
+            peak_speeds_mph.append(frame_speed_mph)
+            per_frame_raw_angles.append(raw_centroid_angle)
+            per_frame_geom_bearings.append(geom_bearing_deg)
+            per_frame_t_after_impact.append(t_after_impact)
 
         if not peak_angles:
             continue
@@ -1209,6 +1289,8 @@ def extract_launch_angle(
         angs = np.array(peak_angles)
         snrs = np.array(peak_snrs)
         bins_arr = np.array(peak_bins, dtype=int)
+        raw_angs = np.array(per_frame_raw_angles)
+        geom_arr = np.array(per_frame_geom_bearings)
 
         if len(angs) == 1:
             # Single-frame detection — accept if SNR is strong.
@@ -1219,6 +1301,8 @@ def extract_launch_angle(
             clean_angs = angs
             clean_snrs = snrs
             clean_bins = bins_arr
+            clean_raw_angs = raw_angs
+            clean_geom = geom_arr
         else:
             # Multi-frame: outlier rejection.
             #
@@ -1242,6 +1326,8 @@ def extract_launch_angle(
             clean_angs = angs[clean_mask]
             clean_snrs = snrs[clean_mask]
             clean_bins = bins_arr[clean_mask]
+            clean_raw_angs = raw_angs[clean_mask]
+            clean_geom = geom_arr[clean_mask]
 
         # SNR²-weighted average of surviving peaks. When the OPS-expected
         # bin is known, frames whose peak bin is far from it (likely
@@ -1320,7 +1406,7 @@ def extract_launch_angle(
             std_score = max(0.0, 1.0 - angle_std / 15.0)
             confidence = round(snr_score * 0.5 + std_score * 0.3 + min(frame_count / 3.0, 1.0) * 0.2, 2)
 
-        results.append({
+        shot_dict = {
             "shot_index": shot_idx,
             "launch_angle_deg": round(corrected_angle, 1),
             "raw_angle_deg": round(weighted_angle, 1),
@@ -1332,6 +1418,37 @@ def extract_launch_angle(
             "angle_std_deg": round(angle_std, 1),
             "avg_snr_db": round(avg_snr, 1),
             "impact_frames": impact_group,
-        })
+        }
+        if aim_correction_active:
+            # SNR²-weighted geometric bearing — same weighting used for
+            # the angle average, so it can be reconciled offline.
+            geom_weighted = float(np.sum(clean_geom * w) / total_w) if total_w > 0 else 0.0
+            uncorrected_weighted = float(np.sum(clean_raw_angs * w) / total_w) if total_w > 0 else 0.0
+            shot_dict["aim_correction"] = {
+                "applied": True,
+                "ball_lateral_offset_in": float(ball_lateral_offset_in),  # type: ignore[arg-type]
+                "ball_initial_range_in": float(ball_initial_range_in),  # type: ignore[arg-type]
+                "impact_timestamp": float(impact_timestamp),  # type: ignore[arg-type]
+                "uncorrected_radar_angle_deg": round(uncorrected_weighted, 2),
+                "geometric_bearing_deg": round(geom_weighted, 2),
+                "corrected_radar_angle_deg": round(weighted_angle, 2),
+                "per_frame": [
+                    {
+                        "raw_bearing_deg": round(float(r), 2),
+                        "geometric_bearing_deg": round(float(g), 2),
+                        "corrected_bearing_deg": round(float(c), 2),
+                        "t_after_impact_s": (
+                            round(float(t), 4) if t is not None else None
+                        ),
+                    }
+                    for r, g, c, t in zip(
+                        per_frame_raw_angles,
+                        per_frame_geom_bearings,
+                        peak_angles,
+                        per_frame_t_after_impact,
+                    )
+                ],
+            }
+        results.append(shot_dict)
 
     return results
