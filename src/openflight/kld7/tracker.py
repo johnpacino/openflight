@@ -342,20 +342,20 @@ class KLD7Tracker:
         if self.orientation == "horizontal":
             energy_attempts.append(0.5)
 
+        # Always pass the shot impact timestamp when available so the
+        # extractor can apply impact-relative frame rules in both
+        # orientations. Horizontal extraction additionally receives the
+        # camera-derived L/d for geometric bearing correction.
+        ball_kwargs: dict[str, float] = {}
+        if shot_timestamp is not None:
+            ball_kwargs["impact_timestamp"] = float(shot_timestamp)
         # Only horizontal radar gets camera-based geometric correction.
         # Vertical correction is symmetric but scoped as a future phase.
         if self.orientation == "horizontal" and ball_position is not None:
-            ball_kwargs = {
-                "ball_lateral_offset_in": float(ball_position.L_in),
-                "ball_initial_range_in": float(ball_position.d_initial_in),
-                "impact_timestamp": (
-                    float(shot_timestamp)
-                    if shot_timestamp is not None
-                    else float(ball_position.timestamp)
-                ),
-            }
-        else:
-            ball_kwargs = {}
+            ball_kwargs["ball_lateral_offset_in"] = float(ball_position.L_in)
+            ball_kwargs["ball_initial_range_in"] = float(ball_position.d_initial_in)
+            if "impact_timestamp" not in ball_kwargs:
+                ball_kwargs["impact_timestamp"] = float(ball_position.timestamp)
 
         results = []
         relaxed_retry = False
