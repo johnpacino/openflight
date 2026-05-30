@@ -24,16 +24,12 @@ class IQCapture:
         i_samples: 4096 in-phase samples (raw ADC values, 0-4095)
         q_samples: 4096 quadrature samples (raw ADC values, 0-4095)
         timestamp: Python timestamp when capture was received
-        trigger_epoch: Wall-clock epoch timestamp when HOST_INT fired, if known
-        first_byte_epoch: Wall-clock epoch timestamp when the serial dump began, if known
     """
     sample_time: float
     trigger_time: float
     i_samples: List[int]
     q_samples: List[int]
     timestamp: float = field(default_factory=lambda: datetime.now().timestamp())
-    trigger_epoch: Optional[float] = None
-    first_byte_epoch: Optional[float] = None
 
     @property
     def num_samples(self) -> int:
@@ -116,29 +112,6 @@ class SpeedTimeline:
     def get_readings_before(self, timestamp_ms: float) -> List[SpeedReading]:
         """Get readings before a given timestamp."""
         return [r for r in self.readings if r.timestamp_ms < timestamp_ms]
-
-
-@dataclass
-class ImpactEstimate:
-    """
-    Capture-relative estimate of when ball strike occurred.
-
-    The OPS hardware trigger remains the fallback. When the speed timeline has a
-    clear club-to-ball transition, the midpoint between the last club-like frame
-    and first ball-like frame is a better impact instant for K-LD7 correlation.
-    """
-    timestamp_ms: Optional[float]
-    source: str
-    reason: Optional[str] = None
-    speed_delta_mph: Optional[float] = None
-    transition_gap_ms: Optional[float] = None
-    last_club_speed_mph: Optional[float] = None
-    last_club_timestamp_ms: Optional[float] = None
-    last_club_center_ms: Optional[float] = None
-    first_ball_speed_mph: Optional[float] = None
-    first_ball_timestamp_ms: Optional[float] = None
-    first_ball_center_ms: Optional[float] = None
-    min_transition_delta_mph: float = 15.0
 
 
 @dataclass
@@ -282,7 +255,6 @@ class ProcessedCapture:
         club_timestamp_ms: When club was detected
         spin: Spin detection result (may indicate failure)
         capture: Original raw I/Q data
-        impact: Best capture-relative impact estimate for K-LD7 correlation
     """
     timeline: SpeedTimeline
     ball_speed_mph: float
@@ -291,17 +263,6 @@ class ProcessedCapture:
     club_timestamp_ms: Optional[float] = None
     spin: Optional[SpinResult] = None
     capture: Optional[IQCapture] = None
-    impact: Optional[ImpactEstimate] = None
-
-    @property
-    def impact_timestamp_ms(self) -> Optional[float]:
-        """Best capture-relative impact timestamp, if available."""
-        return self.impact.timestamp_ms if self.impact is not None else None
-
-    @property
-    def impact_source(self) -> Optional[str]:
-        """Source used for the impact timestamp."""
-        return self.impact.source if self.impact is not None else None
 
     @property
     def smash_factor(self) -> Optional[float]:
