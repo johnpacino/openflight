@@ -815,6 +815,22 @@ class SoundTrigger(TriggerStrategy):
             )
             return None
 
+        first_byte_epoch = getattr(radar, "last_hardware_first_byte_epoch", None)
+        if first_byte_epoch is not None:
+            post_trigger_ms = max(
+                capture.duration_ms - capture.trigger_offset_ms,
+                0.0,
+            )
+            capture.first_byte_epoch = float(first_byte_epoch)
+            capture.trigger_epoch = capture.first_byte_epoch - post_trigger_ms / 1000.0
+            logger.info(
+                "[TRIGGER] Sound trigger wall time %.3f "
+                "(first byte %.3f, post-trigger %.1fms)",
+                capture.trigger_epoch,
+                capture.first_byte_epoch,
+                post_trigger_ms,
+            )
+
         # Quick validation: does the capture contain any real swing data?
         # At a driving range, a nearby player's impact sound can trip the
         # trigger even though nothing was moving in front of our radar.

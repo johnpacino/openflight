@@ -9,6 +9,7 @@ import pytest
 
 from openflight.launch_monitor import ClubType, Shot
 from openflight.rolling_buffer import (
+    ImpactEstimate,
     IQCapture,
     ManualTrigger,
     PollingTrigger,
@@ -546,6 +547,57 @@ class TestManualTrigger:
         assert trigger._trigger_requested is False
 
 
+class TestSoundTrigger:
+    """Tests for the hardware sound trigger."""
+
+    def test_stamps_capture_trigger_epoch_from_first_byte_and_offset(self, monkeypatch):
+        """Sound trigger should translate first-byte time to sound-trigger epoch."""
+        from openflight.rolling_buffer.trigger import SoundTrigger
+
+        trigger = SoundTrigger()
+        capture = IQCapture(
+            sample_time=100.000,
+            trigger_time=100.068,
+            i_samples=[0] * 4096,
+            q_samples=[0] * 4096,
+        )
+        radar = MagicMock()
+        radar.wait_for_hardware_trigger.return_value = "raw response"
+        radar.last_hardware_first_byte_epoch = 1715000000.500
+
+        processor = MagicMock()
+        processor.parse_capture.return_value = capture
+        monkeypatch.setattr(
+            trigger,
+            "_summarize_capture_activity",
+            lambda _processor, _capture: {
+                "total_readings": 1,
+                "outbound_readings": 1,
+                "inbound_readings": 0,
+                "peak_outbound_mph": 100.0,
+                "peak_inbound_mph": 0.0,
+                "all_outbound_speeds": [100.0],
+                "all_inbound_speeds": [],
+                "peak_outbound_magnitude": 10.0,
+                "peak_inbound_magnitude": 0.0,
+                "valid_outbound_count": 1,
+                "valid_peak_outbound_mph": 100.0,
+            },
+        )
+
+        result = trigger.wait_for_trigger(radar, processor, timeout=30.0)
+
+        assert result is capture
+        assert result.first_byte_epoch == pytest.approx(1715000000.500)
+        expected_post_trigger_s = (
+            capture.duration_ms - capture.trigger_offset_ms
+        ) / 1000.0
+        assert result.trigger_epoch == pytest.approx(
+            1715000000.500 - expected_post_trigger_s
+        )
+        radar.rearm_rolling_buffer.assert_called_once_with(trigger.pre_trigger_segments)
+
+
 # =============================================================================
 # Tests for Shot with Spin Fields
 # =============================================================================
@@ -771,6 +823,60 @@ class TestRollingBufferMonitorSpinPlausibility:
         assert shot.spin_quality == "low"
         assert shot.spin_rejection_reason is None
         assert shot.carry_spin_adjusted is None
+
+    def test_create_shot_uses_capture_trigger_epoch_for_impact_timestamp(self):
+        """Rolling-buffer shots should carry the wall-clock sound trigger time."""
+        from openflight.rolling_buffer import RollingBufferMonitor
+
+        monitor = RollingBufferMonitor(port=None, trigger_type="manual")
+        capture = IQCapture(
+            sample_time=100.000,
+            trigger_time=100.068,
+            i_samples=[0] * 4096,
+            q_samples=[0] * 4096,
+            trigger_epoch=1715000000.123,
+        )
+        processed = ProcessedCapture(
+            timeline=SpeedTimeline(readings=[], sample_rate_hz=937.5, capture=capture),
+            ball_speed_mph=100.0,
+            ball_timestamp_ms=68.0,
+            club_speed_mph=75.0,
+            capture=capture,
+        )
+
+        shot = monitor._create_shot(processed)
+
+        assert shot is not None
+        assert shot.impact_timestamp == pytest.approx(1715000000.123)
+
+    def test_create_shot_applies_ops_transition_impact_offset(self):
+        """Transition impact timing should shift K-LD7 correlation per shot."""
+        from openflight.rolling_buffer import RollingBufferMonitor
+
+        monitor = RollingBufferMonitor(port=None, trigger_type="manual")
+        capture = IQCapture(
+            sample_time=100.000,
+            trigger_time=100.068,
+            i_samples=[0] * 4096,
+            q_samples=[0] * 4096,
+            trigger_epoch=1715000000.123,
+        )
+        processed = ProcessedCapture(
+            timeline=SpeedTimeline(readings=[], sample_rate_hz=937.5, capture=capture),
+            ball_speed_mph=100.0,
+            ball_timestamp_ms=68.0,
+            club_speed_mph=75.0,
+            capture=capture,
+            impact=ImpactEstimate(
+                timestamp_ms=60.0,
+                source="ops_transition",
+            ),
+        )
+
+        shot = monitor._create_shot(processed)
+
+        assert shot is not None
+        assert shot.impact_timestamp == pytest.approx(1715000000.115)
 
 
 # =============================================================================
@@ -1430,6 +1536,119 @@ class TestFindClubSpeedOverlap:
         )
 
         assert club_speed == 75.0  # Higher magnitude
+
+
+class TestImpactEstimate:
+    """Tests for OPS club-to-ball impact timing."""
+
+    @pytest.fixture
+    def processor(self):
+        return RollingBufferProcessor()
+
+    @pytest.fixture
+    def capture(self):
+        return IQCapture(
+            sample_time=100.000,
+            trigger_time=100.068,
+            i_samples=[0] * 4096,
+            q_samples=[0] * 4096,
+        )
+
+    def test_clear_transition_uses_midpoint_between_frame_centers(
+        self,
+        processor,
+        capture,
+    ):
+        """A clear club-to-ball speed jump should define impact."""
+        readings = [
+            SpeedReading(
+                speed_mph=60.0,
+                magnitude=200.0,
+                timestamp_ms=10.0,
+                direction="outbound",
+            ),
+            SpeedReading(
+                speed_mph=80.0,
+                magnitude=300.0,
+                timestamp_ms=11.0,
+                direction="outbound",
+            ),
+        ]
+        timeline = SpeedTimeline(readings=readings, sample_rate_hz=937.5)
+
+        impact = processor.estimate_impact(
+            timeline,
+            ball_speed_mph=80.0,
+            club_speed_mph=60.0,
+            capture=capture,
+        )
+
+        center_offset_ms = (processor.WINDOW_SIZE / processor.SAMPLE_RATE) * 500.0
+        assert impact.source == "ops_transition"
+        assert impact.timestamp_ms == pytest.approx(10.5 + center_offset_ms)
+        assert impact.speed_delta_mph == pytest.approx(20.0)
+        assert impact.transition_gap_ms == pytest.approx(1.0)
+
+    def test_small_speed_delta_falls_back_to_sound_trigger(
+        self,
+        processor,
+        capture,
+    ):
+        """A weak transition is ambiguous, so keep hardware trigger timing."""
+        readings = [
+            SpeedReading(
+                speed_mph=68.0,
+                magnitude=200.0,
+                timestamp_ms=10.0,
+                direction="outbound",
+            ),
+            SpeedReading(
+                speed_mph=80.0,
+                magnitude=300.0,
+                timestamp_ms=11.0,
+                direction="outbound",
+            ),
+        ]
+        timeline = SpeedTimeline(readings=readings, sample_rate_hz=937.5)
+
+        impact = processor.estimate_impact(
+            timeline,
+            ball_speed_mph=80.0,
+            club_speed_mph=68.0,
+            capture=capture,
+        )
+
+        assert impact.source == "sound_trigger"
+        assert impact.reason == "speed_delta_below_threshold"
+        assert impact.timestamp_ms == pytest.approx(capture.trigger_offset_ms)
+        assert impact.speed_delta_mph == pytest.approx(12.0)
+
+    def test_missing_club_transition_falls_back_to_sound_trigger(
+        self,
+        processor,
+        capture,
+    ):
+        """Without a club-like frame before first ball, sound trigger wins."""
+        readings = [
+            SpeedReading(
+                speed_mph=80.0,
+                magnitude=300.0,
+                timestamp_ms=11.0,
+                direction="outbound",
+            ),
+        ]
+        timeline = SpeedTimeline(readings=readings, sample_rate_hz=937.5)
+
+        impact = processor.estimate_impact(
+            timeline,
+            ball_speed_mph=80.0,
+            club_speed_mph=None,
+            capture=capture,
+        )
+
+        assert impact.source == "sound_trigger"
+        assert impact.reason == "no_club_transition_candidate"
+        assert impact.timestamp_ms == pytest.approx(capture.trigger_offset_ms)
 
 
 # =============================================================================

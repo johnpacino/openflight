@@ -649,6 +649,18 @@ class SessionLogger:
         club_speed_mph: Optional[float] = None,
         ball_timestamp_ms: Optional[float] = None,
         club_timestamp_ms: Optional[float] = None,
+        impact_timestamp_ms: Optional[float] = None,
+        impact_source: Optional[str] = None,
+        impact_reason: Optional[str] = None,
+        impact_speed_delta_mph: Optional[float] = None,
+        impact_transition_gap_ms: Optional[float] = None,
+        impact_last_club_speed_mph: Optional[float] = None,
+        impact_last_club_timestamp_ms: Optional[float] = None,
+        impact_last_club_center_ms: Optional[float] = None,
+        impact_first_ball_speed_mph: Optional[float] = None,
+        impact_first_ball_timestamp_ms: Optional[float] = None,
+        impact_first_ball_center_ms: Optional[float] = None,
+        impact_min_transition_delta_mph: Optional[float] = None,
         trigger_latency_ms: Optional[float] = None,
         smash_factor: Optional[float] = None,
         spin_rpm: Optional[float] = None,
@@ -681,6 +693,18 @@ class SessionLogger:
             club_speed_mph: Detected club speed (if any)
             ball_timestamp_ms: Ball signal position in buffer (ms from start)
             club_timestamp_ms: Club signal position in buffer (ms from start)
+            impact_timestamp_ms: Selected impact position in buffer (ms from start)
+            impact_source: Source used for impact timing
+            impact_reason: Fallback reason when source is not OPS transition
+            impact_speed_delta_mph: Speed jump across club-to-ball transition
+            impact_transition_gap_ms: Gap between transition frame centers
+            impact_last_club_speed_mph: Last club-like frame speed
+            impact_last_club_timestamp_ms: Last club-like frame start time
+            impact_last_club_center_ms: Last club-like frame center time
+            impact_first_ball_speed_mph: First ball-like frame speed
+            impact_first_ball_timestamp_ms: First ball-like frame start time
+            impact_first_ball_center_ms: First ball-like frame center time
+            impact_min_transition_delta_mph: Minimum speed jump for transition
             trigger_latency_ms: Edge-to-S! latency (ms)
             smash_factor: Ball speed / club speed ratio
             spin_rpm: Detected spin rate in RPM
@@ -707,11 +731,17 @@ class SessionLogger:
         if not self.enabled:
             return
 
+        trigger_offset_ms = (trigger_time - sample_time) * 1000
+        impact_offset_from_trigger_ms = (
+            impact_timestamp_ms - trigger_offset_ms
+            if impact_timestamp_ms is not None else None
+        )
+
         self._write_entry("rolling_buffer_capture", {
             "shot_number": shot_number,
             "sample_time": sample_time,
             "trigger_time": trigger_time,
-            "trigger_offset_ms": (trigger_time - sample_time) * 1000,
+            "trigger_offset_ms": trigger_offset_ms,
             "sample_count": len(i_samples),
             "i_samples": i_samples,
             "q_samples": q_samples,
@@ -719,6 +749,19 @@ class SessionLogger:
             "club_speed_mph": club_speed_mph,
             "ball_timestamp_ms": ball_timestamp_ms,
             "club_timestamp_ms": club_timestamp_ms,
+            "impact_timestamp_ms": impact_timestamp_ms,
+            "impact_offset_from_trigger_ms": impact_offset_from_trigger_ms,
+            "impact_source": impact_source,
+            "impact_reason": impact_reason,
+            "impact_speed_delta_mph": impact_speed_delta_mph,
+            "impact_transition_gap_ms": impact_transition_gap_ms,
+            "impact_last_club_speed_mph": impact_last_club_speed_mph,
+            "impact_last_club_timestamp_ms": impact_last_club_timestamp_ms,
+            "impact_last_club_center_ms": impact_last_club_center_ms,
+            "impact_first_ball_speed_mph": impact_first_ball_speed_mph,
+            "impact_first_ball_timestamp_ms": impact_first_ball_timestamp_ms,
+            "impact_first_ball_center_ms": impact_first_ball_center_ms,
+            "impact_min_transition_delta_mph": impact_min_transition_delta_mph,
             "trigger_latency_ms": trigger_latency_ms,
             "smash_factor": smash_factor,
             "spin_rpm": spin_rpm,

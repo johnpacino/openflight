@@ -504,6 +504,47 @@ class RollingBufferMonitor:
                             club_speed_mph=shot.club_speed_mph,
                             ball_timestamp_ms=processed.ball_timestamp_ms,
                             club_timestamp_ms=processed.club_timestamp_ms,
+                            impact_timestamp_ms=processed.impact_timestamp_ms,
+                            impact_source=processed.impact_source,
+                            impact_reason=(
+                                processed.impact.reason if processed.impact else None
+                            ),
+                            impact_speed_delta_mph=(
+                                processed.impact.speed_delta_mph
+                                if processed.impact else None
+                            ),
+                            impact_transition_gap_ms=(
+                                processed.impact.transition_gap_ms
+                                if processed.impact else None
+                            ),
+                            impact_last_club_speed_mph=(
+                                processed.impact.last_club_speed_mph
+                                if processed.impact else None
+                            ),
+                            impact_last_club_timestamp_ms=(
+                                processed.impact.last_club_timestamp_ms
+                                if processed.impact else None
+                            ),
+                            impact_last_club_center_ms=(
+                                processed.impact.last_club_center_ms
+                                if processed.impact else None
+                            ),
+                            impact_first_ball_speed_mph=(
+                                processed.impact.first_ball_speed_mph
+                                if processed.impact else None
+                            ),
+                            impact_first_ball_timestamp_ms=(
+                                processed.impact.first_ball_timestamp_ms
+                                if processed.impact else None
+                            ),
+                            impact_first_ball_center_ms=(
+                                processed.impact.first_ball_center_ms
+                                if processed.impact else None
+                            ),
+                            impact_min_transition_delta_mph=(
+                                processed.impact.min_transition_delta_mph
+                                if processed.impact else None
+                            ),
                             trigger_latency_ms=trigger_latency_ms,
                             smash_factor=processed.smash_factor,
                             spin_rpm=processed.spin.spin_rpm if processed.spin else None,
@@ -754,6 +795,7 @@ class RollingBufferMonitor:
         shot = Shot(
             ball_speed_mph=processed.ball_speed_mph,
             timestamp=datetime.now(),
+            impact_timestamp=self._impact_epoch_from_processed(processed),
             club_speed_mph=processed.club_speed_mph,
             peak_magnitude=None,  # Not directly available in rolling buffer mode
             readings=[],  # Raw readings not stored (use ProcessedCapture instead)
@@ -782,6 +824,19 @@ class RollingBufferMonitor:
         )
 
         return shot
+
+    @staticmethod
+    def _impact_epoch_from_processed(processed: ProcessedCapture) -> Optional[float]:
+        """Convert the capture-relative impact estimate into host epoch time."""
+        capture = processed.capture
+        if capture is None or capture.trigger_epoch is None:
+            return None
+
+        if processed.impact_timestamp_ms is None:
+            return capture.trigger_epoch
+
+        impact_delta_ms = processed.impact_timestamp_ms - capture.trigger_offset_ms
+        return capture.trigger_epoch + impact_delta_ms / 1000.0
 
     def _club_spin_rejection_reason(
         self,

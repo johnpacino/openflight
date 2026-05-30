@@ -35,6 +35,7 @@ from .trigger import (
     create_trigger,
 )
 from .types import (
+    ImpactEstimate,
     IQCapture,
     ProcessedCapture,
     SpeedReading,
@@ -46,6 +47,7 @@ from .types import (
 __all__ = [
     # Types
     "IQCapture",
+    "ImpactEstimate",
     "SpeedReading",
     "SpeedTimeline",
     "SpinCandidate",
