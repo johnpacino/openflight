@@ -243,6 +243,11 @@ class TestLogShot:
             launch_angle_vertical_source="radar",
             launch_angle_horizontal_source="estimated",
             impact_timestamp=1234567890.25,
+            kld7_timing_debug={
+                "trigger_timestamp": 1234567890.25,
+                "impact_timestamp_kld7": 1234567890.30,
+                "vertical": {"anchor_frame_index": 38},
+            },
         )
 
         lines = logger.session_path.read_text().strip().split("\n")
@@ -265,6 +270,8 @@ class TestLogShot:
         assert entry["launch_angle_vertical_source"] == "radar"
         assert entry["launch_angle_horizontal_source"] == "estimated"
         assert entry["impact_timestamp"] == 1234567890.25
+        assert entry["kld7_timing_debug"]["impact_timestamp_kld7"] == 1234567890.30
+        assert entry["kld7_timing_debug"]["vertical"]["anchor_frame_index"] == 38
 
     def test_rolling_buffer_capture_logs_trigger_timing(self, tmp_path):
         """Rolling-buffer captures should preserve host trigger timing fields."""
@@ -335,6 +342,11 @@ class TestLogKld7Buffer:
             ],
             ball_angle=ball,
             club_angle=club,
+            timing_debug={
+                "snapshot_delay_ms": 190.0,
+                "anchor_frame_index": 39,
+                "plus_50ms_frame_index": 41,
+            },
         )
 
         lines = logger.session_path.read_text().strip().split("\n")
@@ -354,6 +366,8 @@ class TestLogKld7Buffer:
             "club_angle must be preserved in the kld7_buffer log entry "
             "so offline analysis can correlate it with the ball angle."
         )
+        assert entry["timing_debug"]["snapshot_delay_ms"] == 190.0
+        assert entry["timing_debug"]["anchor_frame_index"] == 39
 
     def test_kld7_buffer_logs_raw_radc_payload_counts(self, tmp_path):
         """Top-level counts make TrackMan replay readiness obvious per shot."""

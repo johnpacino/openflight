@@ -829,6 +829,16 @@ class RollingBufferMonitor:
             timestamp=datetime.now(),
             impact_timestamp=impact_timestamp,
             impact_timestamp_kld7=impact_timestamp_kld7,
+            impact_timestamp_source=processed.impact_source,
+            impact_timestamp_ms=processed.impact_timestamp_ms,
+            ops_trigger_time=capture.trigger_time if capture else None,
+            ops_sample_time=capture.sample_time if capture else None,
+            trigger_timestamp_source=(
+                capture.trigger_timestamp_source if capture else None
+            ),
+            first_byte_timestamp=capture.first_byte_timestamp if capture else None,
+            clock_sync_offset_s=capture.clock_sync_offset_s if capture else None,
+            trigger_offset_ms=capture.trigger_offset_ms if capture else None,
             club_speed_mph=processed.club_speed_mph,
             peak_magnitude=None,  # Not directly available in rolling buffer mode
             readings=[],  # Raw readings not stored (use ProcessedCapture instead)

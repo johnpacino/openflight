@@ -99,6 +99,7 @@ class FrameReport:
     frame_index: int
     timestamp: float
     t_ms: float
+    done_frame_number: int | None = None
     expected_bin: int | None = None
     peak_bin: int | None = None
     peak_source: str = ""
@@ -424,6 +425,7 @@ def extract_frame_report(
         frame_index=frame_index,
         timestamp=timestamp,
         t_ms=(timestamp - impact_timestamp) * 1000.0,
+        done_frame_number=_to_int(frame.get("done_frame_number")),
     )
     radc = _decode_radc(frame)
     if radc is None:

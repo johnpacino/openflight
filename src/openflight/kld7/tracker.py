@@ -545,6 +545,7 @@ class KLD7Tracker:
                 "arrival_timestamp": f.arrival_timestamp,
                 "complete_timestamp": f.complete_timestamp,
                 "read_duration_ms": f.read_duration_ms,
+                "done_frame_number": f.done_frame_number,
             }
             for f in self._ring_buffer
             if f.radc is not None
@@ -834,6 +835,8 @@ class KLD7Tracker:
                 entry["complete_timestamp"] = frame.complete_timestamp
             if frame.read_duration_ms is not None:
                 entry["read_duration_ms"] = frame.read_duration_ms
+            if frame.done_frame_number is not None:
+                entry["done_frame_number"] = frame.done_frame_number
             if frame.radc is not None:
                 entry["has_radc"] = True
                 if include_radc_payload:

@@ -246,6 +246,14 @@ class Shot:
     timestamp: datetime
     impact_timestamp: Optional[float] = None
     impact_timestamp_kld7: Optional[float] = None
+    impact_timestamp_source: Optional[str] = None
+    impact_timestamp_ms: Optional[float] = None
+    ops_trigger_time: Optional[float] = None
+    ops_sample_time: Optional[float] = None
+    trigger_timestamp_source: Optional[str] = None
+    first_byte_timestamp: Optional[float] = None
+    clock_sync_offset_s: Optional[float] = None
+    trigger_offset_ms: Optional[float] = None
     club_speed_mph: Optional[float] = None
     peak_magnitude: Optional[float] = None
     readings: List[SpeedReading] = field(default_factory=list)

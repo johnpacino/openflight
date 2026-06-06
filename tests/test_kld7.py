@@ -400,6 +400,7 @@ class TestKLD7TrackerRingBuffer:
                 arrival_timestamp=999.9,
                 complete_timestamp=1000.0,
                 read_duration_ms=100.0,
+                done_frame_number=1234,
             )
         )
 
@@ -409,6 +410,7 @@ class TestKLD7TrackerRingBuffer:
         assert snap[0]["arrival_timestamp"] == 999.9
         assert snap[0]["complete_timestamp"] == 1000.0
         assert snap[0]["read_duration_ms"] == 100.0
+        assert snap[0]["done_frame_number"] == 1234
 
     def test_snapshot_buffer_omits_has_radc_when_no_radc(self):
         tracker = self._make_tracker()

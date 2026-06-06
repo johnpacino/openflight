@@ -75,6 +75,7 @@ class TestSessionErrorLogging:
 
     def test_on_shot_detected_logs_kld7_processing_error(self, monkeypatch):
         logged_errors = []
+        reset_calls = []
 
         class FailingTracker:
             orientation = "vertical"
@@ -89,7 +90,7 @@ class TestSessionErrorLogging:
                 return None
 
             def reset(self):
-                return None
+                reset_calls.append("vertical")
 
         monkeypatch.setattr(server_module, "kld7_vertical", FailingTracker())
         monkeypatch.setattr(server_module, "kld7_horizontal", None)
@@ -118,6 +119,7 @@ class TestSessionErrorLogging:
         assert logged_errors[0][1]["component"] == "server"
         assert logged_errors[0][1]["context"]["stage"] == "kld7"
         assert logged_errors[0][1]["exc"].__class__.__name__ == "RuntimeError"
+        assert reset_calls == ["vertical"]
 
     def test_set_radar_config_logs_failure_to_session(self, monkeypatch):
         logged_errors = []
@@ -429,6 +431,136 @@ class TestStaticRoutes:
 
         assert response.status_code == 200
         assert b'<div id="root"></div>' in response.data
+
+
+class TestKLD7DebugEndpoints:
+    """Tests for debug-only K-LD7 buffer inspection endpoints."""
+
+    def test_kld7_debug_buffers_requires_debug_mode(self, monkeypatch):
+        """K-LD7 debug endpoints should not be available in normal kiosk mode."""
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        monkeypatch.setattr(server_module, "cli_debug_enabled", False)
+
+        client = server_module.app.test_client()
+        response = client.get("/api/debug/kld7/buffers")
+
+        assert response.status_code == 403
+        assert response.get_json()["error"] == "Debug mode is not enabled"
+
+    def test_kld7_debug_buffers_allow_cli_debug(self, monkeypatch):
+        """The --debug CLI flag should enable K-LD7 debug endpoints."""
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        monkeypatch.setattr(server_module, "cli_debug_enabled", True)
+        monkeypatch.setattr(server_module, "kld7_vertical", None)
+        monkeypatch.setattr(server_module, "kld7_horizontal", None)
+
+        client = server_module.app.test_client()
+        response = client.get("/api/debug/kld7/buffers")
+
+        assert response.status_code == 200
+        assert response.get_json()["debug_mode"] is False
+
+    def test_kld7_debug_buffers_reports_timing_state(self, monkeypatch):
+        """Buffer debug should expose compact timing and dropped-DONE diagnostics."""
+
+        class StubTracker:
+            def snapshot_buffer(self):
+                return [
+                    {
+                        "timestamp": 100.00,
+                        "has_radc": True,
+                        "done_frame_number": 10,
+                    },
+                    {
+                        "timestamp": 100.03,
+                        "has_radc": True,
+                        "done_frame_number": 11,
+                    },
+                    {
+                        "timestamp": 100.09,
+                        "has_radc": False,
+                        "done_frame_number": 13,
+                    },
+                ]
+
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "kld7_vertical", StubTracker())
+        monkeypatch.setattr(server_module, "kld7_horizontal", None)
+
+        client = server_module.app.test_client()
+        response = client.get("/api/debug/kld7/buffers")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["vertical"]["connected"] is True
+        assert payload["vertical"]["frame_count"] == 3
+        assert payload["vertical"]["radc_frame_count"] == 2
+        assert payload["vertical"]["median_spacing_ms"] == 45.0
+        assert payload["vertical"]["done_gap_count"] == 1
+        assert payload["horizontal"]["connected"] is False
+
+    def test_kld7_debug_buffers_reports_anchor_position(self, monkeypatch):
+        """Debug buffer endpoint should map an anchor timestamp to frame indices."""
+
+        class StubTracker:
+            def snapshot_buffer(self):
+                return [
+                    {"timestamp": 100.00, "has_radc": True},
+                    {"timestamp": 100.03, "has_radc": True},
+                    {"timestamp": 100.06, "has_radc": True},
+                    {"timestamp": 100.09, "has_radc": True},
+                ]
+
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "kld7_vertical", StubTracker())
+        monkeypatch.setattr(server_module, "kld7_horizontal", None)
+
+        client = server_module.app.test_client()
+        response = client.get("/api/debug/kld7/buffers?anchor_timestamp=100.031")
+
+        assert response.status_code == 200
+        anchor = response.get_json()["vertical"]["anchor"]
+        assert anchor["anchor_frame_index"] == 1
+        assert anchor["anchor_t_ms"] == pytest.approx(-1.0)
+        assert anchor["plus_50ms_frame_index"] == 3
+        assert anchor["plus_50ms_t_ms"] == pytest.approx(59.0)
+
+    def test_kld7_debug_reset_clears_buffers(self, monkeypatch):
+        """Debug reset should use the same tracker reset hook as post-shot cleanup."""
+
+        class StubTracker:
+            def __init__(self):
+                self.frames = [
+                    {"timestamp": 100.00, "has_radc": True},
+                    {"timestamp": 100.03, "has_radc": True},
+                ]
+                self.reset_calls = 0
+
+            def snapshot_buffer(self):
+                return list(self.frames)
+
+            def reset(self):
+                self.reset_calls += 1
+                self.frames.clear()
+
+        vertical = StubTracker()
+        horizontal = StubTracker()
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "kld7_vertical", vertical)
+        monkeypatch.setattr(server_module, "kld7_horizontal", horizontal)
+
+        client = server_module.app.test_client()
+        response = client.post("/api/debug/kld7/reset")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["reset"] is True
+        assert payload["before"]["vertical"]["frame_count"] == 2
+        assert payload["before"]["horizontal"]["frame_count"] == 2
+        assert payload["after"]["vertical"]["frame_count"] == 0
+        assert payload["after"]["horizontal"]["frame_count"] == 0
+        assert vertical.reset_calls == 1
+        assert horizontal.reset_calls == 1
 
 
 class TestShotToDict:
