@@ -562,6 +562,81 @@ class TestKLD7DebugEndpoints:
         assert vertical.reset_calls == 1
         assert horizontal.reset_calls == 1
 
+    def test_ops_clock_sync_requires_debug_mode(self, monkeypatch):
+        """OPS C? debug reads should not be available in normal kiosk mode."""
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        monkeypatch.setattr(server_module, "cli_debug_enabled", False)
+
+        client = server_module.app.test_client()
+        response = client.post("/api/debug/ops/clock-sync")
+
+        assert response.status_code == 403
+        assert response.get_json()["error"] == "Debug mode is not enabled"
+
+    def test_ops_clock_sync_requires_radar(self, monkeypatch):
+        """OPS C? debug reads need the live monitor radar object."""
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "monitor", object())
+
+        client = server_module.app.test_client()
+        response = client.post("/api/debug/ops/clock-sync")
+
+        assert response.status_code == 503
+        assert response.get_json()["error"] == "OPS radar is not available"
+
+    def test_ops_clock_sync_logs_summary(self, monkeypatch):
+        """OPS C? debug endpoint should read through the live radar and log JSONL."""
+
+        class StubRadar:
+            port = "/dev/ttyACM0"
+
+            def __init__(self):
+                self.samples = None
+
+            def read_clock_sync(self, samples=7):
+                self.samples = samples
+                return {
+                    "samples": samples,
+                    "valid_samples": samples,
+                    "best_offset_s": 123.456,
+                    "usable_for_trigger_timestamps": True,
+                    "reads": [{"raw": '{"Clock":"1"}'}],
+                }
+
+        class StubMonitor:
+            def __init__(self):
+                self.radar = StubRadar()
+
+        class StubSessionLogger:
+            def __init__(self):
+                self.calls = []
+
+            def log_clock_sync(self, **kwargs):
+                self.calls.append(kwargs)
+
+        session_logger = StubSessionLogger()
+        monitor = StubMonitor()
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "monitor", monitor)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: session_logger)
+
+        client = server_module.app.test_client()
+        response = client.post("/api/debug/ops/clock-sync?samples=99")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert monitor.radar.samples == 36
+        assert payload["source"] == "debug_endpoint"
+        assert payload["requested_samples"] == 36
+        assert payload["best_offset_s"] == 123.456
+        assert session_logger.calls == [
+            {
+                "device": "ops243",
+                "port": "/dev/ttyACM0",
+                "summary": payload,
+            }
+        ]
+
 
 class TestShotToDict:
     """Tests for shot_to_dict conversion."""

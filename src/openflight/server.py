@@ -880,6 +880,11 @@ def _kld7_debug_endpoint_enabled() -> bool:
     return debug_mode or cli_debug_enabled
 
 
+def _debug_endpoint_enabled() -> bool:
+    """Return true when debug REST endpoints may be used."""
+    return debug_mode or cli_debug_enabled
+
+
 def _ops_clock_sync_debug() -> dict:
     """Return compact active OPS clock-sync diagnostics when available."""
     radar = getattr(monitor, "radar", None) if monitor is not None else None
@@ -1101,7 +1106,7 @@ def api_shutdown():
 @app.route("/api/debug/kld7/buffers", methods=["GET"])
 def debug_kld7_buffers():
     """Inspect K-LD7 ring-buffer timing state while running with --debug."""
-    if not _kld7_debug_endpoint_enabled():
+    if not _debug_endpoint_enabled():
         return jsonify({"error": "Debug mode is not enabled"}), 403
 
     return jsonify(_kld7_debug_state_payload(_parse_kld7_debug_anchor_timestamp()))
@@ -1110,7 +1115,7 @@ def debug_kld7_buffers():
 @app.route("/api/debug/kld7/reset", methods=["POST"])
 def debug_reset_kld7_buffers():
     """Reset K-LD7 ring buffers without stopping their streams."""
-    if not _kld7_debug_endpoint_enabled():
+    if not _debug_endpoint_enabled():
         return jsonify({"error": "Debug mode is not enabled"}), 403
 
     before = _kld7_debug_state_payload()
@@ -1119,6 +1124,46 @@ def debug_reset_kld7_buffers():
     after = _kld7_debug_state_payload()
 
     return jsonify({"reset": True, "before": before, "after": after})
+
+
+@app.route("/api/debug/ops/clock-sync", methods=["POST"])
+def debug_ops_clock_sync():
+    """Read OPS C? through the live radar object and log the offset summary."""
+    if not _debug_endpoint_enabled():
+        return jsonify({"error": "Debug mode is not enabled"}), 403
+
+    radar = getattr(monitor, "radar", None) if monitor is not None else None
+    if radar is None or not hasattr(radar, "read_clock_sync"):
+        return jsonify({"error": "OPS radar is not available"}), 503
+
+    samples = request.args.get("samples", default=7, type=int)
+    samples = max(1, min(samples, 36))
+
+    try:
+        summary = radar.read_clock_sync(samples=samples)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("[SERVER] Debug OPS clock sync read failed: %s", exc, exc_info=True)
+        log_session_error(
+            "Debug OPS clock sync read failed",
+            component="server",
+            context={"stage": "debug_ops_clock_sync", "samples": samples},
+            exc=exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+    payload = dict(summary or {})
+    payload["source"] = "debug_endpoint"
+    payload["requested_samples"] = samples
+
+    session_log = get_session_logger()
+    if session_log:
+        session_log.log_clock_sync(
+            device="ops243",
+            port=getattr(radar, "port", "auto"),
+            summary=payload,
+        )
+
+    return jsonify(payload)
 
 
 # Camera functions
