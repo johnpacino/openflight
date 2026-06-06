@@ -110,6 +110,22 @@ That implies relative drift between the timestamp used as impact and the host-ti
 
 The TrackMan sessions establish the real golf-ball symptom: geometry can be recovered with per-shot timing shifts. Coleman's session establishes the issue is reproducible outside John's setup. The 2026-06-06 clap session adds instrumentation evidence that the moving quantity is the relationship between the K-LD7 snapshot host time and the OPS-derived impact timestamp.
 
+## Suspected Introduction Point
+
+Commit `a3d1e0f4dc3c4ad3964d6861d9246ed3495951e7` changed OPS clock sync from instrumentation into the live K-LD7 timing path.
+
+Before that commit, the OPS `C?` sync was logged to test whether `trigger_time + offset` would fix first-byte USB latency. The code comment said it did not change the downstream impact timestamp.
+
+After that commit, sound-triggered captures began applying:
+
+```text
+trigger_timestamp = OPS trigger_time + last_clock_sync.best_offset_s
+```
+
+That was a reasonable attempt to remove USB first-byte latency, but it moved the risk from per-shot USB read jitter to a session-level OPS-clock-to-host offset. If the startup `C?` sync is noisy, stale, ambiguous around integer rollover, or drifting relative to host time, the K-LD7 frame anchor will walk during the session.
+
+The later debug endpoint bug was separate: diagnostic `C?` reads temporarily overwrote `last_clock_sync` and could poison live shot timing. That has been fixed by making debug reads non-mutating (`store=False`). The remaining production concern is the one introduced by relying on a single startup sync.
+
 ## Current Hypotheses
 
 1. OPS clock sync drift:
@@ -123,6 +139,41 @@ The TrackMan sessions establish the real golf-ball symptom: geometry can be reco
 
 4. Snapshot timing path:
    If K-LD7 snapshots are taken after variable OPS processing or after any wait/reset behavior that changes over a run, the buffer position relative to impact can move even if both radars are streaming normally.
+
+## Recommendation
+
+Do not rely on one startup OPS clock sync for the whole session.
+
+Keep Coleman's core idea of anchoring to OPS `trigger_time` instead of USB first-byte arrival, but refresh the OPS clock mapping close to each shot and quality-gate it before use.
+
+Recommended production order:
+
+1. At startup, keep doing `C?` sync and log it as the baseline.
+2. After each OPS capture is parsed, run a fresh `C?` sync before K-LD7 angle extraction.
+3. Use the fresh sync only when quality is good:
+   - `clock_sync_method == integer_rollover` or a trusted fractional clock is available.
+   - `rollover_uncertainty_ms` is below a strict threshold, likely `25-40 ms`.
+   - No large timeout/blank-read pattern is present in the reads.
+4. Compute the shot anchor as:
+
+```text
+shot_trigger_epoch = capture.trigger_time + fresh_clock_offset_s
+```
+
+5. If the fresh sync is bad, fall back in this order:
+   - Most recent good sync if it is recent enough, for example under `30-60 s`.
+   - Startup sync only if still within the same freshness window.
+   - First-byte timing as a low-confidence fallback.
+
+6. Log both the candidate sync and the chosen sync source on every shot:
+   - startup offset
+   - fresh per-shot offset
+   - delta from startup
+   - rollover uncertainty
+   - final timing source used
+   - whether a fallback was used and why
+
+This keeps the intended fix for USB latency while removing the assumption that a single startup `C?` offset remains valid over a long session.
 
 ## What To Check Next
 
