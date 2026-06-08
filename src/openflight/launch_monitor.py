@@ -207,10 +207,15 @@ class Shot:
         timestamp: When the shot was detected
         impact_timestamp: Epoch timestamp aligned to impact/OPS trigger time
         impact_timestamp_kld7: Ball-contact instant used by the K-LD7
-            geometry launch-angle estimator. This currently mirrors the
-            trusted hardware sound-trigger timestamp; OPS ball_timestamp_ms is
-            a radar-return position inside the capture and should not move
-            geometry t=0.
+            geometry launch-angle estimator. Selected per-shot: GPIO-derived
+            when the passive GATE edge monitor has a recent edge; otherwise
+            the OPS trigger_timestamp-based estimate.
+        impact_timestamp_kld7_gpio: GPIO-derived candidate (passive GATE
+            edge minus sound-travel delay). None if unavailable. Surfaced
+            separately from ``impact_timestamp_kld7`` so the GPIO-vs-OPS Δ
+            can be analyzed offline per shot.
+        impact_timestamp_kld7_ops: OPS-trigger candidate (legacy formula).
+            Always available when the capture has a hardware trigger time.
         peak_magnitude: Signal strength of strongest reading
         readings: All raw speed readings for this shot
         club: Club type for distance estimation
@@ -246,6 +251,8 @@ class Shot:
     timestamp: datetime
     impact_timestamp: Optional[float] = None
     impact_timestamp_kld7: Optional[float] = None
+    impact_timestamp_kld7_gpio: Optional[float] = None
+    impact_timestamp_kld7_ops: Optional[float] = None
     club_speed_mph: Optional[float] = None
     peak_magnitude: Optional[float] = None
     readings: List[SpeedReading] = field(default_factory=list)

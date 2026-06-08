@@ -324,6 +324,9 @@ class SessionLogger:
         spin_axis_deg: Optional[float] = None,
         pipeline_ms: Optional[Dict] = None,
         impact_timestamp: Optional[float] = None,
+        impact_timestamp_kld7: Optional[float] = None,
+        impact_timestamp_kld7_gpio: Optional[float] = None,
+        impact_timestamp_kld7_ops: Optional[float] = None,
     ):
         """
         Log a detected shot with all metrics.
@@ -356,6 +359,12 @@ class SessionLogger:
             carry_spin_adjusted: Carry distance adjusted for spin (rolling buffer mode only)
             mode: Radar mode ("rolling-buffer" or "mock")
             impact_timestamp: Host epoch timestamp aligned to impact/OPS trigger time
+            impact_timestamp_kld7: Per-shot impact reference used by the K-LD7
+                geometry estimator (GPIO-derived when available, OPS-trigger
+                fallback otherwise)
+            impact_timestamp_kld7_gpio: GPIO-derived candidate (passive GATE
+                edge minus sound-travel delay), or None if unavailable
+            impact_timestamp_kld7_ops: OPS-trigger candidate (legacy formula)
         """
         if not self.enabled:
             return
@@ -401,6 +410,9 @@ class SessionLogger:
             "launch_angle_vertical_source": launch_angle_vertical_source,
             "launch_angle_horizontal_source": launch_angle_horizontal_source,
             "impact_timestamp": impact_timestamp,
+            "impact_timestamp_kld7": impact_timestamp_kld7,
+            "impact_timestamp_kld7_gpio": impact_timestamp_kld7_gpio,
+            "impact_timestamp_kld7_ops": impact_timestamp_kld7_ops,
         }
 
         if angle_source is not None:

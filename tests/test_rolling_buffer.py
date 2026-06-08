@@ -1137,6 +1137,9 @@ class TestRollingBufferMonitorSpinPlausibility:
         assert shot.impact_timestamp == pytest.approx(12345.678)
         # K-LD7 geometry timestamp uses the sub-ms GPIO edge minus sound delay.
         assert shot.impact_timestamp_kld7 == pytest.approx(expected)
+        # Both candidates are surfaced separately for offline playback.
+        assert shot.impact_timestamp_kld7_gpio == pytest.approx(expected)
+        assert shot.impact_timestamp_kld7_ops == pytest.approx(12345.678)
         # Monitor was queried against the OPS first-byte arrival.
         assert gpio.last_query == pytest.approx(12345.746)
 
@@ -1160,6 +1163,9 @@ class TestRollingBufferMonitorSpinPlausibility:
 
         assert shot is not None
         assert shot.impact_timestamp_kld7 == pytest.approx(12345.678)
+        # No GPIO edge available → only the OPS candidate is set.
+        assert shot.impact_timestamp_kld7_gpio is None
+        assert shot.impact_timestamp_kld7_ops == pytest.approx(12345.678)
 
     def test_lower_rail_driver_spin_kept_diagnostic_only(self):
         """Rail picks should be logged but not exposed as measured spin."""

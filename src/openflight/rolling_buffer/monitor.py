@@ -856,6 +856,8 @@ class RollingBufferMonitor:
         capture = processed.capture
         impact_timestamp = None
         impact_timestamp_kld7: Optional[float] = None
+        impact_timestamp_kld7_gpio: Optional[float] = None
+        impact_timestamp_kld7_ops: Optional[float] = None
         if capture is not None:
             trigger_epoch = (
                 capture.trigger_timestamp
@@ -867,6 +869,11 @@ class RollingBufferMonitor:
             impact_timestamp_kld7 = self._impact_epoch_from_processed(processed)
             if impact_timestamp_kld7 is None:
                 impact_timestamp_kld7 = trigger_epoch
+            # Surface both source candidates separately so playback can
+            # diff them per shot regardless of which one was selected.
+            impact_timestamp_kld7_ops = self._impact_epoch_from_ops(processed)
+            gpio_impact, _ = self._impact_epoch_from_gpio(capture)
+            impact_timestamp_kld7_gpio = gpio_impact
 
         # Create shot with extended fields
         shot = Shot(
@@ -874,6 +881,8 @@ class RollingBufferMonitor:
             timestamp=datetime.now(),
             impact_timestamp=impact_timestamp,
             impact_timestamp_kld7=impact_timestamp_kld7,
+            impact_timestamp_kld7_gpio=impact_timestamp_kld7_gpio,
+            impact_timestamp_kld7_ops=impact_timestamp_kld7_ops,
             club_speed_mph=processed.club_speed_mph,
             peak_magnitude=None,  # Not directly available in rolling buffer mode
             readings=[],  # Raw readings not stored (use ProcessedCapture instead)
