@@ -935,6 +935,16 @@ class SoundTrigger(TriggerStrategy):
         self._gpio_monitor_started = bool(self._gpio_monitor.start())
         return self._gpio_monitor_started
 
+    @property
+    def gpio_monitor(self) -> Optional["GPIOEdgeTimestampMonitor"]:
+        """Public accessor for the GPIO edge monitor (or None when unavailable).
+
+        Exposed so the rolling-buffer monitor can derive the per-shot impact
+        timestamp directly from the passive GATE edge — see
+        ``RollingBufferMonitor._impact_epoch_from_processed``.
+        """
+        return self._gpio_monitor
+
     def _gpio_edge_before_first_byte(
         self,
         first_byte_timestamp: Optional[float],

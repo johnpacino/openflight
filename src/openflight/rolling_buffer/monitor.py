@@ -21,6 +21,28 @@ from .types import ProcessedCapture
 
 logger = logging.getLogger("openflight.rolling_buffer.monitor")
 
+# Sound-trigger GPIO impact-timestamp parameters.
+#
+# The SEN-14262 sound sensor fires its GATE line a few ms after club-ball
+# contact because acoustic energy has to travel from the impact to the mic
+# (sound at 20 C: ~343 m/s ≈ 1126 ft/s). When the passive GPIO timing
+# monitor on the trigger gives us a sub-ms timestamp of that GATE edge,
+# the true impact instant is that timestamp minus the sound-travel delay:
+#
+#     impact_ts = gpio_edge_ts − (mic_to_ball_ft / 1126.0)
+#
+# This is the cleanest impact reference we can get without a strain gauge
+# on the club itself, and is what the K-LD7 launch-angle geometry consumes.
+SPEED_OF_SOUND_FT_PER_S = 1126.0
+KLD7_GPIO_MIC_TO_BALL_FT = 5.0  # nominal — refine per-install when ball distance is known
+
+
+def _fmt_epoch(timestamp_s: Optional[float]) -> str:
+    """Compact epoch formatter for impact-timing log lines."""
+    if timestamp_s is None:
+        return "None"
+    return datetime.fromtimestamp(timestamp_s).isoformat(timespec="milliseconds")
+
 
 def get_optimal_spin_for_ball_speed(
     ball_speed_mph: float, club: ClubType = ClubType.DRIVER
@@ -880,18 +902,63 @@ class RollingBufferMonitor:
 
         return shot
 
-    @staticmethod
-    def _impact_epoch_from_processed(processed: ProcessedCapture) -> Optional[float]:
-        """Convert the capture-relative impact estimate into host epoch time."""
+    def _impact_epoch_from_processed(self, processed: ProcessedCapture) -> Optional[float]:
+        """Host-epoch timestamp of the club-ball impact.
+
+        Prefers the passive GPIO GATE edge when the sound trigger's edge
+        monitor is wired (sub-ms accurate); falls back to the OPS
+        trigger_timestamp / impact_timestamp_ms estimate otherwise. Both
+        candidates are logged per shot so they can be compared offline."""
         capture = processed.capture
         if capture is None or capture.trigger_timestamp is None:
             return None
 
+        ops_impact = self._impact_epoch_from_ops(processed)
+        gpio_impact, gpio_edge = self._impact_epoch_from_gpio(capture)
+
+        if gpio_impact is not None:
+            delta_ms = (gpio_impact - ops_impact) * 1000.0 if ops_impact is not None else None
+            logger.info(
+                "[MONITOR] Impact epoch: GPIO=%s (seq=%s) OPS=%s Δ=%s ms",
+                _fmt_epoch(gpio_impact),
+                getattr(gpio_edge, "sequence", "?"),
+                _fmt_epoch(ops_impact),
+                f"{delta_ms:+.2f}" if delta_ms is not None else "n/a",
+            )
+            return gpio_impact
+
+        return ops_impact
+
+    @staticmethod
+    def _impact_epoch_from_ops(processed: ProcessedCapture) -> Optional[float]:
+        """OPS-trigger-timestamp based impact estimate (legacy fallback)."""
+        capture = processed.capture
+        if capture is None or capture.trigger_timestamp is None:
+            return None
         if processed.impact_timestamp_ms is None:
             return capture.trigger_timestamp
-
         impact_delta_ms = processed.impact_timestamp_ms - capture.trigger_offset_ms
         return capture.trigger_timestamp + impact_delta_ms / 1000.0
+
+    def _impact_epoch_from_gpio(self, capture):
+        """Compute impact epoch from passive GPIO edge, if available.
+
+        Returns ``(impact_epoch_s, gpio_edge)`` or ``(None, None)``.
+        The reference time is the most recent GATE rising edge at or
+        before the OPS first-byte timestamp; we then subtract the
+        sound-travel delay from the ball-strike to the mic."""
+        monitor = getattr(self.trigger, "gpio_monitor", None)
+        if monitor is None:
+            return None, None
+        upper_bound = capture.first_byte_timestamp or capture.trigger_timestamp
+        if upper_bound is None:
+            return None, None
+        edge = monitor.closest_before(upper_bound, max_age_s=1.0)
+        if edge is None:
+            return None, None
+        sound_propagation_s = KLD7_GPIO_MIC_TO_BALL_FT / SPEED_OF_SOUND_FT_PER_S
+        impact_epoch = edge.host_timestamp - sound_propagation_s
+        return impact_epoch, edge
 
     def _club_spin_rejection_reason(
         self,

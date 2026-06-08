@@ -1098,6 +1098,69 @@ class TestRollingBufferMonitorSpinPlausibility:
         assert shot.impact_timestamp == pytest.approx(12345.678)
         assert shot.impact_timestamp_kld7 == pytest.approx(12345.678)
 
+    def test_kld7_impact_timestamp_uses_gpio_edge_when_available(self):
+        """When the trigger exposes a GPIO edge monitor, the K-LD7 impact
+        timestamp should derive from that edge minus sound-travel delay."""
+        from openflight.rolling_buffer import RollingBufferMonitor
+        from openflight.rolling_buffer.monitor import (
+            KLD7_GPIO_MIC_TO_BALL_FT,
+            SPEED_OF_SOUND_FT_PER_S,
+        )
+        from openflight.rolling_buffer.trigger import GPIOEdgeTimestamp
+
+        class _StubGPIOMonitor:
+            def __init__(self, edge):
+                self._edge = edge
+                self.last_query = None
+
+            def closest_before(self, host_timestamp, max_age_s=2.0):
+                self.last_query = host_timestamp
+                return self._edge
+
+        edge = GPIOEdgeTimestamp(host_timestamp=12345.700, perf_counter=1.0, sequence=3)
+        gpio = _StubGPIOMonitor(edge)
+
+        monitor = RollingBufferMonitor(port=None, trigger_type="manual")
+        # Inject a gpio_monitor attribute on the (manual) trigger
+        monitor.trigger.gpio_monitor = gpio  # type: ignore[attr-defined]
+
+        processed = self._processed_with_spin(
+            SpinResult(spin_rpm=0, confidence=0.0, snr=0.0, quality="none")
+        )
+
+        shot = monitor._create_shot(processed)
+
+        sound_propagation_s = KLD7_GPIO_MIC_TO_BALL_FT / SPEED_OF_SOUND_FT_PER_S
+        expected = 12345.700 - sound_propagation_s
+        assert shot is not None
+        # OPS trigger time remains the legacy impact_timestamp source.
+        assert shot.impact_timestamp == pytest.approx(12345.678)
+        # K-LD7 geometry timestamp uses the sub-ms GPIO edge minus sound delay.
+        assert shot.impact_timestamp_kld7 == pytest.approx(expected)
+        # Monitor was queried against the OPS first-byte arrival.
+        assert gpio.last_query == pytest.approx(12345.746)
+
+    def test_kld7_impact_timestamp_falls_back_when_gpio_returns_none(self):
+        """If the GPIO monitor has no recent edge, fall back to the OPS-derived
+        impact time so behavior matches the legacy path."""
+        from openflight.rolling_buffer import RollingBufferMonitor
+
+        class _EmptyGPIOMonitor:
+            def closest_before(self, host_timestamp, max_age_s=2.0):
+                return None
+
+        monitor = RollingBufferMonitor(port=None, trigger_type="manual")
+        monitor.trigger.gpio_monitor = _EmptyGPIOMonitor()  # type: ignore[attr-defined]
+
+        processed = self._processed_with_spin(
+            SpinResult(spin_rpm=0, confidence=0.0, snr=0.0, quality="none")
+        )
+
+        shot = monitor._create_shot(processed)
+
+        assert shot is not None
+        assert shot.impact_timestamp_kld7 == pytest.approx(12345.678)
+
     def test_lower_rail_driver_spin_kept_diagnostic_only(self):
         """Rail picks should be logged but not exposed as measured spin."""
         from openflight.rolling_buffer import RollingBufferMonitor
