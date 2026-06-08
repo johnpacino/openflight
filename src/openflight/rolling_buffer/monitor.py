@@ -322,6 +322,8 @@ class RollingBufferMonitor:
         required.
         """
         self.stop()
+        if hasattr(self.trigger, "cleanup"):
+            self.trigger.cleanup()
         self.radar.disconnect()
 
     def get_radar_info(self) -> dict:
@@ -374,6 +376,26 @@ class RollingBufferMonitor:
             # otherwise fall back to wall-clock (includes idle wait + serial transfer)
             latency = diag.pop("trigger_latency_ms", None) or wall_clock_ms
             diag["latency_ms"] = latency
+            known_session_fields = {
+                "timestamp",
+                "accepted",
+                "reason",
+                "response_bytes",
+                "total_readings",
+                "outbound_readings",
+                "inbound_readings",
+                "peak_outbound_mph",
+                "peak_inbound_mph",
+                "all_outbound_speeds",
+                "all_inbound_speeds",
+                "peak_outbound_magnitude",
+                "peak_inbound_magnitude",
+                "trigger_type",
+                "latency_ms",
+            }
+            extra = {
+                key: value for key, value in diag.items() if key not in known_session_fields
+            }
 
             # Log to session JSONL
             if session_logger:
@@ -390,6 +412,7 @@ class RollingBufferMonitor:
                     all_outbound_speeds=diag.get("all_outbound_speeds"),
                     all_inbound_speeds=diag.get("all_inbound_speeds"),
                     latency_ms=latency,
+                    extra=extra,
                 )
 
             # Emit to UI via WebSocket

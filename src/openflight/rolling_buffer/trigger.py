@@ -5,8 +5,12 @@ Defines different methods for determining when to capture the rolling buffer.
 """
 
 import logging
+import os
+import threading
 import time
 from abc import ABC, abstractmethod
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
@@ -19,6 +23,103 @@ if TYPE_CHECKING:
 # Incremented per capture for log sequencing (not shot number)
 
 logger = logging.getLogger("openflight.rolling_buffer.trigger")
+
+
+@dataclass(frozen=True)
+class GPIOEdgeTimestamp:
+    """Host timestamps captured from the passive sound-trigger GPIO witness."""
+
+    host_timestamp: float
+    perf_counter: float
+    sequence: int
+
+
+class GPIOEdgeTimestampMonitor:
+    """Passive GPIO listener used to compare sound GATE edges to OPS trigger time."""
+
+    def __init__(
+        self,
+        gpio_pin: int,
+        debounce_ms: int = 50,
+        max_edges: int = 32,
+    ):
+        self.gpio_pin = gpio_pin
+        self.debounce_ms = debounce_ms
+        self._edges: deque[GPIOEdgeTimestamp] = deque(maxlen=max_edges)
+        self._device = None
+        self._lock = threading.Lock()
+        self._started = False
+        self._sequence = 0
+
+    def start(self) -> bool:
+        """Start listening for rising GATE edges."""
+        if self._started:
+            return True
+
+        try:
+            os.environ.setdefault("GPIOZERO_PIN_FACTORY", "lgpio")
+            from gpiozero import DigitalInputDevice  # pylint: disable=import-outside-toplevel
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "[TRIGGER] GPIO timing monitor unavailable on GPIO%d: %s",
+                self.gpio_pin,
+                exc,
+            )
+            return False
+
+        def on_edge():
+            host_timestamp = time.time()
+            perf_counter = time.perf_counter()
+            with self._lock:
+                if self._edges:
+                    age_ms = (host_timestamp - self._edges[-1].host_timestamp) * 1000.0
+                    if age_ms < self.debounce_ms:
+                        return
+                self._sequence += 1
+                edge = GPIOEdgeTimestamp(
+                    host_timestamp=host_timestamp,
+                    perf_counter=perf_counter,
+                    sequence=self._sequence,
+                )
+                self._edges.append(edge)
+            logger.info(
+                "[TRIGGER] GPIO timing edge: GPIO%d host=%.6f seq=%d",
+                self.gpio_pin,
+                host_timestamp,
+                edge.sequence,
+            )
+
+        self._device = DigitalInputDevice(self.gpio_pin, pull_up=False)
+        self._device.when_activated = on_edge
+        self._started = True
+        logger.info(
+            "[TRIGGER] GPIO timing monitor enabled on GPIO%d (debounce=%dms)",
+            self.gpio_pin,
+            self.debounce_ms,
+        )
+        return True
+
+    def closest_before(
+        self,
+        host_timestamp: float,
+        max_age_s: float = 2.0,
+    ) -> Optional[GPIOEdgeTimestamp]:
+        """Return the latest GPIO edge before a host timestamp."""
+        with self._lock:
+            edges = list(self._edges)
+
+        for edge in reversed(edges):
+            age_s = host_timestamp - edge.host_timestamp
+            if 0.0 <= age_s <= max_age_s:
+                return edge
+        return None
+
+    def close(self):
+        """Release GPIO resources."""
+        if self._device is not None:
+            self._device.close()
+            self._device = None
+        self._started = False
 
 
 class TriggerStrategy(ABC):
@@ -60,6 +161,7 @@ class TriggerStrategy(ABC):
         peak_outbound_magnitude: float = 0.0,
         peak_inbound_magnitude: float = 0.0,
         trigger_latency_ms: Optional[float] = None,
+        extra: Optional[dict] = None,
     ):
         """Append a diagnostic entry for the current trigger event."""
         entry = {
@@ -79,6 +181,8 @@ class TriggerStrategy(ABC):
         }
         if trigger_latency_ms is not None:
             entry["trigger_latency_ms"] = trigger_latency_ms
+        if extra:
+            entry.update(extra)
         self._diagnostics.append(entry)
 
     def _summarize_capture_activity(
@@ -120,6 +224,7 @@ class TriggerStrategy(ABC):
         reason: str,
         response_bytes: int,
         trigger_latency_ms: Optional[float] = None,
+        extra: Optional[dict] = None,
     ):
         """Append a diagnostic entry using capture-activity summary fields."""
         self._append_diagnostic(
@@ -136,6 +241,7 @@ class TriggerStrategy(ABC):
             peak_outbound_magnitude=summary["peak_outbound_magnitude"],
             peak_inbound_magnitude=summary["peak_inbound_magnitude"],
             trigger_latency_ms=trigger_latency_ms,
+            extra=extra,
         )
 
     @abstractmethod
@@ -788,6 +894,9 @@ class SoundTrigger(TriggerStrategy):
     def __init__(
         self,
         pre_trigger_segments: int = 12,
+        gpio_monitor_pin: Optional[int] = None,
+        gpio_monitor_debounce_ms: int = 50,
+        gpio_monitor: Optional[GPIOEdgeTimestampMonitor] = None,
     ):
         """
         Initialize sound trigger.
@@ -798,8 +907,83 @@ class SoundTrigger(TriggerStrategy):
                 Default 12 gives ~51ms pre-trigger, ~85ms post-trigger.
                 NOTE: This is passed to enter_rolling_buffer_mode() by the caller.
                 The trigger does NOT configure rolling buffer mode itself.
+            gpio_monitor_pin: Optional passive Pi GPIO pin watching the same
+                SEN-14262 GATE edge as OPS HOST_INT. This never triggers the
+                radar; it only logs timing comparisons for diagnostics.
+            gpio_monitor_debounce_ms: Ignore repeated GPIO edges within this
+                many milliseconds.
         """
         super().__init__(pre_trigger_segments=pre_trigger_segments)
+        self.gpio_monitor_pin = gpio_monitor_pin
+        self.gpio_monitor_debounce_ms = gpio_monitor_debounce_ms
+        self._gpio_monitor = gpio_monitor
+        self._gpio_monitor_started = False
+
+    def _ensure_gpio_monitor(self) -> bool:
+        """Start the optional passive GPIO timing monitor."""
+        if self.gpio_monitor_pin is None and self._gpio_monitor is None:
+            return False
+        if self._gpio_monitor_started:
+            return True
+        if self._gpio_monitor is None:
+            self._gpio_monitor = GPIOEdgeTimestampMonitor(
+                gpio_pin=int(self.gpio_monitor_pin),
+                debounce_ms=self.gpio_monitor_debounce_ms,
+            )
+        elif self.gpio_monitor_pin is None:
+            self.gpio_monitor_pin = getattr(self._gpio_monitor, "gpio_pin", None)
+        self._gpio_monitor_started = bool(self._gpio_monitor.start())
+        return self._gpio_monitor_started
+
+    def _gpio_edge_before_first_byte(
+        self,
+        first_byte_timestamp: Optional[float],
+    ) -> Optional[GPIOEdgeTimestamp]:
+        """Return the GPIO edge associated with this OPS hardware capture."""
+        if first_byte_timestamp is None or not self._ensure_gpio_monitor():
+            return None
+        return self._gpio_monitor.closest_before(first_byte_timestamp)
+
+    def _log_gpio_timing(
+        self,
+        edge: Optional[GPIOEdgeTimestamp],
+        capture: IQCapture,
+    ) -> Optional[dict]:
+        """Log GPIO witness timing against OPS trigger timing."""
+        if edge is None:
+            if self.gpio_monitor_pin is not None or self._gpio_monitor is not None:
+                logger.info("[TRIGGER] GPIO timing unavailable: no recent edge for capture")
+            return None
+
+        first_byte_delta_ms = (
+            (capture.first_byte_timestamp - edge.host_timestamp) * 1000.0
+            if capture.first_byte_timestamp is not None
+            else None
+        )
+        trigger_delta_ms = (
+            (capture.trigger_timestamp - edge.host_timestamp) * 1000.0
+            if capture.trigger_timestamp is not None
+            else None
+        )
+
+        logger.info(
+            "[TRIGGER] GPIO timing: GPIO%d edge %.6f seq=%d, trigger_delta=%sms "
+            "(source=%s), first_byte_delta=%sms",
+            self.gpio_monitor_pin or -1,
+            edge.host_timestamp,
+            edge.sequence,
+            "n/a" if trigger_delta_ms is None else f"{trigger_delta_ms:+.1f}",
+            capture.trigger_timestamp_source or "unknown",
+            "n/a" if first_byte_delta_ms is None else f"{first_byte_delta_ms:+.1f}",
+        )
+        return {
+            "gpio_monitor_pin": self.gpio_monitor_pin,
+            "gpio_edge_timestamp": edge.host_timestamp,
+            "gpio_edge_sequence": edge.sequence,
+            "gpio_trigger_delta_ms": trigger_delta_ms,
+            "gpio_first_byte_delta_ms": first_byte_delta_ms,
+            "gpio_trigger_timestamp_source": capture.trigger_timestamp_source,
+        }
 
     @staticmethod
     def _clock_sync_last_read_host_time(clock_sync: dict) -> Optional[float]:
@@ -1020,6 +1204,7 @@ class SoundTrigger(TriggerStrategy):
         We just block on serial read waiting for the I/Q data to arrive.
         """
         logger.info("[TRIGGER] Waiting for sound trigger (timeout=%.0fs)...", timeout)
+        self._ensure_gpio_monitor()
 
         response = radar.wait_for_hardware_trigger(timeout=timeout)
 
@@ -1034,6 +1219,7 @@ class SoundTrigger(TriggerStrategy):
             "last_hardware_trigger_first_byte_timestamp",
             None,
         )
+        gpio_edge = self._gpio_edge_before_first_byte(first_byte_timestamp)
 
         # Re-arm for next capture
         radar.rearm_rolling_buffer(self.pre_trigger_segments)
@@ -1055,6 +1241,9 @@ class SoundTrigger(TriggerStrategy):
         if first_byte_timestamp is not None and capture.first_byte_timestamp is None:
             capture.first_byte_timestamp = float(first_byte_timestamp)
 
+        if capture.first_byte_timestamp is not None and capture.trigger_timestamp is None:
+            capture.apply_trigger_timestamp_from_first_byte()
+
         # Quick validation: does the capture contain any real swing data?
         # At a driving range, a nearby player's impact sound can trip the
         # trigger even though nothing was moving in front of our radar.
@@ -1069,11 +1258,13 @@ class SoundTrigger(TriggerStrategy):
                 summary["peak_outbound_mph"],
                 summary["total_readings"],
             )
+            gpio_timing = self._log_gpio_timing(gpio_edge, capture)
             self._append_activity_diagnostic(
                 summary,
                 accepted=False,
                 reason="no_outbound_speed",
                 response_bytes=response_len,
+                extra=gpio_timing,
             )
             return None
 
@@ -1092,6 +1283,8 @@ class SoundTrigger(TriggerStrategy):
                 capture.post_trigger_duration_ms,
             )
 
+        gpio_timing = self._log_gpio_timing(gpio_edge, capture)
+
         logger.info(
             "[TRIGGER] Sound trigger accepted — peak %.1f mph, %d outbound readings",
             summary["valid_peak_outbound_mph"],
@@ -1102,6 +1295,7 @@ class SoundTrigger(TriggerStrategy):
             accepted=True,
             reason="accepted",
             response_bytes=response_len,
+            extra=gpio_timing,
         )
 
         return capture
@@ -1109,6 +1303,11 @@ class SoundTrigger(TriggerStrategy):
     def reset(self):
         """Reset trigger state."""
         pass  # No state to reset
+
+    def cleanup(self):
+        """Clean up optional GPIO resources."""
+        if self._gpio_monitor is not None:
+            self._gpio_monitor.close()
 
 
 def create_trigger(trigger_type: str = "speed", **kwargs) -> TriggerStrategy:

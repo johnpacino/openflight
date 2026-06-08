@@ -641,6 +641,90 @@ class TestSoundTriggerTimestampPropagation:
         assert radar.last_clock_sync is radar.read_clock_sync.return_value
         radar.read_clock_sync.assert_called_once_with(samples=36, store=False)
 
+    def test_sound_trigger_logs_passive_gpio_timing_delta(self, caplog):
+        """Passive GPIO monitor should log timing against the selected OPS trigger time."""
+        from openflight.rolling_buffer.trigger import GPIOEdgeTimestamp, SoundTrigger
+
+        class FakeGPIOMonitor:
+            gpio_pin = 17
+
+            def __init__(self, edge):
+                self.edge = edge
+                self.started = False
+                self.queried_before = None
+
+            def start(self):
+                self.started = True
+                return True
+
+            def closest_before(self, host_timestamp, max_age_s=2.0):
+                self.queried_before = host_timestamp
+                return self.edge
+
+            def close(self):
+                pass
+
+        edge = GPIOEdgeTimestamp(
+            host_timestamp=12100.060,
+            perf_counter=100.0,
+            sequence=7,
+        )
+        gpio_monitor = FakeGPIOMonitor(edge)
+
+        radar = MagicMock()
+        radar.wait_for_hardware_trigger.return_value = '{"sample_time": 0.0}'
+        radar.last_hardware_trigger_first_byte_timestamp = 12100.140
+        radar.last_clock_sync = None
+        radar.read_clock_sync.return_value = {
+            "source": "per_shot",
+            "samples": 3,
+            "valid_samples": 3,
+            "best_offset_s": 12000.0,
+            "clock_sync_method": "integer_rollover",
+            "usable_for_trigger_timestamps": True,
+            "rollover_uncertainty_ms": 10.0,
+            "reads": [
+                {
+                    "host_after": time.time(),
+                    "host_mid": time.time(),
+                    "radar_clock_s": 100.0,
+                    "read_latency_ms": 1.0,
+                }
+            ],
+        }
+
+        capture = IQCapture(
+            sample_time=100.000,
+            trigger_time=100.068,
+            i_samples=[2048] * 4096,
+            q_samples=[2048] * 4096,
+        )
+        processor = MagicMock()
+        processor.parse_capture.return_value = capture
+        processor.process_standard.return_value = SpeedTimeline(
+            readings=[
+                SpeedReading(
+                    speed_mph=100.0,
+                    magnitude=1000.0,
+                    timestamp_ms=68.0,
+                    direction="outbound",
+                )
+            ],
+            sample_rate_hz=937.5,
+        )
+
+        trigger = SoundTrigger(pre_trigger_segments=12, gpio_monitor=gpio_monitor)
+        with caplog.at_level("INFO", logger="openflight.rolling_buffer.trigger"):
+            result = trigger.wait_for_trigger(radar, processor, timeout=1.0)
+
+        assert result is capture
+        assert gpio_monitor.started is True
+        assert gpio_monitor.queried_before == pytest.approx(12100.140)
+        assert "GPIO timing: GPIO17" in caplog.text
+        assert "trigger_delta=+8.0ms" in caplog.text
+        assert "source=ops_clock_sync" in caplog.text
+        assert "first_byte_delta=+80.0ms" in caplog.text
+
     def test_sound_trigger_uses_recent_previous_sync_when_fresh_sync_is_bad(self):
         """A bad per-shot C? read should not discard a recent valid sync."""
         from openflight.rolling_buffer.trigger import SoundTrigger

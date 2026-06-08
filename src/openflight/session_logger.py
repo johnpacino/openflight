@@ -637,6 +637,7 @@ class SessionLogger:
         carry_yards: Optional[float] = None,
         # Timing
         latency_ms: Optional[float] = None,
+        extra: Optional[dict] = None,
     ):
         """
         Log a detailed trigger diagnostic entry.
@@ -662,6 +663,7 @@ class SessionLogger:
             spin_rpm: Spin rate (if detected)
             carry_yards: Estimated carry (if shot accepted)
             latency_ms: Trigger-to-capture latency
+            extra: Additional diagnostic fields to include in the JSONL entry.
         """
         if not self.enabled:
             return
@@ -678,27 +680,28 @@ class SessionLogger:
         else:
             self._stats["triggers_rejected"] += 1
 
-        self._write_entry(
-            "trigger_diagnostic",
-            {
-                "trigger_type": trigger_type,
-                "accepted": accepted,
-                "reason": reason,
-                "response_bytes": response_bytes,
-                "total_readings": total_readings,
-                "outbound_readings": outbound_readings,
-                "inbound_readings": inbound_readings,
-                "peak_outbound_mph": peak_outbound_mph,
-                "peak_inbound_mph": peak_inbound_mph,
-                "all_outbound_speeds": all_outbound_speeds or [],
-                "all_inbound_speeds": all_inbound_speeds or [],
-                "ball_speed_mph": ball_speed_mph,
-                "club_speed_mph": club_speed_mph,
-                "spin_rpm": spin_rpm,
-                "carry_yards": carry_yards,
-                "latency_ms": latency_ms,
-            },
-        )
+        payload = {
+            "trigger_type": trigger_type,
+            "accepted": accepted,
+            "reason": reason,
+            "response_bytes": response_bytes,
+            "total_readings": total_readings,
+            "outbound_readings": outbound_readings,
+            "inbound_readings": inbound_readings,
+            "peak_outbound_mph": peak_outbound_mph,
+            "peak_inbound_mph": peak_inbound_mph,
+            "all_outbound_speeds": all_outbound_speeds or [],
+            "all_inbound_speeds": all_inbound_speeds or [],
+            "ball_speed_mph": ball_speed_mph,
+            "club_speed_mph": club_speed_mph,
+            "spin_rpm": spin_rpm,
+            "carry_yards": carry_yards,
+            "latency_ms": latency_ms,
+        }
+        if extra:
+            payload.update(extra)
+
+        self._write_entry("trigger_diagnostic", payload)
 
     def log_rolling_buffer_capture(
         self,

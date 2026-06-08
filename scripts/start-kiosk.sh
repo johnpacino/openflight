@@ -20,6 +20,8 @@ DRY_RUN=false
 # Rolling buffer mode is the only mode (streaming mode removed)
 TRIGGER="sound"  # Default: hardware sound trigger (SEN-14262 → HOST_INT)
 SOUND_PRE_TRIGGER=""
+SOUND_GPIO_MONITOR_PIN=""
+SOUND_GPIO_MONITOR_DEBOUNCE_MS=""
 BUFFER_SPLIT=""
 KLD7=false
 KLD7_PORT=""
@@ -100,6 +102,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --sound-pre-trigger)
             SOUND_PRE_TRIGGER="$2"
+            shift 2
+            ;;
+        --sound-gpio-monitor-pin)
+            SOUND_GPIO_MONITOR_PIN="$2"
+            shift 2
+            ;;
+        --sound-gpio-monitor-debounce-ms)
+            SOUND_GPIO_MONITOR_DEBOUNCE_MS="$2"
             shift 2
             ;;
         --buffer-split)
@@ -327,6 +337,14 @@ fi
 
 if [ -n "$SOUND_PRE_TRIGGER" ]; then
     SERVER_CMD="$SERVER_CMD --sound-pre-trigger $SOUND_PRE_TRIGGER"
+fi
+
+if [ -n "$SOUND_GPIO_MONITOR_PIN" ]; then
+    SERVER_CMD="$SERVER_CMD --sound-gpio-monitor-pin $SOUND_GPIO_MONITOR_PIN"
+fi
+
+if [ -n "$SOUND_GPIO_MONITOR_DEBOUNCE_MS" ]; then
+    SERVER_CMD="$SERVER_CMD --sound-gpio-monitor-debounce-ms $SOUND_GPIO_MONITOR_DEBOUNCE_MS"
 fi
 
 if [ -n "$SAMPLE_RATE" ]; then

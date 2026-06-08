@@ -2315,6 +2315,21 @@ def main():
         ),
     )
     parser.add_argument(
+        "--sound-gpio-monitor-pin",
+        type=int,
+        default=None,
+        help=(
+            "Passive BCM GPIO pin watching the same sound-trigger GATE edge as OPS HOST_INT. "
+            "This logs GPIO-vs-OPS timing only; it does not trigger capture."
+        ),
+    )
+    parser.add_argument(
+        "--sound-gpio-monitor-debounce-ms",
+        type=int,
+        default=50,
+        help="Debounce for --sound-gpio-monitor-pin in milliseconds (default: 50)",
+    )
+    parser.add_argument(
         "--sample-rate",
         type=int,
         default=30,
@@ -2505,6 +2520,14 @@ def main():
     # Start the monitor
     # Build trigger-specific kwargs (pre_trigger_segments always passed)
     trigger_kwargs = {"pre_trigger_segments": args.sound_pre_trigger}
+    if args.sound_gpio_monitor_pin is not None and args.trigger == "sound":
+        trigger_kwargs["gpio_monitor_pin"] = args.sound_gpio_monitor_pin
+        trigger_kwargs["gpio_monitor_debounce_ms"] = args.sound_gpio_monitor_debounce_ms
+    elif args.sound_gpio_monitor_pin is not None:
+        logger.warning(
+            "--sound-gpio-monitor-pin is only supported with --trigger sound; ignoring for %s",
+            args.trigger,
+        )
 
     # Initialize camera BEFORE starting monitor (so session log is accurate)
     if not args.no_camera:
