@@ -2,9 +2,12 @@
 
 import math
 
+import pytest
+
 from openflight.kld7.geometry import (
     GEOM_BALL_ABOVE_RADAR_FT,
     fit_launch_angle_geometric,
+    fit_launch_angle_single_frame_range_timing,
     predicted_bearing_deg,
 )
 
@@ -78,3 +81,31 @@ def test_zero_weight_frames_do_not_dominate():
 
 def test_ball_above_radar_default_is_four_inches_below():
     assert math.isclose(GEOM_BALL_ABOVE_RADAR_FT, -4.0 / 12.0)
+
+
+def test_single_frame_range_timing_fit_derives_shift_from_f1b_range():
+    alpha_true = 18.0
+    actual_time_s = 0.056
+    measured_time_s = actual_time_s - 0.008
+    bearing = predicted_bearing_deg(alpha_true, actual_time_s, V_MPH, D_FT, MOUNT_DEG)
+
+    v_fts = V_MPH * 1.46667
+    alpha_rad = math.radians(alpha_true)
+    x_ft = D_FT + v_fts * math.cos(alpha_rad) * actual_time_s
+    y_ft = GEOM_BALL_ABOVE_RADAR_FT + v_fts * math.sin(alpha_rad) * actual_time_s
+    f1b_range_ft = math.hypot(x_ft, y_ft)
+
+    result = fit_launch_angle_single_frame_range_timing(
+        measured_time_s,
+        bearing,
+        f1b_range_ft,
+        V_MPH,
+        D_FT,
+        MOUNT_DEG,
+    )
+
+    assert result is not None
+    launch_angle, bearing_resid, shift_s = result
+    assert launch_angle == pytest.approx(alpha_true, abs=0.2)
+    assert bearing_resid < 0.1
+    assert shift_s == pytest.approx(0.008, abs=0.001)

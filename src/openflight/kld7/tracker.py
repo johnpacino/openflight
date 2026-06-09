@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Optional
 
 from ..serial_latency import log_usb_serial_latency_timer
-from .radc import RADC_PAYLOAD_BYTES
+from .geometry import GEOM_BALL_ABOVE_RADAR_FT
+from .radc import RADC_PAYLOAD_BYTES, VERTICAL_FLIGHT_WINDOW_NET_DISTANCE_FT
 from .types import KLD7Angle, KLD7Frame
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,11 @@ _RADC_SELECTION_DIAGNOSTIC_KEYS = (
     "selected_frame_indices",
     "selected_t_ms",
     "selected_bin_errors",
+    "selected_f1b_ranges_ft",
+    "selected_f1b_same_bin_snrs",
+    "selected_f1b_peak_bin_errors",
+    "f1b_timing_shift_ms",
+    "flight_window_end_ms",
     "geom_fit_rmse_deg",
     "geom_single_frame_resid_deg",
     "weak_adjacent_frame_used",
@@ -122,6 +128,7 @@ class KLD7Tracker:
     # fail with AttributeError when code accesses these.
     angle_offset_deg = 0.0
     base_freq = 0
+    range_m = 5
     shot_window_after_s = 0.75
     radc_speed_tolerance_mph = 10.0
     radc_centroid_floor_frac = 0.5
@@ -136,6 +143,8 @@ class KLD7Tracker:
     vertical_estimator = "naive"
     mount_tilt_deg = 18.0
     ball_distance_ft = 5.5
+    ball_above_radar_ft = GEOM_BALL_ABOVE_RADAR_FT
+    vertical_flight_window_net_distance_ft = VERTICAL_FLIGHT_WINDOW_NET_DISTANCE_FT
 
     def __init__(
         self,
@@ -159,6 +168,8 @@ class KLD7Tracker:
         vertical_estimator: str = "naive",
         mount_tilt_deg: float = 18.0,
         ball_distance_ft: float = 5.5,
+        ball_above_radar_ft: float = GEOM_BALL_ABOVE_RADAR_FT,
+        vertical_flight_window_net_distance_ft: float = VERTICAL_FLIGHT_WINDOW_NET_DISTANCE_FT,
     ):
         self.port = port
         self.range_m = range_m
@@ -182,6 +193,8 @@ class KLD7Tracker:
         self.vertical_estimator = vertical_estimator
         self.mount_tilt_deg = mount_tilt_deg
         self.ball_distance_ft = ball_distance_ft
+        self.ball_above_radar_ft = ball_above_radar_ft
+        self.vertical_flight_window_net_distance_ft = vertical_flight_window_net_distance_ft
         self.max_buffer_frames = int(34 * buffer_seconds)
 
         self._radar = None
@@ -648,6 +661,9 @@ class KLD7Tracker:
                 impact_timestamp=impact_ts_for_rules,
                 mount_deg=self.mount_tilt_deg,
                 distance_ft=self.ball_distance_ft,
+                ball_above_radar_ft=self.ball_above_radar_ft,
+                range_m=float(self.range_m),
+                vertical_flight_window_net_distance_ft=self.vertical_flight_window_net_distance_ft,
             )
             if results:
                 best_attempt = select_best_shot_result(results)

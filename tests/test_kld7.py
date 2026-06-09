@@ -775,7 +775,13 @@ class TestRADCAngleExtraction:
         tracker._init_ring_buffer()
         return tracker
 
-    def _make_radc_payload_with_tone(self, velocity_kmh, angle_deg=10.0, amplitude=5000):
+    def _make_radc_payload_with_tone(
+        self,
+        velocity_kmh,
+        angle_deg=10.0,
+        amplitude=5000,
+        f1b_range_ft=None,
+    ):
         """Create a synthetic RADC payload with a tone at the given velocity."""
         from openflight.kld7.radc import ANTENNA_SPACING_M, SAMPLES_PER_CHANNEL, WAVELENGTH_M
 
@@ -805,11 +811,21 @@ class TestRADCAngleExtraction:
             np.uint16
         )
 
-        # F1B channel: zeros (not used for angle)
-        zeros = np.full(n, 32768, dtype=np.uint16)
+        if f1b_range_ft is None:
+            f1b_i = np.full(n, 32768, dtype=np.uint16)
+            f1b_q = np.full(n, 32768, dtype=np.uint16)
+        else:
+            phase_period_ft = 5.0 * 3.28084
+            range_phase = 2 * np.pi * ((f1b_range_ft % phase_period_ft) / phase_period_ft)
+            f1b_i = (
+                amplitude * np.cos(phase_per_sample * t + range_phase) + 32768
+            ).astype(np.uint16)
+            f1b_q = (
+                amplitude * np.sin(phase_per_sample * t + range_phase) + 32768
+            ).astype(np.uint16)
 
         payload = b""
-        for ch in [f1a_i, f1a_q, f2a_i, f2a_q, zeros, zeros]:
+        for ch in [f1a_i, f1a_q, f2a_i, f2a_q, f1b_i, f1b_q]:
             payload += ch.astype(np.uint16).tobytes()
         return payload
 
@@ -1033,6 +1049,127 @@ class TestRADCAngleExtraction:
         assert best["geom_single_frame_resid_deg"] is not None
         assert best["confidence"] < 0.8
         assert abs(best["launch_angle_deg"] - alpha_true) < 3.0
+
+    def test_geometry_single_frame_uses_f1b_range_to_align_timing(self):
+        """A trustworthy F1B range can shift one selected frame before fitting."""
+        from openflight.kld7.geometry import (
+            GEOM_BALL_ABOVE_RADAR_FT,
+            MPH_TO_FTS,
+            predicted_bearing_deg,
+        )
+        from openflight.kld7.radc import extract_launch_angle
+
+        ball_speed_mph = 72.0
+        ball_kmh = ball_speed_mph * 1.609
+        aliased_kmh = ball_kmh % 200.0
+        if aliased_kmh > 100.0:
+            aliased_kmh -= 200.0
+
+        distance_ft = 5.5
+        mount_deg = 18.0
+        alpha_true = 18.0
+        actual_flight_time_s = 0.056
+        measured_flight_time_s = actual_flight_time_s - 0.008
+        impact_ts = time.time()
+
+        beta = predicted_bearing_deg(
+            alpha_true,
+            actual_flight_time_s,
+            ball_speed_mph,
+            distance_ft,
+            mount_deg,
+        )
+        v_fts = ball_speed_mph * MPH_TO_FTS
+        alpha_rad = np.radians(alpha_true)
+        x_ft = distance_ft + v_fts * np.cos(alpha_rad) * actual_flight_time_s
+        y_ft = GEOM_BALL_ABOVE_RADAR_FT + v_fts * np.sin(alpha_rad) * actual_flight_time_s
+        f1b_range_ft = float(np.hypot(x_ft, y_ft))
+
+        quiet = self._make_quiet_radc_payload()
+        frames = [{"timestamp": impact_ts - (6 - i) * 0.056, "radc": quiet} for i in range(6)]
+        frames.append(
+            {
+                "timestamp": impact_ts + measured_flight_time_s,
+                "radc": self._make_radc_payload_with_tone(
+                    aliased_kmh,
+                    angle_deg=-beta,
+                    amplitude=20000,
+                    f1b_range_ft=f1b_range_ft,
+                ),
+            }
+        )
+
+        results = extract_launch_angle(
+            frames,
+            ops243_ball_speed_mph=ball_speed_mph,
+            orientation="vertical",
+            vertical_estimator="geometry",
+            shot_timestamp=impact_ts,
+            mount_deg=mount_deg,
+            distance_ft=distance_ft,
+        )
+
+        assert results
+        best = results[0]
+        assert best["estimator"] == "geometry_single_frame"
+        assert best["selection_path"] == "geometry_single_frame_f1b_timing"
+        assert best["f1b_timing_shift_ms"] == pytest.approx(8.0, abs=1.0)
+        assert abs(best["launch_angle_deg"] - alpha_true) < 3.0
+
+    def test_vertical_geometry_rejects_frames_after_ball_flight_window(self):
+        """Frames after the estimated net/screen arrival should not be selected."""
+        from openflight.kld7.geometry import predicted_bearing_deg
+        from openflight.kld7.radc import extract_launch_angle
+
+        ball_speed_mph = 120.0
+        ball_kmh = ball_speed_mph * 1.609
+        aliased_kmh = ball_kmh % 200.0
+        if aliased_kmh > 100.0:
+            aliased_kmh -= 200.0
+
+        distance_ft = 5.0
+        mount_deg = 10.0
+        alpha_true = 16.0
+        impact_ts = time.time()
+        quiet = self._make_quiet_radc_payload()
+        frames = [{"timestamp": impact_ts - (6 - i) * 0.056, "radc": quiet} for i in range(6)]
+
+        for flight_time_s, amplitude in [(0.055, 6000), (0.090, 9000)]:
+            beta = predicted_bearing_deg(
+                alpha_true,
+                flight_time_s,
+                ball_speed_mph,
+                distance_ft,
+                mount_deg,
+            )
+            frames.append(
+                {
+                    "timestamp": impact_ts + flight_time_s,
+                    "radc": self._make_radc_payload_with_tone(
+                        aliased_kmh,
+                        angle_deg=-beta,
+                        amplitude=amplitude,
+                    ),
+                }
+            )
+
+        results = extract_launch_angle(
+            frames,
+            ops243_ball_speed_mph=ball_speed_mph,
+            orientation="vertical",
+            vertical_estimator="geometry",
+            shot_timestamp=impact_ts,
+            mount_deg=mount_deg,
+            distance_ft=distance_ft,
+            vertical_flight_window_net_distance_ft=10.0,
+            vertical_flight_window_margin_s=0.010,
+        )
+
+        assert results
+        best = results[0]
+        assert best["selected_frame_indices"] == [6]
+        assert best["selected_t_ms"] == [55.0]
+        assert best["flight_window_end_ms"] == pytest.approx(75.7, abs=1.0)
 
     def test_vertical_rules_can_pair_strong_anchor_with_weak_rising_neighbor(self):
         """A good OPS-bin anchor can use an adjacent weaker frame when it rises."""
@@ -1659,6 +1796,7 @@ class TestRADCAngleExtraction:
         tracker.radc_ops_anchored_peak_min_snr = 2.5
         tracker.radc_vertical_impact_energy_threshold = 2.5
         tracker.radc_horizontal_angle_limit_deg = 30.0
+        tracker.vertical_flight_window_net_distance_ft = 12.0
         tracker._add_frame(KLD7Frame(timestamp=time.time(), radc=b"\x00" * 3072))
         captured_kwargs = []
 
@@ -1700,5 +1838,8 @@ class TestRADCAngleExtraction:
                 "impact_timestamp": None,
                 "mount_deg": 18.0,
                 "distance_ft": 5.5,
+                "ball_above_radar_ft": -4.0 / 12.0,
+                "range_m": 5.0,
+                "vertical_flight_window_net_distance_ft": 12.0,
             }
         ]

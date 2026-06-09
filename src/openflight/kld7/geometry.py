@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 MPH_TO_FTS = 1.46667
-GEOM_BALL_ABOVE_RADAR_FT = -4.0 / 12.0  # ball sits ~4" below the radar center
+GEOM_BALL_ABOVE_RADAR_FT = -4.0 / 12.0  # ball sits ~4" below the radar center by default
 GEOM_FLIGHT_T_MAX_S = 0.150  # ignore frames beyond plausible in-net flight time
 GEOM_ALPHA_MIN_DEG = 0.0
 GEOM_ALPHA_MAX_DEG = 45.0
@@ -125,3 +125,61 @@ def fit_launch_angle_single_frame_geometric(
     if best_resid > GEOM_SINGLE_FRAME_MAX_BEARING_RESID_DEG:
         return None
     return float(best_alpha), float(best_resid)
+
+
+def fit_launch_angle_single_frame_range_timing(
+    flight_time_s: float,
+    bearing_deg: float,
+    range_ft: float,
+    ball_speed_mph: float,
+    distance_ft: float,
+    mount_deg: float,
+    ball_above_radar_ft: float = GEOM_BALL_ABOVE_RADAR_FT,
+    max_shift_s: float = 0.010,
+) -> tuple[float, float, float] | None:
+    """Estimate one-frame launch angle by aligning timing to F1B range.
+
+    ``bearing_deg`` tells us the target ray from the radar. ``range_ft`` places
+    the target along that ray. With the known tee position and ball speed, we can
+    infer when that target should have occurred and shift the frame timing before
+    reusing the normal single-frame geometry solver. Returns
+    ``(alpha_deg, bearing_residual_deg, timing_shift_s)`` when the inferred shift
+    stays inside ``max_shift_s``.
+    """
+    if (
+        flight_time_s is None
+        or range_ft is None
+        or flight_time_s <= 0.0
+        or range_ft <= 0.0
+        or ball_speed_mph <= 0.0
+    ):
+        return None
+
+    theta_rad = math.radians(bearing_deg + mount_deg)
+    target_x_ft = range_ft * math.cos(theta_rad)
+    target_y_ft = range_ft * math.sin(theta_rad)
+    dx_ft = target_x_ft - distance_ft
+    dy_ft = target_y_ft - ball_above_radar_ft
+    if dx_ft <= 0.0:
+        return None
+
+    launch_angle_deg = math.degrees(math.atan2(dy_ft, dx_ft))
+    if not (GEOM_ALPHA_MIN_DEG <= launch_angle_deg <= GEOM_ALPHA_MAX_DEG):
+        return None
+
+    expected_time_s = math.hypot(dx_ft, dy_ft) / (ball_speed_mph * MPH_TO_FTS)
+    shift_s = expected_time_s - flight_time_s
+    if abs(shift_s) > max_shift_s:
+        return None
+
+    fit = fit_launch_angle_single_frame_geometric(
+        (flight_time_s + shift_s, bearing_deg, 1.0),
+        ball_speed_mph,
+        distance_ft,
+        mount_deg,
+        ball_above_radar_ft,
+    )
+    if fit is None:
+        return None
+    fitted_angle_deg, residual_deg = fit
+    return fitted_angle_deg, residual_deg, shift_s

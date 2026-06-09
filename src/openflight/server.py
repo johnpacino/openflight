@@ -20,6 +20,7 @@ from flask import Flask, Response, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
+from .kld7.geometry import GEOM_BALL_ABOVE_RADAR_FT
 from .launch_monitor import ClubType, Shot
 from .ops243 import Direction, SpeedReading, set_show_raw_readings
 from .rolling_buffer.monitor import estimate_carry_with_spin, get_optimal_spin_for_ball_speed
@@ -743,6 +744,20 @@ def _kld7_radc_tuning_kwargs(args) -> dict:
 def _session_start_config() -> dict:
     """Return session-start config including experimental K-LD7 provenance."""
     config = radar_config.copy()
+    if kld7_vertical:
+        config["kld7_vertical"] = {
+            "vertical_estimator": getattr(kld7_vertical, "vertical_estimator", None),
+            "mount_tilt_deg": getattr(kld7_vertical, "mount_tilt_deg", None),
+            "ball_distance_ft": getattr(kld7_vertical, "ball_distance_ft", None),
+            "radar_height_in": (
+                -getattr(kld7_vertical, "ball_above_radar_ft", GEOM_BALL_ABOVE_RADAR_FT) * 12.0
+            ),
+            "net_distance_ft": getattr(
+                kld7_vertical,
+                "vertical_flight_window_net_distance_ft",
+                None,
+            ),
+        }
     config["kld7_experiments"] = {
         "trackman_calibration_enabled": False,
         "trackman_calibration_model": None,
@@ -933,6 +948,8 @@ def init_kld7(
     vertical_estimator="naive",
     mount_tilt_deg=18.0,
     ball_distance_ft=5.5,
+    ball_above_radar_ft=GEOM_BALL_ABOVE_RADAR_FT,
+    vertical_flight_window_net_distance_ft=10.0,
 ) -> bool:
     """Initialize a single K-LD7 angle radar tracker.
 
@@ -964,6 +981,8 @@ def init_kld7(
             vertical_estimator=vertical_estimator,
             mount_tilt_deg=mount_tilt_deg,
             ball_distance_ft=ball_distance_ft,
+            ball_above_radar_ft=ball_above_radar_ft,
+            vertical_flight_window_net_distance_ft=vertical_flight_window_net_distance_ft,
         )
         if tracker.connect():
             tracker.start()
@@ -2381,6 +2400,26 @@ def main():
         ),
     )
     parser.add_argument(
+        "--kld7-radar-height-inches",
+        dest="kld7_radar_height_inches",
+        type=float,
+        default=4.0,
+        help=(
+            "Vertical K-LD7 phase-center height above the ball/floor in inches, "
+            "for the geometry estimator (default: 4.0)"
+        ),
+    )
+    parser.add_argument(
+        "--kld7-net-distance-ft",
+        dest="kld7_net_distance_ft",
+        type=float,
+        default=10.0,
+        help=(
+            "Ball-to-net/screen distance in feet, used to reject late vertical "
+            "K-LD7 frames after the ball reaches the net (default: 10.0)"
+        ),
+    )
+    parser.add_argument(
         "--kld7-horizontal",
         action="store_true",
         help="Enable K-LD7 horizontal angle radar (club path)",
@@ -2570,6 +2609,8 @@ def main():
             vertical_estimator=args.kld7_vertical_estimator,
             mount_tilt_deg=args.kld7_mount_tilt,
             ball_distance_ft=args.kld7_ball_distance,
+            ball_above_radar_ft=-(args.kld7_radar_height_inches / 12.0),
+            vertical_flight_window_net_distance_ft=args.kld7_net_distance_ft,
             **kld7_radc_tuning_kwargs,
         ):
             offset_str = (

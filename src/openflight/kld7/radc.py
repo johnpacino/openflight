@@ -13,12 +13,15 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 from .geometry import (
+    GEOM_BALL_ABOVE_RADAR_FT,
     GEOM_FLIGHT_T_MAX_S,
     GEOM_PAIR_SINGLE_FRAME_FALLBACK_RMSE_DEG,
     GEOM_SINGLE_FRAME_CONFIDENCE_MAX,
     GEOM_SINGLE_FRAME_MAX_BEARING_RESID_DEG,
+    MPH_TO_FTS,
     fit_launch_angle_geometric,
     fit_launch_angle_single_frame_geometric,
+    fit_launch_angle_single_frame_range_timing,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,13 @@ VERTICAL_RULE_WEAK_ADJACENT_SNR_FLOOR = 3.0
 GEOM_WEAK_PAIR_MAX_RMSE_DEG = 2.0
 VERTICAL_LEGACY_NAIVE_CONFIDENCE_MAX = 0.35
 VERTICAL_EARLY_CONTEXT_CONFIDENCE_PENALTY = 0.08
+VERTICAL_FLIGHT_WINDOW_NET_DISTANCE_FT = 10.0
+VERTICAL_FLIGHT_WINDOW_MARGIN_S = 0.010
+VERTICAL_FLIGHT_WINDOW_MAX_LAUNCH_DEG = 30.0
+F1B_RANGE_BIN_ERROR_MAX = 25
+F1B_RANGE_SAME_BIN_SNR_MIN = 3.0
+F1B_SINGLE_FRAME_MAX_SHIFT_S = 0.010
+M_TO_FT = 3.28084
 
 
 def parse_radc_payload(payload: bytes) -> dict[str, np.ndarray]:
@@ -705,6 +715,72 @@ def _phase_coherence_for_peak(
     return float(np.clip(coherence, 0.0, 1.0))
 
 
+def _f1b_range_for_peak(
+    f1a_fft: np.ndarray,
+    f1b_fft: np.ndarray | None,
+    spectrum: np.ndarray,
+    peak_bin: int,
+    peak_val: float,
+    peak_band: tuple[int, int] | None,
+    range_m: float,
+) -> tuple[float | None, float | None, int | None]:
+    """Return modulo F1B range, same-bin SNR, and F1B peak-bin error."""
+    if f1b_fft is None:
+        return None, None, None
+
+    indices = _peak_neighborhood_indices(
+        spectrum,
+        peak_bin,
+        peak_val,
+        peak_band,
+        half_width=4,
+        floor_frac=None,
+    )
+    weights = np.maximum(spectrum[indices], 0.0)
+    if float(np.sum(weights)) <= 0:
+        weights = np.ones_like(weights)
+
+    cross = np.sum(weights * f1b_fft[indices] * np.conj(f1a_fft[indices]))
+    phase = float(np.angle(cross))
+    unambiguous_range_ft = max(float(range_m), 0.1) * M_TO_FT
+    range_ft = (phase % (2.0 * math.pi)) / (2.0 * math.pi) * unambiguous_range_ft
+
+    f1b_mag = np.abs(f1b_fft)
+    positive = f1b_mag[f1b_mag > 0]
+    noise = float(np.median(positive)) if positive.size else 0.0
+    same_bin_snr = float(f1b_mag[peak_bin] / noise) if noise > 0 else None
+
+    lo = max(0, peak_bin - F1B_RANGE_BIN_ERROR_MAX)
+    hi = min(len(f1b_mag), peak_bin + F1B_RANGE_BIN_ERROR_MAX + 1)
+    if hi <= lo:
+        return range_ft, same_bin_snr, None
+    local = f1b_mag[lo:hi]
+    if local.size == 0:
+        return range_ft, same_bin_snr, None
+    f1b_peak_bin = lo + int(np.argmax(local))
+    f1b_peak_bin_error = circular_bin_distance(int(f1b_peak_bin), int(peak_bin), len(f1b_mag))
+    return range_ft, same_bin_snr, f1b_peak_bin_error
+
+
+def _vertical_ball_flight_window_end_s(
+    ball_speed_mph: float | None,
+    net_distance_ft: float | None,
+    margin_s: float,
+    max_launch_deg: float,
+) -> float | None:
+    """Estimate the latest useful K-LD7 frame before the ball reaches the net/screen."""
+    if ball_speed_mph is None or ball_speed_mph <= 0.0:
+        return None
+    if net_distance_ft is None or net_distance_ft <= 0.0:
+        return None
+
+    launch_rad = math.radians(max(0.0, min(float(max_launch_deg), 60.0)))
+    downrange_speed_fts = ball_speed_mph * MPH_TO_FTS * max(math.cos(launch_rad), 0.25)
+    if downrange_speed_fts <= 0.0:
+        return None
+    return float(net_distance_ft) / downrange_speed_fts + max(float(margin_s), 0.0)
+
+
 @dataclass(frozen=True)
 class _VerticalFrameCandidate:
     frame_index: int
@@ -729,12 +805,15 @@ def _format_ms(value_s: float | None) -> str:
 
 def _rule_reasons_for_vertical_candidate(
     candidate: _VerticalFrameCandidate,
+    flight_window_end_s: float | None = None,
 ) -> tuple[bool, tuple[str, ...]]:
     reasons: list[str] = []
     if candidate.t_after_impact_s is None:
         reasons.append("missing_t_after")
     else:
-        if candidate.t_after_impact_s < VERTICAL_RULE_TIME_MIN_S:
+        if flight_window_end_s is not None and candidate.t_after_impact_s > flight_window_end_s:
+            reasons.append("after_ball_flight_window")
+        elif candidate.t_after_impact_s < VERTICAL_RULE_TIME_MIN_S:
             reasons.append("time_too_early")
         elif candidate.t_after_impact_s > VERTICAL_RULE_TIME_MAX_S:
             reasons.append("time_too_late")
@@ -748,9 +827,14 @@ def _rule_reasons_for_vertical_candidate(
     return (len(reasons) == 0, tuple(reasons))
 
 
-def _is_vertical_early_context_candidate(candidate: _VerticalFrameCandidate) -> bool:
+def _is_vertical_early_context_candidate(
+    candidate: _VerticalFrameCandidate,
+    flight_window_end_s: float | None = None,
+) -> bool:
     """Return true when a 5-20ms frame can support a primary-window anchor."""
     if candidate.t_after_impact_s is None:
+        return False
+    if flight_window_end_s is not None and candidate.t_after_impact_s > flight_window_end_s:
         return False
     if not (
         VERTICAL_RULE_EARLY_TIME_MIN_S <= candidate.t_after_impact_s < VERTICAL_RULE_TIME_MIN_S
@@ -765,6 +849,7 @@ def _is_vertical_early_context_candidate(candidate: _VerticalFrameCandidate) -> 
 
 def _select_vertical_candidates_with_rules(
     candidates: list[_VerticalFrameCandidate],
+    flight_window_end_s: float | None = None,
 ) -> list[_VerticalFrameCandidate]:
     """Apply the vertical launch rule stack and return selected candidates.
 
@@ -784,12 +869,12 @@ def _select_vertical_candidates_with_rules(
     primary_passed: list[_VerticalFrameCandidate] = []
     early_context: list[_VerticalFrameCandidate] = []
     for cand in candidates:
-        ok, reasons = _rule_reasons_for_vertical_candidate(cand)
+        ok, reasons = _rule_reasons_for_vertical_candidate(cand, flight_window_end_s)
         if ok:
             primary_passed.append(cand)
             status = "PASS"
             suffix = ""
-        elif _is_vertical_early_context_candidate(cand):
+        elif _is_vertical_early_context_candidate(cand, flight_window_end_s):
             early_context.append(cand)
             status = "EARLY"
             suffix = " (early_context)"
@@ -1297,6 +1382,11 @@ def extract_launch_angle(
     impact_timestamp: float | None = None,
     mount_deg: float | None = None,
     distance_ft: float | None = None,
+    ball_above_radar_ft: float = GEOM_BALL_ABOVE_RADAR_FT,
+    range_m: float = 5.0,
+    vertical_flight_window_net_distance_ft: float | None = VERTICAL_FLIGHT_WINDOW_NET_DISTANCE_FT,
+    vertical_flight_window_margin_s: float = VERTICAL_FLIGHT_WINDOW_MARGIN_S,
+    vertical_flight_window_max_launch_deg: float = VERTICAL_FLIGHT_WINDOW_MAX_LAUNCH_DEG,
 ) -> list[dict]:
     """Extract vertical launch angle per shot from RADC frames.
 
@@ -1374,6 +1464,16 @@ def extract_launch_angle(
         mount_deg: Radar mount tilt in degrees (geometry estimator only).
         distance_ft: Ball-to-radar-front distance in feet (geometry estimator
             only). A weak lever — a fixed install value is fine (±1 ft ≈ 0.2° MAE).
+        ball_above_radar_ft: Ball height relative to the vertical K-LD7 phase
+            center in feet. Negative means the ball starts below the radar.
+        range_m: K-LD7 configured range, used as the F1B modulo range period.
+        vertical_flight_window_net_distance_ft: Ball-to-net/screen distance used
+            to reject vertical frames after the ball should have reached the net.
+            Set to None or <=0 to disable the guard.
+        vertical_flight_window_margin_s: Extra time kept after the estimated
+            screen/net arrival.
+        vertical_flight_window_max_launch_deg: Conservative launch angle used to
+            estimate downrange speed for the flight-window guard.
 
     Returns a list of shot dicts, one per detected shot. Each contains
     launch_angle_deg, ball_speed_mph, confidence, and supporting data.
@@ -1404,6 +1504,17 @@ def extract_launch_angle(
         # Ball 100-120 mph aliases to -39 to -7 km/h at RSPI=3 (100 km/h max).
         ball_bands = default_ball_bin_ranges(fft_size, max_speed_kmh)
         ops_expected_bin = None
+
+    vertical_flight_window_end_s = (
+        _vertical_ball_flight_window_end_s(
+            ops243_ball_speed_mph,
+            vertical_flight_window_net_distance_ft,
+            vertical_flight_window_margin_s,
+            vertical_flight_window_max_launch_deg,
+        )
+        if orientation == "vertical"
+        else None
+    )
 
     min_velocity_bin = 150  # skip low-velocity body/clutter
     impact_indices = find_impact_frames(
@@ -1457,6 +1568,9 @@ def extract_launch_angle(
         peak_ops_anchor_weak: list[bool] = []
         peak_frame_indices: list[int] = []
         per_frame_t_after_impact: list[float | None] = []
+        peak_f1b_ranges_ft: list[float | None] = []
+        peak_f1b_same_bin_snrs: list[float | None] = []
+        peak_f1b_peak_bin_errors: list[int | None] = []
 
         for fi in sorted(frame_set):
             radc_raw = frames[fi].get("radc")
@@ -1599,6 +1713,15 @@ def extract_launch_angle(
                     centroid_floor_frac,
                 )[1]
             )
+            f1b_range_ft, f1b_same_bin_snr, f1b_peak_bin_error = _f1b_range_for_peak(
+                f1a_fft,
+                f1b_fft,
+                spec,
+                peak_bin,
+                peak_val,
+                peak_band,
+                range_m,
+            )
 
             vel = bin_to_velocity_kmh(peak_bin, fft_size, max_speed_kmh)
             frame_speed_mph = (200.0 + vel) / 1.609
@@ -1617,6 +1740,9 @@ def extract_launch_angle(
             peak_ops_anchor_weak.append(ops_anchor_weak)
             peak_frame_indices.append(fi)
             per_frame_t_after_impact.append(t_after_impact)
+            peak_f1b_ranges_ft.append(f1b_range_ft)
+            peak_f1b_same_bin_snrs.append(f1b_same_bin_snr)
+            peak_f1b_peak_bin_errors.append(f1b_peak_bin_error)
 
         if not peak_angles:
             continue
@@ -1627,6 +1753,18 @@ def extract_launch_angle(
         times_arr = np.array([np.nan if t is None else t for t in peak_times], dtype=float)
         weak_ops_anchor_arr = np.array(peak_ops_anchor_weak, dtype=bool)
         frame_indices_arr = np.array(peak_frame_indices, dtype=int)
+        f1b_ranges_arr = np.array(
+            [np.nan if value is None else value for value in peak_f1b_ranges_ft],
+            dtype=float,
+        )
+        f1b_same_bin_snrs_arr = np.array(
+            [np.nan if value is None else value for value in peak_f1b_same_bin_snrs],
+            dtype=float,
+        )
+        f1b_peak_bin_errors_arr = np.array(
+            [np.nan if value is None else value for value in peak_f1b_peak_bin_errors],
+            dtype=float,
+        )
         t_after_arr = np.array(
             [np.nan if t is None else t for t in per_frame_t_after_impact],
             dtype=float,
@@ -1667,7 +1805,10 @@ def extract_launch_angle(
                         ops_anchor_weak=bool(weak_ops_anchor_arr[i]),
                     )
                 )
-            selected = _select_vertical_candidates_with_rules(candidates)
+            selected = _select_vertical_candidates_with_rules(
+                candidates,
+                flight_window_end_s=vertical_flight_window_end_s,
+            )
             if selected:
                 selected_index = {c.frame_index for c in selected}
                 keep_mask = np.array(
@@ -1680,6 +1821,9 @@ def extract_launch_angle(
                 clean_times = times_arr[keep_mask]
                 clean_weak_ops_anchor = weak_ops_anchor_arr[keep_mask]
                 clean_frame_indices = frame_indices_arr[keep_mask]
+                clean_f1b_ranges = f1b_ranges_arr[keep_mask]
+                clean_f1b_same_bin_snrs = f1b_same_bin_snrs_arr[keep_mask]
+                clean_f1b_peak_bin_errors = f1b_peak_bin_errors_arr[keep_mask]
                 clean_t_after = t_after_arr[keep_mask]
                 clean_bin_errors = bin_errors_arr[keep_mask]
                 used_rule_stack = True
@@ -1697,6 +1841,34 @@ def extract_launch_angle(
                 )
 
         if not used_rule_stack:
+            if orientation == "vertical" and vertical_flight_window_end_s is not None:
+                late_mask = np.logical_and(
+                    ~np.isnan(t_after_arr),
+                    t_after_arr > vertical_flight_window_end_s,
+                )
+                if late_mask.any():
+                    logger.info(
+                        "[RADC-RULES] Rejecting %d frame(s) after ball flight window "
+                        "(end=%.1fms): frames=%s",
+                        int(late_mask.sum()),
+                        vertical_flight_window_end_s * 1000.0,
+                        [int(frame_indices_arr[i]) for i in np.flatnonzero(late_mask)],
+                    )
+                    keep_window_mask = ~late_mask
+                    angs = angs[keep_window_mask]
+                    snrs = snrs[keep_window_mask]
+                    bins_arr = bins_arr[keep_window_mask]
+                    times_arr = times_arr[keep_window_mask]
+                    weak_ops_anchor_arr = weak_ops_anchor_arr[keep_window_mask]
+                    frame_indices_arr = frame_indices_arr[keep_window_mask]
+                    f1b_ranges_arr = f1b_ranges_arr[keep_window_mask]
+                    f1b_same_bin_snrs_arr = f1b_same_bin_snrs_arr[keep_window_mask]
+                    f1b_peak_bin_errors_arr = f1b_peak_bin_errors_arr[keep_window_mask]
+                    t_after_arr = t_after_arr[keep_window_mask]
+                    bin_errors_arr = bin_errors_arr[keep_window_mask]
+                    if len(angs) == 0:
+                        continue
+
             # Weak OPS-near frames are admissible only as adjacent context
             # around a strong anchor. Do not let them create a legacy result
             # after the rule stack rejected the shot.
@@ -1713,6 +1885,9 @@ def extract_launch_angle(
                 times_arr = times_arr[strong_mask]
                 weak_ops_anchor_arr = weak_ops_anchor_arr[strong_mask]
                 frame_indices_arr = frame_indices_arr[strong_mask]
+                f1b_ranges_arr = f1b_ranges_arr[strong_mask]
+                f1b_same_bin_snrs_arr = f1b_same_bin_snrs_arr[strong_mask]
+                f1b_peak_bin_errors_arr = f1b_peak_bin_errors_arr[strong_mask]
                 t_after_arr = t_after_arr[strong_mask]
                 bin_errors_arr = bin_errors_arr[strong_mask]
 
@@ -1728,6 +1903,9 @@ def extract_launch_angle(
                 clean_times = times_arr
                 clean_weak_ops_anchor = weak_ops_anchor_arr
                 clean_frame_indices = frame_indices_arr
+                clean_f1b_ranges = f1b_ranges_arr
+                clean_f1b_same_bin_snrs = f1b_same_bin_snrs_arr
+                clean_f1b_peak_bin_errors = f1b_peak_bin_errors_arr
                 clean_t_after = t_after_arr
                 clean_bin_errors = bin_errors_arr
             else:
@@ -1756,6 +1934,9 @@ def extract_launch_angle(
                 clean_times = times_arr[clean_mask]
                 clean_weak_ops_anchor = weak_ops_anchor_arr[clean_mask]
                 clean_frame_indices = frame_indices_arr[clean_mask]
+                clean_f1b_ranges = f1b_ranges_arr[clean_mask]
+                clean_f1b_same_bin_snrs = f1b_same_bin_snrs_arr[clean_mask]
+                clean_f1b_peak_bin_errors = f1b_peak_bin_errors_arr[clean_mask]
                 clean_t_after = t_after_arr[clean_mask]
                 clean_bin_errors = bin_errors_arr[clean_mask]
 
@@ -1806,6 +1987,8 @@ def extract_launch_angle(
         estimator_used = "naive"
         geom_fit_rmse: float | None = None
         geom_single_frame_resid: float | None = None
+        f1b_timing_shift_s: float | None = None
+        selection_path_override: str | None = None
 
         # Geometry estimator (vertical only): invert the trajectory geometry
         # from per-frame (flight_time, bearing) rather than treating the bearing
@@ -1852,7 +2035,11 @@ def extract_launch_angle(
                 else None
             )
             geom = fit_launch_angle_geometric(
-                per_frame_geom, ops243_ball_speed_mph, distance_ft, mount_deg
+                per_frame_geom,
+                ops243_ball_speed_mph,
+                distance_ft,
+                mount_deg,
+                ball_above_radar_ft,
             )
             try_single_frame_geom = geom is None
             if geom is not None:
@@ -1884,23 +2071,52 @@ def extract_launch_angle(
                     estimator_used = "geometry"
 
             if estimator_used != "geometry" and try_single_frame_geom:
-                single_geom = (
-                    fit_launch_angle_single_frame_geometric(
-                        (
+                single_geom = None
+                single_frame_selection_path = "geometry_single_frame"
+                if single_frame_fallback_idx is not None:
+                    f1b_range = float(clean_f1b_ranges[single_frame_fallback_idx])
+                    f1b_same_bin_snr = float(clean_f1b_same_bin_snrs[single_frame_fallback_idx])
+                    f1b_peak_bin_error = float(
+                        clean_f1b_peak_bin_errors[single_frame_fallback_idx]
+                    )
+                    f1b_range_trustworthy = (
+                        not math.isnan(f1b_range)
+                        and not math.isnan(f1b_same_bin_snr)
+                        and not math.isnan(f1b_peak_bin_error)
+                        and f1b_same_bin_snr >= F1B_RANGE_SAME_BIN_SNR_MIN
+                        and f1b_peak_bin_error <= F1B_RANGE_BIN_ERROR_MAX
+                    )
+                    if f1b_range_trustworthy:
+                        single_geom = fit_launch_angle_single_frame_range_timing(
                             float(clean_times[single_frame_fallback_idx]),
                             float(clean_angs[single_frame_fallback_idx] + angle_offset_deg),
-                            float(w[single_frame_fallback_idx]),
-                        ),
-                        ops243_ball_speed_mph,
-                        distance_ft,
-                        mount_deg,
-                    )
-                    if single_frame_fallback_idx is not None
-                    else None
-                )
+                            f1b_range,
+                            ops243_ball_speed_mph,
+                            distance_ft,
+                            mount_deg,
+                            ball_above_radar_ft,
+                            F1B_SINGLE_FRAME_MAX_SHIFT_S,
+                        )
+                        if single_geom is not None:
+                            f1b_timing_shift_s = float(single_geom[2])
+                            single_frame_selection_path = "geometry_single_frame_f1b_timing"
+                    if single_geom is None:
+                        old_single_geom = fit_launch_angle_single_frame_geometric(
+                            (
+                                float(clean_times[single_frame_fallback_idx]),
+                                float(clean_angs[single_frame_fallback_idx] + angle_offset_deg),
+                                float(w[single_frame_fallback_idx]),
+                            ),
+                            ops243_ball_speed_mph,
+                            distance_ft,
+                            mount_deg,
+                            ball_above_radar_ft,
+                        )
+                        if old_single_geom is not None:
+                            single_geom = (old_single_geom[0], old_single_geom[1], 0.0)
                 if single_geom is not None:
                     selected_single = np.array([single_frame_fallback_idx], dtype=int)
-                    corrected_angle, geom_single_frame_resid = single_geom
+                    corrected_angle, geom_single_frame_resid, _ = single_geom
                     estimator_used = "geometry_single_frame"
                     clean_angs = clean_angs[selected_single]
                     clean_snrs = clean_snrs[selected_single]
@@ -1908,6 +2124,9 @@ def extract_launch_angle(
                     clean_times = clean_times[selected_single]
                     clean_weak_ops_anchor = clean_weak_ops_anchor[selected_single]
                     clean_frame_indices = clean_frame_indices[selected_single]
+                    clean_f1b_ranges = clean_f1b_ranges[selected_single]
+                    clean_f1b_same_bin_snrs = clean_f1b_same_bin_snrs[selected_single]
+                    clean_f1b_peak_bin_errors = clean_f1b_peak_bin_errors[selected_single]
                     clean_t_after = clean_t_after[selected_single]
                     clean_bin_errors = clean_bin_errors[selected_single]
                     w = w[selected_single]
@@ -1922,6 +2141,16 @@ def extract_launch_angle(
                         float(clean_times[0]) * 1000.0,
                         float(clean_angs[0] + angle_offset_deg),
                     )
+                    if f1b_timing_shift_s is not None:
+                        logger.info(
+                            "[RADC] F1B single-frame timing alignment: shift=%+.1fms "
+                            "range=%.2fft f1b_snr=%.1f f1b_bin_err=%d",
+                            f1b_timing_shift_s * 1000.0,
+                            float(clean_f1b_ranges[0]),
+                            float(clean_f1b_same_bin_snrs[0]),
+                            int(round(float(clean_f1b_peak_bin_errors[0]))),
+                        )
+                    selection_path_override = single_frame_selection_path
                 else:
                     logger.info(
                         "[RADC] Geometry single-frame fallback unavailable "
@@ -1973,6 +2202,8 @@ def extract_launch_angle(
                 selection_path = (
                     "geometry_early_assisted" if selected_has_early_context else "geometry_primary"
                 )
+            elif selection_path_override is not None:
+                selection_path = selection_path_override
             elif estimator_used == "geometry_single_frame":
                 selection_path = "geometry_single_frame"
             elif used_rule_stack:
@@ -2032,6 +2263,18 @@ def extract_launch_angle(
             None if math.isnan(float(bin_error)) else int(round(float(bin_error)))
             for bin_error in clean_bin_errors
         ]
+        selected_f1b_ranges_ft = [
+            None if math.isnan(float(value)) else round(float(value), 2)
+            for value in clean_f1b_ranges
+        ]
+        selected_f1b_same_bin_snrs = [
+            None if math.isnan(float(value)) else round(float(value), 1)
+            for value in clean_f1b_same_bin_snrs
+        ]
+        selected_f1b_peak_bin_errors = [
+            None if math.isnan(float(value)) else int(round(float(value)))
+            for value in clean_f1b_peak_bin_errors
+        ]
 
         results.append(
             {
@@ -2053,6 +2296,19 @@ def extract_launch_angle(
                 "selected_frame_indices": [int(frame_idx) for frame_idx in clean_frame_indices],
                 "selected_t_ms": selected_t_ms,
                 "selected_bin_errors": selected_bin_errors,
+                "selected_f1b_ranges_ft": selected_f1b_ranges_ft,
+                "selected_f1b_same_bin_snrs": selected_f1b_same_bin_snrs,
+                "selected_f1b_peak_bin_errors": selected_f1b_peak_bin_errors,
+                "f1b_timing_shift_ms": (
+                    round(f1b_timing_shift_s * 1000.0, 1)
+                    if f1b_timing_shift_s is not None
+                    else None
+                ),
+                "flight_window_end_ms": (
+                    round(vertical_flight_window_end_s * 1000.0, 1)
+                    if vertical_flight_window_end_s is not None
+                    else None
+                ),
                 "weak_adjacent_frame_used": bool(np.any(clean_weak_ops_anchor)),
                 "ball_speed_mph": round(avg_speed_mph, 1),
                 "confidence": confidence,
