@@ -337,6 +337,84 @@ effective spacing `s`. Do not change the production 2.5° until then —
 the live frames path was calibrated against it and may have a different
 effective value.
 
+## Finding 8: First true holdout FAILED — the model does not yet generalize
+
+Blind test on Coleman's 2026-06-05 outdoor TrackMan session (different
+rig, operator, environment, timing-bug era; 64 shots LW→driver; raw RADC
+present). Predictions were locked before opening the truth file, with
+pre-registered exclusions (DC blind zone, grid-floor pins). Result on 21
+paired blind predictions:
+
+| | MAE | bias |
+|---|---|---|
+| our blind stack (3.5° + drift + τ gate) | **7.63°** | **+5.05°** |
+| live output, same shots — but NOTE below | 3.53° | +0.11° |
+
+**Note:** the live "result" is not a radar measurement. On this session
+the live pipeline emitted radar launch angle on only **2 of 64 shots**
+(the rest fell back to the club-physics estimator, confidence 0.35) — so
+the timing bug did break live, and the 3.53° belongs to the *club-lookup
+fallback*. That reframes the bar: a per-club prior achieves ~3.5° MAE on
+a player whose club is known, so any radar measurement worse than that
+is negative value. Our blind 7.63° fails that bar on this session; on
+our own sessions (2.6°) it clears it.
+
+The offset sweep against their truth shows **no clean offset signature**:
+MAE is nearly flat (6.2–8.1°) across 5° of offset, and per-club bias
+flips sign (LW −6…−8°, 8i +3…+5°) — a global constant cannot rescue it.
+Their zero-bias crossing sits near +1.5–2° (vs our 3.5°), so offset
+transfer between rigs is also falsified, but offset is not the dominant
+failure here.
+
+The failure signature is a **club-ordered bias fan**: LW ≈ +1°,
+PW ≈ +6°, 9i ≈ +8°, 8i ≈ +10° (at our calibration) — monotonic in
+launch angle. Systematic elimination of every geometric/timing cause:
+
+1. **OPS clock drift: confirmed and already handled.** τ_range climbs
+   linearly +25→+122 ms over shots 1–28 (~+3.5 ms/shot) — the range
+   clock measured the drift directly. But widening the candidate frame
+   window to ±250 ms (so drifted flight frames are recaptured) does NOT
+   improve MAE → the drift was not what broke the predictions.
+2. **Boresight offset: eliminated.** MAE flat (6.2–8.1°) across a 5°
+   offset sweep; no value collapses the club fan.
+3. **F1B chain-phase range bias: eliminated.** A τ-bias sweep (0…−45 ms
+   ≈ 0…−7 ft) never collapses the fan (spread ~10° throughout) and only
+   degrades MAE.
+4. **Radar height: eliminated.** Sweeping ball-below-radar from 1 to
+   7 inches moves overall bias but the fan persists (spread 8.7–11°).
+
+Conclusion: the residual lives in the **demodulated elevations
+themselves** — club-dependently biased on this rig/session, with the
+prime suspect being demod degradation at low SNR (their 9.6 dB median
+vs our 20+; the timing-free position estimator collapsed to 15.9° too,
+which no timing/geometry error can explain). Raw-spectrum decomposition
+of their SNR deficit: ball peak −2.3 dB (mostly their 5.5 ft tee
+distance, range⁴ law) plus a **constant +3.3 dB noise-floor elevation**
+(present in quiet pre-swing frames → EMI/supply/external 24 GHz
+interference, not motion). Neither rig has a radome.
+
+**Second holdout PASSED (2026-05-30, our rig, indoor net, drift era)**:
+32× 7-iron, blind predictions locked before truth, scored against the
+native TrackMan export: **MAE 3.16°, median 2.67° (n=17 paired)** vs
+live's 3.73° on the same shots — development-grade accuracy on data
+twelve days older than this work, processed with `--frame-window-ms
+250` and the τ_range self-clock absorbing the drift era's timestamps.
+Two outliers (+8.9°, +11.8°) carry the MAE; without them ~2.2°.
+
+Attribution settled: **the timing drift is recoverable by the range
+clock** (works on both rigs — it even measured Coleman's drift at
++3.5 ms/shot), and the Coleman failure is **rig/environment**
+(noise floor + geometry + possibly aim), not the bug and not the model's
+core physics.
+
+Sober summary: the 2.6° stack was developed and validated entirely
+within one day's data from one rig in one bay, and its first contact
+with foreign data degraded ~3×. The known unknowns (rig calibration,
+SNR regime, timestamp health, club mix) each cost real degrees. This is
+exactly what the held-out validation requirement in the error-budget
+section was for — it fired. Productionizing should wait until the
+generalization gap is understood and closed.
+
 ## Error budget: the path toward 1°
 
 Distribution of the 98 iron/wedge shots (7 clubs, 2026-06-08, two-ray
@@ -357,17 +435,28 @@ The last two rows are the strategic insight: **the tail and the core are
 separate problems**. Eliminating outliers entirely still leaves a ~2°
 body — so outlier work is stage one of two, not the whole path.
 
-### Stage 1 — tail suppression (≈2.9° → ≈2.3° MAE, cheap)
+### Stage 1 — tail suppression: TESTED, mostly falsified
 
-The worst shots have detectable mechanisms: wrong-component locks,
-sparse fits (2–3 frames), bad range tracks. All software:
+Predicted ≈2.9° → ≈2.3° from gating. Measured on the 98-shot set:
 
-1. **Estimator cross-check as a hard gate** — position fit vs curve fit
-   disagreeing > 2–3° marks the shot; emit the estimated-LA fallback.
-   (Already measured: this flag catches exactly the bad shots.)
-2. **τ_range plausibility gate** (|τ| > 30 ms → reject range track).
-3. **Per-shot identifiability score** (frames-in-fit × demod residuals)
-   below threshold → refuse rather than emit.
+| gate | result | finding |
+|---|---|---|
+| τ_range plausibility (−10..+35 ms) | **keep** | 2.87° → 2.83°, refused 2 genuinely bad shots |
+| pos/curve cross-check | no effect | position estimator is structurally single-frame at this geometry (only ~1 frame/shot is demod-valid AND inside the range corridor); its noise swamps the signal — spearman(|disagree|, |err|) = −0.04 for single-frame fits |
+| estimator fusion | no effect | nothing multi-frame to fuse with (3/113 shots) |
+| frames-in-fit count | no effect | spearman +0.03; sparse fits are not the bad ones |
+
+Tried and failed to rescue the cross-check: full-frame F1B range at the
+demod's bin (4× integration) did not increase multi-frame position
+yield — the constraint is the overlap of the demod-valid window and the
+range corridor, not range SNR.
+
+**Conclusion: the tail outliers are not identifiable from any cheap
+per-shot quality signal** (SNR, ripple, coherence, frame count,
+second-estimator disagreement all fail). Their demod elevations are
+*coherently* wrong — low residual, wrong answer — which is the signature
+of model mismatch, not noise. The tail must be fixed at the measurement
+level (intra-frame drift term, below), not filtered.
 
 ### Stage 2 — core scatter (the ~2° median), ranked by expected value
 
@@ -376,15 +465,38 @@ sparse fits (2–3 frames), bad range tracks. All software:
    information): ~0.3–0.5°.
 2. **Multi-angle reflector recalibration** (offset + effective spacing
    jointly, Finding 7): removes the club-ordered residual; ~0.2–0.4°.
-3. **Intra-frame drift term in the demodulator**: each frame then yields
-   elevation *and* elevation-rate, roughly doubling information per
-   shot: ~0.3–0.5°.
+3. **Intra-frame drift term in the demodulator — TESTED, two designs**:
+   - *Free-fitted* drift rates (3 extra parameters): overfits badly —
+     coverage 98→35, MAE 2.87°→4.90°. Falsified.
+   - *Physics-fixed* drift rates (computed per frame from measured range
+     + OPS speed + nominal trajectory; zero added degrees of freedom,
+     `--drift` flag): **MAE 2.87°→2.64°, p90 6.21°→5.52°, bias →+0.04°,
+     coverage 98→100**. Gains largest for high-launch clubs (PW
+     2.63°→2.16°, 6i 1.90°→1.52°), as the sweep-rate physics predicts.
+     This is the change that finally moved the tail after all the
+     gating approaches failed.
 4. **Per-shot ball-distance solve**: fits assume the ball at exactly
    5.00 ft; real placement varies. GPIO impact timestamp + F1B
    range-line intercept over-determine actual placement per shot:
    ~0.2–0.4°.
+5. **Tee-anchor session self-calibration — TESTED, falsified at this
+   geometry**: jointly fitting a shared session elevation offset + per-
+   shot LA is unidentifiable — the offset runs to the grid edge
+   (+3.7…+4.0° on 5 of 7 same-mount sessions) and bias blows up to
+   +5.5°. The offset is only separable from LA via early-flight frames
+   (t < ~15 ms, where all trajectories converge to the tee elevation),
+   and those are exactly the merged-ray blind period where the
+   demodulator has no valid output. The idea could be rescued at a
+   higher mount (shorter blind period) or with an early-flight
+   observation that doesn't need demodulation — note that at t→0 the
+   ball and its image *coincide*, so the raw blended elevation is
+   asymptotically unbiased at impact; untested. Until then, per-session
+   offset verification needs the reflector or TrackMan.
 
-Stacked estimate: **MAE ≈ 1.5°, median ≈ 1.2°**.
+Stacked estimate: **MAE ≈ 1.5°, median ≈ 1.2°** — but with Stage 1
+mostly falsified, the burden falls on the Stage-2 items, with the
+intra-frame drift term promoted to first priority (it attacks the same
+coherently-wrong fits the gates failed to catch).
 
 ### Why "MAE < 1° vs TrackMan" is the wrong target
 
