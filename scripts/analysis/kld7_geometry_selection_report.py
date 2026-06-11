@@ -20,6 +20,8 @@ from typing import Any
 import numpy as np
 
 from openflight.kld7.geometry import (
+    GEOM_ALPHA_MAX_DEG,
+    GEOM_ALPHA_MIN_DEG,
     GEOM_BALL_ABOVE_RADAR_FT,
     GEOM_FLIGHT_T_MAX_S,
     GEOM_PAIR_SINGLE_FRAME_FALLBACK_RMSE_DEG,
@@ -62,7 +64,11 @@ class ReportConfig:
     centroid_floor_frac: float = 0.5
     report_time_min_ms: float = -80.0
     report_time_max_ms: float = 170.0
+    net_distance_ft: float = 10.0
+    flight_time_margin_ms: float = 10.0
+    flight_window_max_launch_deg: float = 30.0
     report_bin_error_max: int = 220
+    f1b_anchor_tolerance_bins: int = 25
     ops_bin_outlier_tol: int = 25
     ops_anchored_peak_min_snr: float = OPS_ANCHORED_PEAK_MIN_SNR
     anchor_time_min_ms: float = 20.0
@@ -87,10 +93,123 @@ class ReportConfig:
     range_unwrap_bin_error_max: int = 80
     range_unwrap_snr_min: float = 3.0
     range_unwrap_backtrack_ft: float = 0.75
+    range_unwrap_max_overshoot_ft: float = 2.0
+    f1b_range_sanity_tolerance_ft: float = 4.0
+    f1b_range_sanity_bin_error_max: int = 25
+    f1b_range_sanity_same_bin_snr_min: float = 3.0
+    f1b_single_frame_align_max_shift_ms: float = 10.0
 
     @property
     def unambiguous_range_ft(self) -> float:
         return self.kld7_range_m * 3.28084
+
+
+def _ball_flight_window_end_ms(ball_speed_mph: float | None, config: ReportConfig) -> float | None:
+    if ball_speed_mph is None or ball_speed_mph <= 0.0 or config.net_distance_ft <= 0.0:
+        return None
+    launch_rad = math.radians(max(0.0, min(config.flight_window_max_launch_deg, 60.0)))
+    downrange_speed_fts = ball_speed_mph * MPH_TO_FTS * max(math.cos(launch_rad), 0.25)
+    return config.net_distance_ft / downrange_speed_fts * 1000.0 + config.flight_time_margin_ms
+
+
+def _apply_ball_flight_window_guard(
+    frames: list["FrameReport"],
+    ball_speed_mph: float | None,
+    config: ReportConfig,
+) -> list[str]:
+    flight_window_end_ms = _ball_flight_window_end_ms(ball_speed_mph, config)
+    if flight_window_end_ms is None:
+        return []
+
+    for frame in frames:
+        if frame.selectable and frame.t_ms > flight_window_end_ms:
+            frame.peak_selectable = False
+            frame.status = "rejected"
+            frame.reasons = list(dict.fromkeys(frame.reasons + ["after_ball_flight_window"]))
+    return [f"flight_window_end_ms={flight_window_end_ms:.1f}"]
+
+
+def _predicted_range_envelope_ft(
+    flight_time_s: float,
+    ball_speed_mph: float,
+    config: ReportConfig,
+) -> tuple[float, float]:
+    ranges = [
+        _predicted_range_ft(alpha / 10.0, flight_time_s, ball_speed_mph, config)
+        for alpha in range(
+            int(GEOM_ALPHA_MIN_DEG * 10),
+            int(GEOM_ALPHA_MAX_DEG * 10) + 1,
+        )
+    ]
+    return min(ranges), max(ranges)
+
+
+def _f1b_range_sanity_reasons(
+    frame: "FrameReport",
+    ball_speed_mph: float,
+    config: ReportConfig,
+) -> list[str]:
+    range_ft = _range_for_fit(frame)
+    if range_ft is None:
+        return []
+    if frame.t_ms <= 0.0:
+        return []
+    if (
+        frame.f1b_peak_bin_error is None
+        or frame.f1b_peak_bin_error > config.f1b_range_sanity_bin_error_max
+    ):
+        return []
+    if (
+        frame.f1b_same_bin_snr is None
+        or frame.f1b_same_bin_snr < config.f1b_range_sanity_same_bin_snr_min
+    ):
+        return []
+
+    t_s = frame.t_ms / 1000.0
+    range_min, range_max = _predicted_range_envelope_ft(t_s, ball_speed_mph, config)
+    lower = range_min - config.f1b_range_sanity_tolerance_ft
+    upper = range_max + config.f1b_range_sanity_tolerance_ft
+    if range_ft < lower:
+        return [f"f1b_range_too_short({range_ft:.1f}ft<{lower:.1f}ft)"]
+    if range_ft > upper:
+        return [f"f1b_range_too_long({range_ft:.1f}ft>{upper:.1f}ft)"]
+    return []
+
+
+def apply_f1b_range_sanity_to_selected_frames(
+    selected: list["FrameReport"],
+    ball_speed_mph: float,
+    config: ReportConfig,
+    notes: list[str],
+) -> list["FrameReport"]:
+    if not selected:
+        return selected
+
+    kept: list[FrameReport] = []
+    rejected: list[FrameReport] = []
+    for frame in selected:
+        reasons = _f1b_range_sanity_reasons(frame, ball_speed_mph, config)
+        if reasons:
+            frame.selection_role = ""
+            frame.status = "rejected"
+            frame.reasons = list(dict.fromkeys(frame.reasons + reasons))
+            rejected.append(frame)
+        else:
+            kept.append(frame)
+
+    if not rejected:
+        return selected
+
+    notes.append(
+        "f1b_range_sanity_rejected_frames("
+        + ",".join(str(frame.frame_index) for frame in rejected)
+        + ")"
+    )
+    for index, frame in enumerate(sorted(kept, key=lambda candidate: candidate.t_ms)):
+        frame.selection_role = "anchor" if index == 0 else "neighbor"
+        frame.status = "selected"
+        frame.reasons = []
+    return sorted(kept, key=lambda candidate: candidate.t_ms)
 
 
 @dataclass
@@ -570,8 +689,8 @@ def extract_frame_report(
     f1b_peak_bin, _, _ = _find_peak_near_expected_bin(
         f1b_mag,
         bands,
-        expected_bin,
-        config.report_bin_error_max,
+        peak_bin,
+        config.f1b_anchor_tolerance_bins,
         config.fft_size,
     )
     f1b_positive = f1b_mag[f1b_mag > 0]
@@ -782,6 +901,55 @@ def select_candidate_frames(
     return selected, notes
 
 
+def apply_logged_live_selection(
+    frames: list[FrameReport],
+    logged_frame_indices: list[int],
+    _logged_t_ms: list[float] | None = None,
+) -> tuple[list[FrameReport], list[str]]:
+    """Mark the frames selected by the live session log.
+
+    Newer session logs include ``ball_angle.radc_selection`` diagnostics from
+    the live K-LD7 path. When present, ``frames_live.csv`` should reflect those
+    exact live-selected frames instead of re-running a best-effort offline
+    selector that can drift as thresholds and report windows evolve.
+
+    Keep the frame row timestamp from the raw frame itself. The logged
+    ``selected_t_ms`` value is preserved separately in ``shots_live.csv`` as
+    provenance, but it may use a different impact-time basis than this report's
+    frame rows.
+    """
+    if not logged_frame_indices:
+        return [], []
+
+    by_index = {frame.frame_index: frame for frame in frames}
+    selected: list[FrameReport] = [
+        by_index[index] for index in logged_frame_indices if index in by_index
+    ]
+    if not selected:
+        return [], ["logged_live_selection_missing_frames"]
+
+    selected_ids = {id(frame) for frame in selected}
+    for selected_index, frame in enumerate(selected):
+        frame.selection_role = "anchor" if selected_index == 0 else "neighbor"
+        frame.status = "selected"
+        frame.reasons = []
+
+    for frame in frames:
+        if id(frame) in selected_ids or not frame.selectable:
+            continue
+        frame.selection_role = ""
+        frame.status = "rejected"
+        frame.reasons = list(
+            dict.fromkeys(frame.reasons + ["not_selected_by_logged_live_selection"])
+        )
+
+    notes = ["logged_live_selection"]
+    if len(selected) != len(logged_frame_indices):
+        missing = [index for index in logged_frame_indices if index not in by_index]
+        notes.append(f"logged_live_selection_missing_frames({','.join(map(str, missing))})")
+    return selected, notes
+
+
 def _broad_high_snr_frame(
     frame: FrameReport,
     ball_speed_mph: float,
@@ -848,19 +1016,27 @@ def broad_high_snr_frames(
 
 def select_high_snr_candidate_frames(
     frames: list[FrameReport],
+    ball_speed_mph: float,
     config: ReportConfig,
 ) -> tuple[list[FrameReport], list[str]]:
     """Select broad/high-SNR frames without using OPS bin error as the primary gate."""
     notes: list[str] = []
+    flight_window_end_ms = _ball_flight_window_end_ms(ball_speed_mph, config)
+    if flight_window_end_ms is not None:
+        notes.append(f"flight_window_end_ms={flight_window_end_ms:.1f}")
     for frame in frames:
         frame.selection_role = ""
         if frame.selectable:
             frame.status = "candidate"
+            if flight_window_end_ms is not None and frame.t_ms > flight_window_end_ms:
+                frame.status = "rejected"
+                frame.reasons = list(dict.fromkeys(frame.reasons + ["after_ball_flight_window"]))
 
     candidates = [
         frame
         for frame in frames
         if frame.selectable
+        and "after_ball_flight_window" not in frame.reasons
         and config.neighbor_time_min_ms <= frame.t_ms <= config.neighbor_time_max_ms
         and frame.snr is not None
         and frame.snr >= config.neighbor_snr_min
@@ -877,9 +1053,10 @@ def select_high_snr_candidate_frames(
         for frame in frames:
             if frame.selectable:
                 frame.status = "rejected"
-                frame.reasons = list(
-                    dict.fromkeys(frame.reasons + ["outside_high_snr_anchor_selection"])
-                )
+                if "after_ball_flight_window" not in frame.reasons:
+                    frame.reasons = list(
+                        dict.fromkeys(frame.reasons + ["outside_high_snr_anchor_selection"])
+                    )
         return [], notes
 
     anchor = sorted(
@@ -944,7 +1121,9 @@ def _range_for_fit(frame: FrameReport) -> float | None:
     return frame.f1b_range_ft
 
 
-def unwrap_f1b_ranges(frames: list[FrameReport], config: ReportConfig) -> None:
+def unwrap_f1b_ranges(
+    frames: list[FrameReport], ball_speed_mph: float, config: ReportConfig
+) -> None:
     """Add a modulo-unwrapped F1B range estimate to eligible frame rows.
 
     RADC FSK range is phase-derived, so it is expected to wrap at the
@@ -966,14 +1145,32 @@ def unwrap_f1b_ranges(frames: list[FrameReport], config: ReportConfig) -> None:
         ):
             continue
 
+        # Physical sanity cap on range: ball can't be further from the radar
+        # than (tee distance) + (ball speed × frame time) + small buffer. Any
+        # candidate unwrap that puts the ball past this cap is wrong — refuse
+        # to unwrap that step. Prevents one bad unwrap from cascading via
+        # the monotonic-or-greater rule below.
+        t_s = max(frame.t_ms / 1000.0, 0.0)
+        max_range_ft = (
+            config.ball_distance_ft
+            + ball_speed_mph * MPH_TO_FTS * t_s
+            + config.range_unwrap_max_overshoot_ft
+        )
+
         unwrapped = frame.f1b_range_ft
         wraps = 0
         if frame.t_ms >= config.anchor_time_min_ms:
-            while unwrapped < config.ball_distance_ft - config.range_unwrap_backtrack_ft:
+            while (
+                unwrapped < config.ball_distance_ft - config.range_unwrap_backtrack_ft
+                and unwrapped + period <= max_range_ft
+            ):
                 unwrapped += period
                 wraps += 1
         if previous_unwrapped is not None:
-            while unwrapped < previous_unwrapped - config.range_unwrap_backtrack_ft:
+            while (
+                unwrapped < previous_unwrapped - config.range_unwrap_backtrack_ft
+                and unwrapped + period <= max_range_ft
+            ):
                 unwrapped += period
                 wraps += 1
         frame.f1b_range_unwrapped_ft = unwrapped
@@ -1045,6 +1242,95 @@ def fit_selected_frames(
     )
 
 
+def _single_frame_f1b_timing_fit(
+    selected: list[FrameReport],
+    ball_speed_mph: float,
+    config: ReportConfig,
+) -> FitResult | None:
+    if len(selected) != 1:
+        return None
+    frame = selected[0]
+    range_ft = _range_for_fit(frame)
+    if range_ft is None or frame.bearing_deg is None:
+        return None
+    if frame.f1b_peak_bin_error is None or frame.f1b_peak_bin_error > config.f1b_range_sanity_bin_error_max:
+        return None
+    if (
+        frame.f1b_same_bin_snr is None
+        or frame.f1b_same_bin_snr < config.f1b_range_sanity_same_bin_snr_min
+    ):
+        return None
+
+    theta_rad = math.radians(frame.bearing_deg + config.mount_deg)
+    target_x_ft = range_ft * math.cos(theta_rad)
+    target_y_ft = range_ft * math.sin(theta_rad)
+    dx_ft = target_x_ft - config.ball_distance_ft
+    dy_ft = target_y_ft - config.ball_above_radar_ft
+    if dx_ft <= 0.0:
+        return None
+    launch_angle_deg = math.degrees(math.atan2(dy_ft, dx_ft))
+    if not (GEOM_ALPHA_MIN_DEG <= launch_angle_deg <= GEOM_ALPHA_MAX_DEG):
+        return None
+
+    travel_ft = math.hypot(dx_ft, dy_ft)
+    v_fts = ball_speed_mph * MPH_TO_FTS
+    if v_fts <= 0.0:
+        return None
+    f1b_time_ms = travel_ft / v_fts * 1000.0
+    shift_ms = f1b_time_ms - frame.t_ms
+    if abs(shift_ms) > config.f1b_single_frame_align_max_shift_ms:
+        return None
+
+    fit = fit_selected_frames(selected, ball_speed_mph, shift_ms, config)
+    if fit.launch_angle_deg is None:
+        return None
+    return FitResult(
+        shift_ms=fit.shift_ms,
+        launch_angle_deg=fit.launch_angle_deg,
+        bearing_rmse_deg=fit.bearing_rmse_deg,
+        range_rmse_ft=fit.range_rmse_ft,
+        range_residuals_ft=fit.range_residuals_ft,
+        frame_count=fit.frame_count,
+        method="f1b_single_frame_timing_align",
+    )
+
+
+def choose_timing_adjusted_nominal_fit(
+    selected: list[FrameReport],
+    ball_speed_mph: float,
+    nominal: FitResult | None,
+    best: FitResult | None,
+    config: ReportConfig,
+    notes: list[str],
+) -> FitResult | None:
+    if not selected:
+        return nominal
+
+    if len(selected) >= 2 and best is not None and best.launch_angle_deg is not None:
+        nominal_score = nominal.score if nominal is not None else math.inf
+        if best.score < nominal_score and abs(best.shift_ms) > 0.0:
+            notes.append(
+                f"timing_adjusted_2frame_shift({best.shift_ms:+.1f}ms,score={best.score:.2f})"
+            )
+            return FitResult(
+                shift_ms=best.shift_ms,
+                launch_angle_deg=best.launch_angle_deg,
+                bearing_rmse_deg=best.bearing_rmse_deg,
+                range_rmse_ft=best.range_rmse_ft,
+                range_residuals_ft=best.range_residuals_ft,
+                frame_count=best.frame_count,
+                method="timing_adjusted_2frame_range_fit",
+            )
+
+    if len(selected) == 1:
+        f1b_fit = _single_frame_f1b_timing_fit(selected, ball_speed_mph, config)
+        if f1b_fit is not None:
+            notes.append(f"f1b_single_frame_timing_shift({f1b_fit.shift_ms:+.1f}ms)")
+            return f1b_fit
+
+    return nominal
+
+
 def apply_high_rmse_single_frame_fallback(
     selected: list[FrameReport],
     ball_speed_mph: float,
@@ -1112,10 +1398,15 @@ def analyze_shot(
     shot: dict[str, Any] | None,
     buffer_entry: dict[str, Any],
     config: ReportConfig,
+    *,
+    use_logged_selection: bool = True,
+    apply_flight_window_guard: bool = False,
 ) -> tuple[ShotReport, list[FrameReport]]:
     ball_speed = _to_float((shot or {}).get("ball_speed_mph"))
     impact_ts, impact_source = _impact_timestamp(shot, buffer_entry)
     logged_selection = _logged_ball_angle_selection(buffer_entry)
+    logged_frame_indices = logged_selection["logged_radc_selected_frame_indices"]
+    logged_frame_index_set = set(logged_frame_indices)
     raw_frames = buffer_entry.get("frames") or []
     if ball_speed is None or impact_ts is None:
         report = ShotReport(
@@ -1144,7 +1435,10 @@ def analyze_shot(
         if timestamp is None:
             continue
         t_ms = (timestamp - impact_ts) * 1000.0
-        if not (config.report_time_min_ms <= t_ms <= config.report_time_max_ms):
+        if (
+            frame_index not in logged_frame_index_set
+            and not (config.report_time_min_ms <= t_ms <= config.report_time_max_ms)
+        ):
             continue
         frames.append(
             extract_frame_report(
@@ -1157,16 +1451,60 @@ def analyze_shot(
             )
         )
 
-    unwrap_f1b_ranges(frames, config)
-    selected, notes = select_candidate_frames(frames, config)
-    selected = apply_high_rmse_single_frame_fallback(
-        selected,
-        ball_speed,
-        config,
-        notes,
+    unwrap_f1b_ranges(frames, ball_speed, config)
+    guard_notes = (
+        _apply_ball_flight_window_guard(frames, ball_speed, config)
+        if apply_flight_window_guard
+        else []
     )
+    used_logged_selection = bool(
+        use_logged_selection
+        and logged_selection["logged_radc_selection_available"]
+        and logged_frame_indices
+    )
+    if used_logged_selection:
+        selected, notes = apply_logged_live_selection(
+            frames,
+            logged_frame_indices,
+            logged_selection["logged_radc_selected_t_ms"],
+        )
+        if not selected:
+            fallback_selected, fallback_notes = select_candidate_frames(frames, config)
+            selected = apply_high_rmse_single_frame_fallback(
+                fallback_selected,
+                ball_speed,
+                config,
+                fallback_notes,
+            )
+            notes.extend(fallback_notes)
+            used_logged_selection = False
+    else:
+        selected, notes = select_candidate_frames(frames, config)
+        selected = apply_high_rmse_single_frame_fallback(
+            selected,
+            ball_speed,
+            config,
+            notes,
+        )
+        if apply_flight_window_guard:
+            selected = apply_f1b_range_sanity_to_selected_frames(
+                selected,
+                ball_speed,
+                config,
+                notes,
+            )
+    notes = guard_notes + notes
     nominal = fit_selected_frames(selected, ball_speed, 0.0, config) if selected else None
     best = best_range_shift_fit(selected, ball_speed, config)
+    if apply_flight_window_guard:
+        nominal = choose_timing_adjusted_nominal_fit(
+            selected,
+            ball_speed,
+            nominal,
+            best,
+            config,
+            notes,
+        )
     minus = (
         fit_selected_frames(selected, ball_speed, -config.sensitivity_ms, config)
         if selected
@@ -1179,7 +1517,10 @@ def analyze_shot(
     )
     method = "no_selection"
     if selected:
-        method = "anchor_only" if len(selected) == 1 else f"{len(selected)}_frame_selection"
+        if used_logged_selection:
+            method = f"logged_live_{len(selected)}_frame_selection"
+        else:
+            method = "anchor_only" if len(selected) == 1 else f"{len(selected)}_frame_selection"
     report = ShotReport(
         shot_number=shot_number,
         ball_speed_mph=ball_speed,
@@ -1219,10 +1560,10 @@ def analyze_high_snr_variant(
                 plus_sensitivity_fit=None,
             ),
             [],
-        )
+    )
 
     frames = broad_high_snr_frames(live_frames, live_report.ball_speed_mph, config)
-    selected, notes = select_high_snr_candidate_frames(frames, config)
+    selected, notes = select_high_snr_candidate_frames(frames, live_report.ball_speed_mph, config)
     selected = apply_high_rmse_single_frame_fallback(
         selected,
         live_report.ball_speed_mph,
@@ -1342,9 +1683,25 @@ def _shot_csv_row(report: ShotReport) -> dict[str, Any]:
     return row
 
 
-def _frame_csv_row(frame: FrameReport) -> dict[str, Any]:
+def _frame_csv_row(frame: FrameReport, config: ReportConfig | None = None) -> dict[str, Any]:
     row = asdict(frame)
     row["reasons"] = ";".join(frame.reasons)
+    if config is not None:
+        row["config_mount_deg"] = config.mount_deg
+        row["config_ball_distance_ft"] = config.ball_distance_ft
+        row["config_ball_above_radar_ft"] = config.ball_above_radar_ft
+        row["config_angle_offset_deg"] = config.angle_offset_deg
+        row["config_net_distance_ft"] = config.net_distance_ft
+        row["config_flight_time_margin_ms"] = config.flight_time_margin_ms
+        row["config_flight_window_max_launch_deg"] = config.flight_window_max_launch_deg
+        row["config_f1b_range_sanity_tolerance_ft"] = config.f1b_range_sanity_tolerance_ft
+        row["config_f1b_range_sanity_bin_error_max"] = config.f1b_range_sanity_bin_error_max
+        row["config_f1b_range_sanity_same_bin_snr_min"] = (
+            config.f1b_range_sanity_same_bin_snr_min
+        )
+        row["config_f1b_single_frame_align_max_shift_ms"] = (
+            config.f1b_single_frame_align_max_shift_ms
+        )
     return row
 
 
@@ -1384,14 +1741,17 @@ def write_reports(
     config_path = output_dir / "config.json"
     config_path.write_text(json.dumps(asdict(config), indent=2, sort_keys=True) + "\n")
     _write_csv(output_dir / "shots.csv", [_shot_csv_row(report) for report in shot_reports])
-    _write_csv(output_dir / "frames.csv", [_frame_csv_row(frame) for frame in frame_reports])
+    _write_csv(
+        output_dir / "frames.csv",
+        [_frame_csv_row(frame, config) for frame in frame_reports],
+    )
     _write_csv(
         output_dir / "shots_live.csv",
         [_shot_csv_row(report) for report in live_shot_reports],
     )
     _write_csv(
         output_dir / "frames_live.csv",
-        [_frame_csv_row(frame) for frame in live_frame_reports],
+        [_frame_csv_row(frame, config) for frame in live_frame_reports],
     )
 
     lines = [
@@ -1400,8 +1760,10 @@ def write_reports(
         "Generated files: `shots.csv`, `frames.csv`, `shots_live.csv`, "
         "`frames_live.csv`, `config.json`.",
         "",
-        "`frames.csv`/`shots.csv` use the broad/high-SNR exploratory selector. "
-        "`frames_live.csv`/`shots_live.csv` use the current OPS-bin/live-style replay.",
+        "`frames.csv`/`shots.csv` use the OPS-bin/live-style selector replay with "
+        "offline experimental guardrails. `frames_live.csv`/`shots_live.csv` use "
+        "logged live-selected RADC frames when the session recorded them, otherwise "
+        "they fall back to the current OPS-bin/live-style replay.",
         "",
         "`Logged KLD7 frames` is populated only for sessions that recorded "
         "`ball_angle.radc_selection.selected_frame_indices`; older sessions keep "
@@ -1463,11 +1825,16 @@ def analyze_session(
             shots.get(shot_number),
             buffer_entry,
             config,
+            use_logged_selection=True,
+            apply_flight_window_guard=False,
         )
-        shot_report, frames = analyze_high_snr_variant(
-            live_shot_report,
-            live_frames,
+        shot_report, frames = analyze_shot(
+            shot_number,
+            shots.get(shot_number),
+            buffer_entry,
             config,
+            use_logged_selection=False,
+            apply_flight_window_guard=True,
         )
         shot_reports.append(shot_report)
         frame_reports.extend(frames)
@@ -1497,6 +1864,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--centroid-floor-frac", type=float, default=0.5)
     parser.add_argument("--report-time-min-ms", type=float, default=-80.0)
     parser.add_argument("--report-time-max-ms", type=float, default=170.0)
+    parser.add_argument(
+        "--net-distance-ft",
+        type=float,
+        default=10.0,
+        help="Ball-to-net/screen distance for offline frames.csv flight-window guard. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--flight-time-margin-ms",
+        type=float,
+        default=10.0,
+        help="Extra time allowed after the estimated ball-to-screen flight window.",
+    )
+    parser.add_argument(
+        "--flight-window-max-launch-deg",
+        type=float,
+        default=30.0,
+        help="Conservative launch angle used to estimate downrange speed for the flight window.",
+    )
     parser.add_argument("--report-bin-error-max", type=int, default=220)
     parser.add_argument("--ops-bin-outlier-tol", type=int, default=25)
     parser.add_argument(
@@ -1528,6 +1913,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--range-unwrap-bin-error-max", type=int, default=80)
     parser.add_argument("--range-unwrap-snr-min", type=float, default=3.0)
     parser.add_argument("--range-unwrap-backtrack-ft", type=float, default=0.75)
+    parser.add_argument("--f1b-range-sanity-tolerance-ft", type=float, default=4.0)
+    parser.add_argument("--f1b-range-sanity-bin-error-max", type=int, default=25)
+    parser.add_argument("--f1b-range-sanity-same-bin-snr-min", type=float, default=3.0)
+    parser.add_argument("--f1b-single-frame-align-max-shift-ms", type=float, default=10.0)
     return parser
 
 
@@ -1544,6 +1933,9 @@ def config_from_args(args: argparse.Namespace) -> ReportConfig:
         centroid_floor_frac=args.centroid_floor_frac,
         report_time_min_ms=args.report_time_min_ms,
         report_time_max_ms=args.report_time_max_ms,
+        net_distance_ft=args.net_distance_ft,
+        flight_time_margin_ms=args.flight_time_margin_ms,
+        flight_window_max_launch_deg=args.flight_window_max_launch_deg,
         report_bin_error_max=args.report_bin_error_max,
         ops_bin_outlier_tol=args.ops_bin_outlier_tol,
         ops_anchored_peak_min_snr=args.ops_anchored_peak_min_snr,
@@ -1569,6 +1961,10 @@ def config_from_args(args: argparse.Namespace) -> ReportConfig:
         range_unwrap_bin_error_max=args.range_unwrap_bin_error_max,
         range_unwrap_snr_min=args.range_unwrap_snr_min,
         range_unwrap_backtrack_ft=args.range_unwrap_backtrack_ft,
+        f1b_range_sanity_tolerance_ft=args.f1b_range_sanity_tolerance_ft,
+        f1b_range_sanity_bin_error_max=args.f1b_range_sanity_bin_error_max,
+        f1b_range_sanity_same_bin_snr_min=args.f1b_range_sanity_same_bin_snr_min,
+        f1b_single_frame_align_max_shift_ms=args.f1b_single_frame_align_max_shift_ms,
     )
 
 
@@ -1598,7 +1994,7 @@ def main(argv: list[str] | None = None) -> int:
     live_multi = sum(1 for report in live_shot_reports if len(report.selected_frame_indices) >= 2)
     print(
         f"Analyzed {len(shot_reports)} shots "
-        f"(high-SNR: {selected} selected, {multi} with 2+ frames; "
+        f"(offline guarded: {selected} selected, {multi} with 2+ frames; "
         f"live-style: {live_selected} selected, {live_multi} with 2+ frames)"
     )
     print(f"Report written to: {output_dir}")

@@ -93,6 +93,20 @@ def _run_report(args: argparse.Namespace, session_path: Path, output_dir: Path) 
         str(args.angle_offset_deg),
         "--ball-above-radar-ft",
         str(args.ball_above_radar_ft),
+        "--net-distance-ft",
+        str(args.net_distance_ft),
+        "--flight-time-margin-ms",
+        str(args.flight_time_margin_ms),
+        "--flight-window-max-launch-deg",
+        str(args.flight_window_max_launch_deg),
+        "--f1b-range-sanity-tolerance-ft",
+        str(args.f1b_range_sanity_tolerance_ft),
+        "--f1b-range-sanity-bin-error-max",
+        str(args.f1b_range_sanity_bin_error_max),
+        "--f1b-range-sanity-same-bin-snr-min",
+        str(args.f1b_range_sanity_same_bin_snr_min),
+        "--f1b-single-frame-align-max-shift-ms",
+        str(args.f1b_single_frame_align_max_shift_ms),
     ]
     if args.report_arg:
         command.extend(args.report_arg)
@@ -201,6 +215,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mount-deg", type=float, default=10.0)
     parser.add_argument("--angle-offset-deg", type=float, default=0.0)
     parser.add_argument("--ball-above-radar-ft", type=float, default=-4.0 / 12.0)
+    parser.add_argument("--net-distance-ft", type=float, default=10.0)
+    parser.add_argument("--flight-time-margin-ms", type=float, default=10.0)
+    parser.add_argument("--flight-window-max-launch-deg", type=float, default=30.0)
+    parser.add_argument("--f1b-range-sanity-tolerance-ft", type=float, default=4.0)
+    parser.add_argument("--f1b-range-sanity-bin-error-max", type=int, default=25)
+    parser.add_argument("--f1b-range-sanity-same-bin-snr-min", type=float, default=3.0)
+    parser.add_argument("--f1b-single-frame-align-max-shift-ms", type=float, default=10.0)
     parser.add_argument(
         "--report-arg",
         action="append",

@@ -451,7 +451,7 @@
       </label>
       <label>
         Ball vertical offset ft
-        <input id="ballOffset" type="number" step="0.01" value="-0.333">
+        <input id="ballOffset" type="number" step="0.01" value="-0.833">
       </label>
 
       <h2>Frame 1</h2>
@@ -645,6 +645,7 @@
     let framesByShot = new Map();
     let selectedFrameKeys = [];
     let latestCsvText = "";
+    let latestConfigUrl = "";
     let autoReloadTimer = null;
 
     function value(id) {
@@ -755,6 +756,40 @@
 
     function setInputValue(id, value, digits = 1) {
       inputs[id].value = value === null || value === undefined ? "" : String(Number(value).toFixed(digits));
+    }
+
+    function applyReportConfig(config) {
+      const mapping = [
+        ["mountTilt", config.mount_deg, 1],
+        ["ballDistance", config.ball_distance_ft, 1],
+        ["netDistance", config.net_distance_ft, 1],
+        ["ballOffset", config.ball_above_radar_ft, 3],
+        ["angleOffset", config.angle_offset_deg, 1],
+      ];
+      for (const [id, configValue, digits] of mapping) {
+        if (Number.isFinite(Number(configValue))) {
+          setInputValue(id, Number(configValue), digits);
+        }
+      }
+    }
+
+    function applyFrameCsvConfig(rows) {
+      const row = rows.find((candidate) => (
+        candidate.config_mount_deg ||
+        candidate.config_ball_distance_ft ||
+        candidate.config_net_distance_ft ||
+        candidate.config_ball_above_radar_ft ||
+        candidate.config_angle_offset_deg
+      ));
+      if (!row) return false;
+      applyReportConfig({
+        mount_deg: numericCell(row, "config_mount_deg"),
+        ball_distance_ft: numericCell(row, "config_ball_distance_ft"),
+        net_distance_ft: numericCell(row, "config_net_distance_ft"),
+        ball_above_radar_ft: numericCell(row, "config_ball_above_radar_ft"),
+        angle_offset_deg: numericCell(row, "config_angle_offset_deg"),
+      });
+      return true;
     }
 
     function setFrameInputs(prefix, row) {
@@ -879,6 +914,7 @@
     function loadFramesCsv(text, options = {}) {
       const previousShot = shotSelect.value;
       const rows = parseCsv(text).filter((row) => row.shot_number && row.frame_index);
+      const appliedCsvConfig = applyFrameCsvConfig(rows);
       framesByShot = new Map();
       for (const row of rows) {
         const shot = row.shot_number;
@@ -911,8 +947,33 @@
       } else {
         shotSelect.value = shots[0];
       }
-      csvStatus.textContent = `Loaded ${rows.length} frames across ${shots.length} shots.`;
+      csvStatus.textContent =
+        `Loaded ${rows.length} frames across ${shots.length} shots.` +
+        (appliedCsvConfig ? " Applied CSV config." : "");
       selectDefaultFramesForShot();
+    }
+
+    function configUrlForCsvUrl(url) {
+      const resolved = new URL(url, window.location.href);
+      const parts = resolved.pathname.split("/");
+      parts[parts.length - 1] = "config.json";
+      resolved.pathname = parts.join("/");
+      resolved.search = "";
+      resolved.hash = "";
+      return resolved.toString();
+    }
+
+    async function loadReportConfigForCsvUrl(url) {
+      const configUrl = configUrlForCsvUrl(url);
+      if (configUrl === latestConfigUrl) return "cached";
+      const cacheBustedUrl = `${configUrl}${configUrl.includes("?") ? "&" : "?"}_=${Date.now()}`;
+      const response = await fetch(cacheBustedUrl, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      applyReportConfig(await response.json());
+      latestConfigUrl = configUrl;
+      return "loaded";
     }
 
     async function loadFramesCsvFromUrl(options = {}) {
@@ -929,8 +990,15 @@
       const text = await response.text();
       if (options.skipIfUnchanged && text === latestCsvText) return;
       latestCsvText = text;
+      let configStatus = "";
+      try {
+        const result = await loadReportConfigForCsvUrl(url);
+        configStatus = result === "loaded" ? " Applied config.json." : "";
+      } catch (error) {
+        configStatus = ` Config not loaded (${error.message}).`;
+      }
       loadFramesCsv(text, { preferLatest: options.preferLatest ?? autoReloadCsv.checked });
-      csvStatus.textContent += ` Auto-loaded ${url} at ${new Date().toLocaleTimeString()}.`;
+      csvStatus.textContent += `${configStatus} Auto-loaded ${url} at ${new Date().toLocaleTimeString()}.`;
     }
 
     function updateAutoReloadTimer() {
@@ -1569,6 +1637,7 @@
       if (!file) return;
       try {
         latestCsvText = "";
+        latestConfigUrl = "";
         loadFramesCsv(await file.text());
       } catch (error) {
         csvStatus.textContent = `CSV load failed: ${error.message}`;

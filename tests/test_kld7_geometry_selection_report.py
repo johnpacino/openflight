@@ -141,7 +141,7 @@ def test_high_rmse_pair_falls_back_to_first_strong_single_frame():
     config = report.ReportConfig()
     frames = [
         _frame(38, 27.5, bin_error=10, snr=18.4, bearing_deg=-1.6, speed_mph=112.1),
-        _frame(39, 62.5, bin_error=1, snr=16.6, bearing_deg=13.5, speed_mph=112.8),
+        _frame(39, 62.5, bin_error=1, snr=16.6, bearing_deg=20.0, speed_mph=112.8),
     ]
     for frame in frames:
         frame.peak_source = "ops_anchored"
@@ -191,6 +191,63 @@ def test_logged_ball_angle_selection_reads_radc_selection_when_present():
     assert details["logged_radc_fit_rmse_deg"] == pytest.approx(1.37)
 
 
+def test_logged_live_selection_marks_exact_logged_frames_selected_without_retiming_rows():
+    frames = [
+        _frame(8, 45.0, bin_error=4, snr=14.0, bearing_deg=5.0),
+        _frame(9, 78.0, bin_error=2, snr=15.0, bearing_deg=8.0),
+        _frame(10, 113.5, bin_error=9, snr=12.0, bearing_deg=12.0),
+        _frame(11, 146.5, bin_error=21, snr=11.0, bearing_deg=18.0),
+        _frame(13, 209.4, bin_error=18, snr=10.0, bearing_deg=24.0),
+    ]
+
+    selected, notes = report.apply_logged_live_selection(
+        frames,
+        [10, 11, 13],
+        [999.0, 1000.0, 1001.0],
+    )
+
+    assert [frame.frame_index for frame in selected] == [10, 11, 13]
+    assert [frame.t_ms for frame in selected] == [113.5, 146.5, 209.4]
+    assert [frame.selection_role for frame in selected] == ["anchor", "neighbor", "neighbor"]
+    assert frames[0].status == "rejected"
+    assert frames[2].status == "selected"
+    assert notes == ["logged_live_selection"]
+
+
+def test_frame_csv_row_includes_report_config_for_visualizer_uploads():
+    config = report.ReportConfig(
+        mount_deg=6.0,
+        ball_above_radar_ft=-10.0 / 12.0,
+        net_distance_ft=12.0,
+        flight_time_margin_ms=15.0,
+        flight_window_max_launch_deg=35.0,
+    )
+    row = report._frame_csv_row(
+        _frame(39, 66.9, bin_error=7, snr=13.2, bearing_deg=5.6),
+        config,
+    )
+
+    assert row["config_mount_deg"] == pytest.approx(6.0)
+    assert row["config_ball_distance_ft"] == pytest.approx(config.ball_distance_ft)
+    assert row["config_ball_above_radar_ft"] == pytest.approx(-10.0 / 12.0)
+    assert row["config_angle_offset_deg"] == pytest.approx(config.angle_offset_deg)
+    assert row["config_net_distance_ft"] == pytest.approx(12.0)
+    assert row["config_flight_time_margin_ms"] == pytest.approx(15.0)
+    assert row["config_flight_window_max_launch_deg"] == pytest.approx(35.0)
+    assert row["config_f1b_range_sanity_tolerance_ft"] == pytest.approx(
+        config.f1b_range_sanity_tolerance_ft
+    )
+    assert row["config_f1b_range_sanity_bin_error_max"] == pytest.approx(
+        config.f1b_range_sanity_bin_error_max
+    )
+    assert row["config_f1b_range_sanity_same_bin_snr_min"] == pytest.approx(
+        config.f1b_range_sanity_same_bin_snr_min
+    )
+    assert row["config_f1b_single_frame_align_max_shift_ms"] == pytest.approx(
+        config.f1b_single_frame_align_max_shift_ms
+    )
+
+
 def test_high_snr_selector_prefers_broad_peak_snr_over_bin_error():
     frames = [
         _frame(38, 16.0, bin_error=3, snr=4.0, bearing_deg=-4.0),
@@ -214,10 +271,12 @@ def test_high_snr_selector_prefers_broad_peak_snr_over_bin_error():
     frames[2].broad_snr = 15.0
     frames[2].broad_bearing_deg = 10.0
 
-    high_snr_frames = report.broad_high_snr_frames(frames, 110.0, report.ReportConfig())
+    config = report.ReportConfig(net_distance_ft=0.0)
+    high_snr_frames = report.broad_high_snr_frames(frames, 110.0, config)
     selected, notes = report.select_high_snr_candidate_frames(
         high_snr_frames,
-        report.ReportConfig(),
+        110.0,
+        config,
     )
 
     assert high_snr_frames[1].peak_source == "broad_high_snr"
@@ -225,6 +284,214 @@ def test_high_snr_selector_prefers_broad_peak_snr_over_bin_error():
     assert [frame.frame_index for frame in selected] == [39, 40]
     assert [frame.selection_role for frame in selected] == ["anchor", "neighbor"]
     assert notes == ["selected_2_frames_high_snr"]
+
+
+def test_high_snr_selector_rejects_frames_after_ball_flight_window():
+    config = report.ReportConfig(
+        net_distance_ft=6.0,
+        flight_time_margin_ms=0.0,
+        flight_window_max_launch_deg=0.0,
+    )
+    frames = [
+        _frame(39, 35.0, bin_error=2, snr=18.0, bearing_deg=4.0),
+        _frame(40, 55.0, bin_error=1, snr=16.0, bearing_deg=8.0),
+    ]
+
+    selected, notes = report.select_high_snr_candidate_frames(frames, 100.0, config)
+
+    assert [frame.frame_index for frame in selected] == [39]
+    assert frames[1].status == "rejected"
+    assert "after_ball_flight_window" in frames[1].reasons
+    assert notes[0].startswith("flight_window_end_ms=")
+    assert notes[-1] == "anchor_only_high_snr_no_rising_neighbor"
+
+
+def test_live_style_selector_rejects_frames_after_ball_flight_window():
+    config = report.ReportConfig(
+        net_distance_ft=6.0,
+        flight_time_margin_ms=0.0,
+        flight_window_max_launch_deg=0.0,
+    )
+    frames = [
+        _frame(39, 35.0, bin_error=2, snr=18.0, bearing_deg=4.0),
+        _frame(40, 55.0, bin_error=1, snr=16.0, bearing_deg=8.0),
+    ]
+
+    guard_notes = report._apply_ball_flight_window_guard(frames, 100.0, config)
+    selected, notes = report.select_candidate_frames(frames, config)
+
+    assert [frame.frame_index for frame in selected] == [39]
+    assert frames[1].status == "rejected"
+    assert frames[1].peak_selectable is False
+    assert "after_ball_flight_window" in frames[1].reasons
+    assert guard_notes[0].startswith("flight_window_end_ms=")
+    assert notes == ["anchor_only_no_rising_neighbor"]
+
+
+def test_f1b_range_sanity_demotes_selected_pair_when_range_is_impossible():
+    config = report.ReportConfig(
+        f1b_range_sanity_tolerance_ft=4.0,
+        f1b_range_sanity_bin_error_max=25,
+        f1b_range_sanity_same_bin_snr_min=3.0,
+    )
+    good = _frame(39, 35.0, bin_error=2, snr=18.0, bearing_deg=4.0)
+    bad = _frame(40, 70.0, bin_error=1, snr=16.0, bearing_deg=8.0)
+    for frame in (good, bad):
+        frame.status = "selected"
+        frame.f1b_peak_bin_error = 1
+        frame.f1b_same_bin_snr = 8.0
+    good.f1b_range_ft = report._predicted_range_ft(18.0, good.t_ms / 1000.0, 100.0, config)
+    bad.f1b_range_ft = 1.0
+    notes: list[str] = []
+
+    selected = report.apply_f1b_range_sanity_to_selected_frames([good, bad], 100.0, config, notes)
+
+    assert selected == [good]
+    assert good.status == "selected"
+    assert good.selection_role == "anchor"
+    assert bad.status == "rejected"
+    assert any(reason.startswith("f1b_range_too_short") for reason in bad.reasons)
+    assert notes == ["f1b_range_sanity_rejected_frames(40)"]
+
+
+def test_f1b_range_sanity_ignores_range_when_f1b_target_is_not_trustworthy():
+    config = report.ReportConfig(f1b_range_sanity_bin_error_max=25)
+    frame = _frame(39, 70.0, bin_error=1, snr=16.0, bearing_deg=8.0)
+    frame.status = "selected"
+    frame.f1b_range_ft = 1.0
+    frame.f1b_peak_bin_error = 80
+    frame.f1b_same_bin_snr = 8.0
+    notes: list[str] = []
+
+    selected = report.apply_f1b_range_sanity_to_selected_frames([frame], 100.0, config, notes)
+
+    assert selected == [frame]
+    assert frame.status == "selected"
+    assert notes == []
+
+
+def test_timing_adjusted_nominal_uses_lower_rmse_two_frame_shift():
+    config = report.ReportConfig(clock_error_ms=20.0, shift_step_ms=1.0)
+    ball_speed_mph = 110.0
+    launch_angle_deg = 18.0
+    frames = []
+    for index, true_t_ms in enumerate([30.0, 65.0], start=39):
+        measured_t_ms = true_t_ms - 8.0
+        bearing = predicted_bearing_deg(
+            launch_angle_deg,
+            true_t_ms / 1000.0,
+            ball_speed_mph,
+            config.ball_distance_ft,
+            config.mount_deg,
+            config.ball_above_radar_ft,
+        )
+        frame = _frame(index, measured_t_ms, bin_error=2, snr=12.0, bearing_deg=bearing)
+        frame.f1b_range_ft = report._predicted_range_ft(
+            launch_angle_deg,
+            true_t_ms / 1000.0,
+            ball_speed_mph,
+            config,
+        )
+        frames.append(frame)
+
+    nominal = report.fit_selected_frames(frames, ball_speed_mph, 0.0, config)
+    best = report.best_range_shift_fit(frames, ball_speed_mph, config)
+    notes: list[str] = []
+    adjusted = report.choose_timing_adjusted_nominal_fit(
+        frames,
+        ball_speed_mph,
+        nominal,
+        best,
+        config,
+        notes,
+    )
+
+    assert adjusted is not None
+    assert adjusted.method == "timing_adjusted_2frame_range_fit"
+    assert adjusted.shift_ms == pytest.approx(8.0, abs=1.0)
+    assert adjusted.range_rmse_ft == pytest.approx(0.0, abs=0.1)
+    assert notes[0].startswith("timing_adjusted_2frame_shift")
+
+
+def test_single_frame_f1b_timing_align_uses_range_shift_within_limit():
+    config = report.ReportConfig(f1b_single_frame_align_max_shift_ms=10.0)
+    ball_speed_mph = 100.0
+    launch_angle_deg = 20.0
+    true_t_ms = 50.0
+    measured_t_ms = 44.0
+    bearing = predicted_bearing_deg(
+        launch_angle_deg,
+        true_t_ms / 1000.0,
+        ball_speed_mph,
+        config.ball_distance_ft,
+        config.mount_deg,
+        config.ball_above_radar_ft,
+    )
+    frame = _frame(39, measured_t_ms, bin_error=2, snr=12.0, bearing_deg=bearing)
+    frame.f1b_range_ft = report._predicted_range_ft(
+        launch_angle_deg,
+        true_t_ms / 1000.0,
+        ball_speed_mph,
+        config,
+    )
+    frame.f1b_peak_bin_error = 1
+    frame.f1b_same_bin_snr = 8.0
+    nominal = report.fit_selected_frames([frame], ball_speed_mph, 0.0, config)
+    notes: list[str] = []
+
+    adjusted = report.choose_timing_adjusted_nominal_fit(
+        [frame],
+        ball_speed_mph,
+        nominal,
+        None,
+        config,
+        notes,
+    )
+
+    assert adjusted is not None
+    assert adjusted.method == "f1b_single_frame_timing_align"
+    assert adjusted.shift_ms == pytest.approx(6.0, abs=1.0)
+    assert adjusted.launch_angle_deg == pytest.approx(launch_angle_deg, abs=0.3)
+    assert notes == [f"f1b_single_frame_timing_shift({adjusted.shift_ms:+.1f}ms)"]
+
+
+def test_single_frame_f1b_timing_align_ignores_shift_outside_limit():
+    config = report.ReportConfig(f1b_single_frame_align_max_shift_ms=5.0)
+    ball_speed_mph = 100.0
+    launch_angle_deg = 20.0
+    true_t_ms = 50.0
+    measured_t_ms = 35.0
+    bearing = predicted_bearing_deg(
+        launch_angle_deg,
+        true_t_ms / 1000.0,
+        ball_speed_mph,
+        config.ball_distance_ft,
+        config.mount_deg,
+        config.ball_above_radar_ft,
+    )
+    frame = _frame(39, measured_t_ms, bin_error=2, snr=12.0, bearing_deg=bearing)
+    frame.f1b_range_ft = report._predicted_range_ft(
+        launch_angle_deg,
+        true_t_ms / 1000.0,
+        ball_speed_mph,
+        config,
+    )
+    frame.f1b_peak_bin_error = 1
+    frame.f1b_same_bin_snr = 8.0
+    nominal = report.fit_selected_frames([frame], ball_speed_mph, 0.0, config)
+    notes: list[str] = []
+
+    adjusted = report.choose_timing_adjusted_nominal_fit(
+        [frame],
+        ball_speed_mph,
+        nominal,
+        None,
+        config,
+        notes,
+    )
+
+    assert adjusted == nominal
+    assert notes == []
 
 
 def test_logged_ball_angle_selection_marks_older_logs_without_radc_selection():
@@ -296,7 +563,7 @@ def test_unwrap_f1b_ranges_adds_period_for_good_wrapped_ball_frame():
     frames[0].f1b_range_ft = 13.25
     frames[1].f1b_range_ft = 1.67
 
-    report.unwrap_f1b_ranges(frames, config)
+    report.unwrap_f1b_ranges(frames, 110.0, config)
 
     assert frames[0].f1b_range_unwrapped_ft == pytest.approx(13.25)
     assert frames[0].f1b_range_unwrap_count == 0
@@ -311,7 +578,7 @@ def test_unwrap_f1b_ranges_does_not_unwrap_bad_bin_or_low_snr_frame():
     bad_bin.f1b_range_ft = 1.67
     low_snr.f1b_range_ft = 1.91
 
-    report.unwrap_f1b_ranges([bad_bin, low_snr], config)
+    report.unwrap_f1b_ranges([bad_bin, low_snr], 110.0, config)
 
     assert bad_bin.f1b_range_unwrapped_ft == pytest.approx(1.67)
     assert bad_bin.f1b_range_unwrap_count == 0
