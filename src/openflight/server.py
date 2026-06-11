@@ -2377,11 +2377,12 @@ def main():
     )
     parser.add_argument(
         "--kld7-vertical-estimator",
-        choices=("geometry", "naive"),
+        choices=("geometry", "naive", "two_ray"),
         default="naive",
         help=(
             "Vertical launch-angle estimator: 'naive' (legacy bearing average + offset, "
-            "default) or 'geometry' (trajectory fit)"
+            "default), 'geometry' (trajectory fit), or 'two_ray' (sub-frame multipath "
+            "demodulation; falls back to geometry on refusal)"
         ),
     )
     parser.add_argument(

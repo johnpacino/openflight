@@ -1547,6 +1547,10 @@ def extract_launch_angle(
     # Impact-relative timing for rule-stack gating; prefer the explicit
     # impact timestamp when provided, otherwise fall back to shot timestamp.
     time_ref = impact_timestamp if impact_timestamp is not None else shot_timestamp
+    # Two-ray demodulation runs once per extraction (it windows frames by
+    # the impact timestamp itself); cached across shot groups.
+    two_ray_result = None
+    two_ray_attempted = False
     for shot_idx, impact_group in enumerate(shot_groups):
         # Expand to impact -1 before, +2 after (ball appears slightly after)
         frame_set = set()
@@ -1990,12 +1994,49 @@ def extract_launch_angle(
         f1b_timing_shift_s: float | None = None
         selection_path_override: str | None = None
 
+        # Two-ray demodulation estimator (vertical only): sub-frame STFT +
+        # ball/floor-image interference inversion with a range-anchored
+        # impact clock. Refusals fall through to the geometry estimator.
+        if (
+            vertical_estimator == "two_ray"
+            and orientation == "vertical"
+            and ops243_ball_speed_mph is not None
+            and mount_deg is not None
+            and distance_ft is not None
+        ):
+            if not two_ray_attempted:
+                two_ray_attempted = True
+                # Lazy import: two_ray imports helpers from this module
+                from .two_ray import estimate_two_ray
+
+                two_ray_result = estimate_two_ray(
+                    frames,
+                    time_ref,
+                    ops243_ball_speed_mph,
+                    mount_deg,
+                    angle_offset_deg,
+                    distance_ft,
+                    ball_above_radar_ft,
+                    net_distance_ft=vertical_flight_window_net_distance_ft,
+                    range_m=range_m,
+                )
+                if two_ray_result.refusal_reason is not None:
+                    logger.info(
+                        "[RADC] two_ray refused (%s) — falling back to geometry",
+                        two_ray_result.refusal_reason,
+                    )
+            if two_ray_result is not None and two_ray_result.launch_angle_deg is not None:
+                corrected_angle = float(two_ray_result.launch_angle_deg)
+                estimator_used = "two_ray"
+
         # Geometry estimator (vertical only): invert the trajectory geometry
         # from per-frame (flight_time, bearing) rather than treating the bearing
         # as the launch angle. A low-confidence single-frame fallback is used
         # only after the frame passed the vertical OPS-bin/SNR rule stack.
+        # Also the fallback path when the two-ray estimator refuses.
         if (
-            vertical_estimator == "geometry"
+            vertical_estimator in ("geometry", "two_ray")
+            and estimator_used != "two_ray"
             and orientation == "vertical"
             and ops243_ball_speed_mph is not None
             and mount_deg is not None
@@ -2198,7 +2239,9 @@ def extract_launch_angle(
         )
         selection_path = estimator_used
         if orientation == "vertical":
-            if estimator_used == "geometry":
+            if estimator_used == "two_ray":
+                selection_path = "two_ray"
+            elif estimator_used == "geometry":
                 selection_path = (
                     "geometry_early_assisted" if selected_has_early_context else "geometry_primary"
                 )
@@ -2217,7 +2260,10 @@ def extract_launch_angle(
         # detections get a bonus from angle consistency.
         frame_count = len(clean_angs)
         snr_score = min(avg_snr / 10.0, 1.0)
-        if estimator_used == "geometry":
+        if estimator_used == "two_ray":
+            # Two-ray carries its own confidence (gates + cross-check)
+            confidence = float(two_ray_result.confidence)
+        elif estimator_used == "geometry":
             # Geometry: confidence from the bearing-trajectory fit RMSE
             # (how well the per-frame bearings agree with a single launch
             # angle) blended with SNR. RMSE 0° → 1.0, 6°+ → 0.0.
@@ -2310,6 +2356,9 @@ def extract_launch_angle(
                     else None
                 ),
                 "weak_adjacent_frame_used": bool(np.any(clean_weak_ops_anchor)),
+                "two_ray": (
+                    two_ray_result.diagnostics if two_ray_result is not None else None
+                ),
                 "ball_speed_mph": round(avg_speed_mph, 1),
                 "confidence": confidence,
                 "detection_count": len(peak_angles),
