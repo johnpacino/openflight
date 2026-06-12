@@ -159,13 +159,23 @@ class TestEstimateTwoRay:
         assert abs(est.diagnostics["tau_range_ms"]) < 15.0
 
     def test_dc_blind_zone_refused(self):
-        # 124 mph aliases onto DC at the 100 km/h speed setting
+        # 128 mph keeps every frame's RADIAL alias inside the +/-4 km/h
+        # clutter core (the gate is per-frame radial now, not per-shot
+        # impact speed: 124 or even 130 mph shots have escape frames
+        # and measure; only the narrow true core refuses)
         est = estimate_two_ray(
-            [], 1000.0, 124.0, MOUNT_DEG, OFFSET_DEG, DISTANCE_FT, BALL_ABOVE_RADAR_FT
+            _frames_for_shot(18.0, 128.0, 1000.0),
+            1000.0,
+            128.0,
+            MOUNT_DEG,
+            OFFSET_DEG,
+            DISTANCE_FT,
+            BALL_ABOVE_RADAR_FT,
         )
         assert est.launch_angle_deg is None
         assert est.refusal_reason == "dc_blind_zone"
         assert est.diagnostics["refusal_reason"] == "dc_blind_zone"
+        assert est.diagnostics["n_frames_dc_core_skipped"] >= 3
 
     def test_no_impact_timestamp_refused(self):
         est = estimate_two_ray(
@@ -207,7 +217,7 @@ class TestExtractLaunchAngleTwoRay:
     def test_refusal_falls_back_to_geometry_path(self):
         # Blind-zone ball speed: two_ray must refuse and the pipeline must
         # still return via the geometry/naive fallback without crashing.
-        la_true, speed, impact_ts = 18.0, 124.0, 1000.0
+        la_true, speed, impact_ts = 18.0, 128.0, 1000.0
         results = extract_launch_angle(
             _frames_for_shot(la_true, speed, impact_ts),
             ops243_ball_speed_mph=speed,

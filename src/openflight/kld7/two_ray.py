@@ -12,10 +12,12 @@ robust to host/OPS clock offsets.
 
 Validated offline: 2.64 deg MAE pooled PW-4i vs TrackMan (2026-06-08
 sessions, angle offset 3.5), 3.16 deg blind on a drift-era holdout.
-Known limitation: ball speeds whose Doppler aliases onto DC
-(~118-131 mph at the 100 km/h setting) are refused, as are low-launch
-clubs whose ball/image never separate (driver/3h) — refusals fall back
-to the geometry estimator and then the club-physics estimate upstream.
+Known limitations: per-frame radial Doppler tracking (cosine compression
++ drag) recovers most of the DC alias band; only frames whose radial
+alias sits inside the +/-4 km/h clutter core are skipped, so just a
+narrow band near ~124-128 mph still refuses outright. Low-launch clubs
+whose ball/image never separate (driver/3h) also refuse. Refusals fall
+back to the geometry estimator and then the club-physics estimate.
 """
 
 from __future__ import annotations
@@ -52,9 +54,10 @@ _FD_MAX_HZ = 2.0 * (MAX_SPEED_KMH / 3.6) / WAVELENGTH_M
 SAMPLE_DT_MS = 1000.0 / (2.0 * _FD_MAX_HZ)
 ACQ_MS = SAMPLES * SAMPLE_DT_MS
 
-# Ball speeds whose Doppler aliases into the DC clutter mask are
-# unmeasurable at the 100 km/h speed setting (~118-131 mph)
-DC_BLIND_ALIASED_KMH = 15.0
+# Frames whose RADIAL Doppler aliases into the irreducible DC clutter
+# core are skipped per frame (the old shot-level gate refused everything
+# within +/-15 km/h; per-frame radial tracking recovers most of that band)
+DC_CORE_ALIASED_KMH = 4.0
 
 # Per-frame demodulation validity gates (offline-validated)
 MAX_FIT_RESID = 0.15
@@ -182,6 +185,30 @@ def _predicted_drift_rates(
     th_b = math.atan2(y, x) - boresight
     th_i = math.atan2(y_img, x) - boresight
     return -k * math.cos(th_b) * el_rate_ball, -k * math.cos(th_i) * el_rate_img
+
+
+def radial_speed_mph(
+    ball_speed_mph: float,
+    t_ms: float,
+    distance_ft: float,
+    ball_above_radar_ft: float,
+    nominal_la_deg: float = DRIFT_NOMINAL_LA_DEG,
+) -> float:
+    """Radar-apparent (radial) ball speed at t_ms after impact.
+
+    Two effects move the apparent Doppler off the OPS impact speed: the
+    LOS-to-velocity cosine compression (largest early) and drag
+    deceleration (~0.027 mph/ms at iron speeds). Both shift the alias of
+    near-DC ball speeds, so per-frame bins recover shots a static
+    impact-speed bin would leave inside the clutter core.
+    """
+    v = ball_speed_mph - 0.027 * max(t_ms, 0.0)
+    vf = v * MPH_TO_FTS
+    la = math.radians(nominal_la_deg)
+    t = max(t_ms, 0.0) / 1000.0
+    x = distance_ft + vf * math.cos(la) * t
+    y = ball_above_radar_ft + vf * math.sin(la) * t
+    return v * math.cos(la - math.atan2(y, x))
 
 
 def two_ray_fit(
@@ -454,13 +481,8 @@ def estimate_two_ray(
     diag: dict = {"estimator": "two_ray"}
     boresight_deg = mount_deg + angle_offset_deg
 
-    aliased = aliased_velocity_from_ball_speed_mph(ball_speed_mph)
-    if abs(aliased) <= DC_BLIND_ALIASED_KMH:
-        return _refuse("dc_blind_zone", {**diag, "aliased_kmh": round(aliased, 1)})
     if impact_timestamp is None:
         return _refuse("no_impact_timestamp", diag)
-
-    expected_bin = expected_ball_bin_from_speed(ball_speed_mph)
     # Flight cap: net arrival or the FSK range wrap, whichever is sooner
     v_fts = ball_speed_mph * MPH_TO_FTS
     wrap_flight_ft = range_m * M_TO_FT - distance_ft
@@ -468,6 +490,7 @@ def estimate_two_ray(
     t_cap_ms = 1000.0 * cap_ft / max(v_fts * math.cos(math.radians(DRIFT_NOMINAL_LA_DEG)), 1.0)
 
     demods: list[FrameDemod] = []
+    n_core_skipped = 0
     for fr in frames:
         payload = fr.get("radc")
         ts = fr.get("timestamp")
@@ -476,11 +499,20 @@ def estimate_two_ray(
         t_ms = (float(ts) - float(impact_timestamp)) * 1000.0
         if not (-frame_window_ms <= t_ms <= t_cap_ms + frame_window_ms):
             continue
+        # Per-frame radial expected bin; skip frames whose alias sits in
+        # the irreducible clutter core instead of refusing the whole shot
+        v_radial = radial_speed_mph(
+            ball_speed_mph, t_ms - ACQ_MS / 2.0, distance_ft, ball_above_radar_ft
+        )
+        aliased = aliased_velocity_from_ball_speed_mph(v_radial)
+        if abs(aliased) <= DC_CORE_ALIASED_KMH:
+            n_core_skipped += 1
+            continue
         demods.append(
             _demodulate_frame(
                 bytes(payload),
                 t_ms,
-                expected_bin,
+                expected_ball_bin_from_speed(v_radial),
                 ball_speed_mph,
                 distance_ft,
                 ball_above_radar_ft,
@@ -489,6 +521,9 @@ def estimate_two_ray(
             )
         )
 
+    diag["n_frames_dc_core_skipped"] = n_core_skipped
+    if not demods and n_core_skipped > 0:
+        return _refuse("dc_blind_zone", diag)
     tau_ms = _range_anchored_tau(demods, ball_speed_mph, distance_ft)
     diag["tau_range_ms"] = None if math.isnan(tau_ms) else round(tau_ms, 1)
     if math.isnan(tau_ms):
@@ -509,6 +544,31 @@ def estimate_two_ray(
         }
         for d in valid
     ]
+    if len(valid) == 1:
+        # Single-frame position solve (validated offline as "Tier B"):
+        # one clean (range, elevation) plus the known tee determines the
+        # launch direction with no clock. Demands a tight demod fit and a
+        # usable range; confidence capped at the soft-accept threshold.
+        d = valid[0]
+        if (
+            d.resid <= 0.08
+            and not math.isnan(d.range_ft)
+            and RANGE_BAND_FT[0] <= d.range_ft <= RANGE_BAND_FT[1]
+        ):
+            el = math.radians(d.el_ball_deg)
+            bx = d.range_ft * math.cos(el) - distance_ft
+            by = d.range_ft * math.sin(el) - ball_above_radar_ft
+            if bx > 0.3:
+                la_single = math.degrees(math.atan2(by, bx))
+                if 0.0 < la_single < 45.0:
+                    diag["la_single_frame_deg"] = round(la_single, 2)
+                    logger.info(
+                        "[2RAY] single-frame LA %.2f deg (conf 0.68, tau %+.1f ms)",
+                        la_single,
+                        tau_ms,
+                    )
+                    return TwoRayEstimate(la_single, 0.68, None, diag)
+        return _refuse("too_few_valid_frames", diag)
     if len(valid) < 2:
         return _refuse("too_few_valid_frames", diag)
 
