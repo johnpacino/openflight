@@ -473,6 +473,13 @@ error.
 
 ## Follow-Up TODOs
 
+- Snapshot K-LD7 at trigger time before shrinking the live buffer. The current
+  architecture snapshots K-LD7 after OPS rolling-buffer dump, processing, and
+  shot callback work. A 2-second K-LD7 ring buffer can age out the impact
+  window before the callback runs. If we want a smaller K-LD7 buffer later,
+  capture a K-LD7 snapshot immediately when the sound trigger fires, before OPS
+  capture processing finishes. That is a larger architecture change than simply
+  lowering `buffer_seconds`.
 - Revisit single-frame anchor choice when no clean rising pair exists. The
   current anchor ranking prefers smallest OPS-bin error before SNR/coherence.
   TrackMan review of the 2026-05-30 7-iron session showed cases where that can

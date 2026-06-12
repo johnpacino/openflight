@@ -234,7 +234,8 @@ def main() -> int:
     try:
         from kld7 import FrameCode  # type: ignore
     except ImportError:
-        print("[calibrate] kld7 package not installed (uv add kld7).",
+        print("[calibrate] kld7 package not installed. Reinstall the project: "
+              "uv pip install -e '.[ui]'",
               file=sys.stderr)
         return 2
 

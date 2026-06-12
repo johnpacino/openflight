@@ -2509,14 +2509,17 @@ class TestSpinRailRejection:
             )
             if result.spin_rpm > 0:
                 accepted.append((seed, result))
-        # No accepted detection may sit at the bottom 5 bins of the seam
-        # search range (≈ 33-50 Hz, ≈ 2000-3000 RPM) — that whole region
-        # is dominated by envelope-DC leakage on real data.
+        # With the envelope detrend, 2000-3100 RPM is measurable for real
+        # tones — but toneless noise must never produce a *reliable*
+        # result there. Rail-zone picks additionally require medium SNR,
+        # which envelope noise does not reach.
         for seed, r in accepted:
-            assert r.spin_rpm > 3100, (
-                f"seed={seed}: lower rail not rejected, got "
-                f"{r.spin_rpm} RPM (quality={r.quality}, snr={r.snr})"
-            )
+            if r.spin_rpm <= 3100:
+                assert not r.is_reliable and r.confidence <= 0.5, (
+                    f"seed={seed}: noise accepted as reliable low spin, got "
+                    f"{r.spin_rpm} RPM (quality={r.quality}, snr={r.snr}, "
+                    f"confidence={r.confidence})"
+                )
 
     def test_upper_rail_peak_rejected_with_toneless_envelope(self):
         """A toneless envelope must not be reported as ~12000 RPM
@@ -2629,11 +2632,16 @@ class TestSpinRailRejection:
         assert result.at_upper_rail is False, "Interior peak should not flag at_upper_rail"
 
     def test_lower_rail_candidate_confidence_is_capped(self):
-        """Lower-rail candidates may be visible but must not be reliable."""
+        """Lower-rail candidates may be visible but must not be reliable.
+
+        The rail zone is the lowest 3 live bins of the seam range
+        (~33-44 Hz, <=~2640 RPM) now that the detrend replaced the wide
+        leakage guard; 2300 RPM sits inside it.
+        """
         processor = RollingBufferProcessor()
         i, q = self._amplitude_modulated_iq(
             base_speed_mph=160.0,
-            mod_freq_hz=3000.0 / 60.0,
+            mod_freq_hz=2300.0 / 60.0,
             modulation_depth=0.03,
         )
         capture = IQCapture(
@@ -2650,6 +2658,7 @@ class TestSpinRailRejection:
         )
 
         assert result.spin_rpm > 0
+        assert abs(result.spin_rpm - 2300) < 250
         assert result.at_lower_rail is True
         assert result.confidence <= 0.5
         assert result.is_reliable is False
@@ -2768,7 +2777,8 @@ class TestSpinRailRejection:
 
         assert witness is not None
         assert witness["confirmed"] is True
-        assert witness["method"] == "phase_residual"
+        # Either phase witness may win the ranking; both are valid confirmations.
+        assert witness["method"] in ("phase_residual", "instant_frequency")
         assert witness["rpm"] == pytest.approx(7031.25)
         assert witness["snr"] >= processor.SPIN_PHASE_SNR_MIN
         assert witness["agreement_pct"] <= processor.SPIN_PHASE_AGREEMENT_PCT
@@ -2862,4 +2872,109 @@ class TestShutdownPreservesRollingBuffer:
         monitor.disconnect()
         assert monitor._running is False, (
             "disconnect() must call stop() so the capture thread shuts down"
+        )
+
+
+class TestSpinWindowTrimming:
+    """The spin window must end where ball signal ends (net impact), not at
+    the end of the capture — the amplitude cliff plus dead air corrupts the
+    envelope FFT."""
+
+    def _make_capture_with_signal_loss(
+        self,
+        base_speed_mph=120,
+        spin_rpm=6000,
+        signal_end_ms=55.0,
+        modulation_depth=0.03,
+        sample_rate=30000,
+        num_samples=4096,
+    ):
+        """Ball tone with seam modulation that dies mid-capture (net impact)."""
+        rng = np.random.default_rng(7)
+        wavelength = 0.01243
+        doppler_hz = 2 * (base_speed_mph / 2.23694) / wavelength
+        seam_hz = spin_rpm / 60.0
+
+        t = np.arange(num_samples) / sample_rate
+        phase = 2 * np.pi * doppler_hz * t
+        amplitude = 200 * (1.0 + modulation_depth * np.sin(2 * np.pi * seam_hz * t))
+        i_signal = amplitude * np.cos(phase)
+        q_signal = amplitude * np.sin(phase)
+
+        end_sample = min(int(signal_end_ms * sample_rate / 1000), num_samples)
+        i_signal[end_sample:] = rng.normal(0, 2, num_samples - end_sample)
+        q_signal[end_sample:] = rng.normal(0, 2, num_samples - end_sample)
+
+        return IQCapture(
+            sample_time=0.0,
+            trigger_time=0.068,
+            i_samples=(i_signal + 2048).astype(int).clip(0, 4095).tolist(),
+            q_samples=(q_signal + 2048).astype(int).clip(0, 4095).tolist(),
+        )
+
+    def test_spin_correct_when_ball_signal_dies_mid_capture(self):
+        capture = self._make_capture_with_signal_loss(spin_rpm=6000, signal_end_ms=55.0)
+        processor = RollingBufferProcessor()
+        result = processor.detect_spin(capture, ball_speed_mph=120, ball_timestamp_ms=5.0)
+        assert result.spin_rpm > 0, f"Should detect spin, got: {result.rejection_reason}"
+        assert abs(result.spin_rpm - 6000) < 300, (
+            f"Expected ~6000 RPM, got {result.spin_rpm} (quality={result.quality})"
+        )
+
+    def test_full_length_signal_is_not_truncated(self):
+        """A ball tone spanning the whole capture must keep its full window
+        (seam_cycles reflects the full ~126 ms analysis window)."""
+        capture = self._make_capture_with_signal_loss(spin_rpm=6000, signal_end_ms=10000.0)
+        processor = RollingBufferProcessor()
+        result = processor.detect_spin(capture, ball_speed_mph=120, ball_timestamp_ms=5.0)
+        assert result.spin_rpm > 0
+        assert abs(result.spin_rpm - 6000) < 300
+        # 6000 RPM = 100 Hz; >= 11 cycles requires >= ~110 ms of window
+        assert result.seam_cycles >= 11, (
+            f"Window appears wrongly truncated: {result.seam_cycles} cycles"
+        )
+
+
+class TestSpinDriverDeadZone:
+    """Typical driver backspin (2000-3000 RPM) must be measurable: the old
+    DC-leakage guard zeroed 33-51.3 Hz (1980-3080 RPM) of the envelope FFT."""
+
+    def _tone_capture(self, spin_rpm, modulation_depth=0.03, decay=None):
+        sample_rate, num_samples = 30000, 4096
+        wavelength = 0.01243
+        doppler_hz = 2 * (160 / 2.23694) / wavelength
+        t = np.arange(num_samples) / sample_rate
+        phase = 2 * np.pi * doppler_hz * t
+        amplitude = np.full(num_samples, 200.0)
+        if spin_rpm:
+            amplitude *= 1.0 + modulation_depth * np.sin(2 * np.pi * (spin_rpm / 60.0) * t)
+        if decay is not None:
+            amplitude *= np.linspace(1.0, decay, num_samples)
+        return IQCapture(
+            sample_time=0.0,
+            trigger_time=0.068,
+            i_samples=(amplitude * np.cos(phase) + 2048).astype(int).clip(0, 4095).tolist(),
+            q_samples=(amplitude * np.sin(phase) + 2048).astype(int).clip(0, 4095).tolist(),
+        )
+
+    def test_low_driver_spin_measurable(self):
+        """2400 RPM (40 Hz) sits inside the old zeroed band."""
+        processor = RollingBufferProcessor()
+        result = processor.detect_spin(
+            self._tone_capture(2400), ball_speed_mph=160, ball_timestamp_ms=5.0
+        )
+        assert result.spin_rpm > 0, f"Should detect spin, got: {result.rejection_reason}"
+        assert abs(result.spin_rpm - 2400) < 250, f"Expected ~2400 RPM, got {result.spin_rpm}"
+
+    def test_range_falloff_decay_does_not_fake_driver_spin(self):
+        """A smoothly decaying envelope with no seam modulation (ball flying
+        away, no spin signal) must not produce a confident driver-band spin."""
+        processor = RollingBufferProcessor()
+        result = processor.detect_spin(
+            self._tone_capture(spin_rpm=0, decay=0.4),
+            ball_speed_mph=160,
+            ball_timestamp_ms=5.0,
+        )
+        assert result.spin_rpm == 0 or result.quality == "low", (
+            f"Decay ramp faked spin: {result.spin_rpm} RPM quality={result.quality}"
         )

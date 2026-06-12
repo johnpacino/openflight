@@ -158,9 +158,13 @@ Other possibilities:
 
 **Cause:** The K-LD7 uses an FTDI USB-to-serial adapter which shows up as `/dev/ttyUSB*`. If multiple USB-serial devices are connected, auto-detection may pick the wrong one.
 
-**Fix:** Specify the port explicitly or set up udev rules:
+**Fix:** Run the device naming wizard so each radar gets a fixed name, or
+specify the port explicitly:
 ```bash
-# Explicit port
+# Recommended: map the radars to /dev/kld7_vertical / /dev/kld7_horizontal
+./scripts/setup/setup_kld7_devices.sh
+
+# Or: explicit port
 scripts/start-kiosk.sh --kld7 --kld7-port /dev/ttyUSB0
 
 # Find available ports
@@ -173,6 +177,27 @@ python3 -m serial.tools.list_ports -v
 If `--kld7` or `--kld7-horizontal` is passed but the radar fails to connect after 5 attempts, the server exits with an error. This is intentional — running without a requested radar would produce incomplete data.
 
 ## RADC Streaming Issues
+
+### Measuring real K-LD7 RADC cadence
+
+Use the guarded timing probe when launch-angle extraction is missing frames or
+when one K-LD7 orientation appears slower than the other:
+
+```bash
+uv run python scripts/hardware-test/probe_kld7_timing.py \
+  --port /dev/kld7_vertical \
+  --duration 10 \
+  --frame-mask RADC,DONE \
+  --output /tmp/kld7_vertical_timing.jsonl
+```
+
+At the production `RSPI=3` setting, expect roughly 34 RADC frames per second
+with low `done_frame_gaps`. If cadence is much lower or gaps are high,
+investigate USB scheduling, serial read duration, or requested packet volume
+before changing launch-angle selection logic.
+
+Undocumented command probing is available only through `--unsafe-probe` and
+requires `--output`. Do not use it in production sessions.
 
 ### No RADC frames in buffer
 

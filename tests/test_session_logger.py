@@ -243,6 +243,11 @@ class TestLogShot:
             launch_angle_vertical_source="radar",
             launch_angle_horizontal_source="estimated",
             impact_timestamp=1234567890.25,
+            kld7_timing_debug={
+                "trigger_timestamp": 1234567890.25,
+                "impact_timestamp_kld7": 1234567890.30,
+                "vertical": {"anchor_frame_index": 38},
+            },
         )
 
         lines = logger.session_path.read_text().strip().split("\n")
@@ -265,6 +270,8 @@ class TestLogShot:
         assert entry["launch_angle_vertical_source"] == "radar"
         assert entry["launch_angle_horizontal_source"] == "estimated"
         assert entry["impact_timestamp"] == 1234567890.25
+        assert entry["kld7_timing_debug"]["impact_timestamp_kld7"] == 1234567890.30
+        assert entry["kld7_timing_debug"]["vertical"]["anchor_frame_index"] == 38
 
     def test_rolling_buffer_capture_logs_trigger_timing(self, tmp_path):
         """Rolling-buffer captures should preserve host trigger timing fields."""
@@ -335,6 +342,11 @@ class TestLogKld7Buffer:
             ],
             ball_angle=ball,
             club_angle=club,
+            timing_debug={
+                "snapshot_delay_ms": 190.0,
+                "anchor_frame_index": 39,
+                "plus_50ms_frame_index": 41,
+            },
         )
 
         lines = logger.session_path.read_text().strip().split("\n")
@@ -354,6 +366,8 @@ class TestLogKld7Buffer:
             "club_angle must be preserved in the kld7_buffer log entry "
             "so offline analysis can correlate it with the ball angle."
         )
+        assert entry["timing_debug"]["snapshot_delay_ms"] == 190.0
+        assert entry["timing_debug"]["anchor_frame_index"] == 39
 
     def test_kld7_buffer_logs_raw_radc_payload_counts(self, tmp_path):
         """Top-level counts make TrackMan replay readiness obvious per shot."""
@@ -500,3 +514,36 @@ class TestLogClockSync:
         logger = SessionLogger(log_dir=tmp_path, enabled=False)
         logger.log_clock_sync(device="ops243", port="x", summary=self._summary())
         assert logger.session_path is None
+
+
+class TestSessionIdentity:
+    """session_start must carry a globally unique ID and format version so
+    cloud sync can dedupe sessions by content, not filename."""
+
+    def _start_entry(self, tmp_path):
+        logger = SessionLogger(log_dir=tmp_path, enabled=True)
+        logger.start_session(mode="rolling-buffer", trigger_type="sound")
+        logger.end_session()
+        session_file = next(tmp_path.glob("session_*.jsonl"))
+        with session_file.open() as handle:
+            first = json.loads(handle.readline())
+        return first
+
+    def test_session_start_has_uuid_and_format_version(self, tmp_path):
+        import uuid
+
+        import openflight
+
+        entry = self._start_entry(tmp_path)
+        assert entry["type"] == "session_start"
+        # Valid UUID4, distinct from the timestamp-based session_id
+        parsed = uuid.UUID(entry["session_uuid"])
+        assert parsed.version == 4
+        assert entry["session_uuid"] != entry["session_id"]
+        assert entry["format_version"] == 1
+        assert entry["app_version"] == openflight.__version__
+
+    def test_session_uuid_is_unique_per_session(self, tmp_path):
+        first = self._start_entry(tmp_path / "a")
+        second = self._start_entry(tmp_path / "b")
+        assert first["session_uuid"] != second["session_uuid"]

@@ -8,9 +8,10 @@ from typing import Any, Optional
 class KLD7Frame:
     """A single frame from the K-LD7 radar stream.
 
-    Only RADC raw I/Q is collected — TDAT (single-target) and PDAT
-    (CFAR target list) frames are no longer requested from the radar
-    because all detection is done from RADC offline.
+    RADC raw I/Q is collected for detection. TDAT and PDAT frames are no
+    longer requested from the radar because all detection is done from
+    RADC offline. The optional DONE frame number is preserved for
+    diagnostic sessions that explicitly captured it.
     """
 
     timestamp: float
@@ -18,6 +19,7 @@ class KLD7Frame:
     arrival_timestamp: Optional[float] = None
     complete_timestamp: Optional[float] = None
     read_duration_ms: Optional[float] = None
+    done_frame_number: Optional[int] = None
 
 
 @dataclass

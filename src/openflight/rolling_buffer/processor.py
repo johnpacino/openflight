@@ -89,17 +89,37 @@ class RollingBufferProcessor:
     # Rail-rejection guards. The envelope FFT has two pathological
     # regions where the peak picker hunts for noise rather than a real
     # seam tone:
-    #   - The lowest few bins of the valid seam range are dominated by
-    #     residual DC leakage from the envelope subtraction (the Hann
-    #     main lobe is ~2 bins wide but the leakage shoulder extends
-    #     several bins further). On real captures this produces a
-    #     pile-up at ~2637-3076 RPM. Zero the lowest N bins so they
-    #     cannot win the argmax.
+    #   - Slow envelope drift (range falloff, residual DC) leaks into
+    #     the lowest bins of the seam range. The polynomial detrend
+    #     removes the drift itself; a 1-bin guard absorbs what little
+    #     leakage remains. (This guard was previously 5 bins, which
+    #     zeroed 33-51.3 Hz = 1980-3080 RPM — typical driver backspin —
+    #     and produced a rail-artifact pile-up at ~3296 RPM instead.)
     #   - The highest 1-2 bins are the bandpass shoulder of the
     #     prefilter. Even a moderate noise spike there reads as
     #     ~12000 RPM. Reject the pick when the peak lands there
     #     and SNR isn't strong enough to override.
-    SPIN_DC_LEAKAGE_BINS = 5         # Zero this many low bins of valid range
+    SPIN_DC_LEAKAGE_BINS = 1         # Zero this many low bins of valid range
+    # Picks at or below this RPM are reported but capped to low quality:
+    # red envelope noise produces sustained narrowband mimics in this
+    # band that a single ~136 ms capture cannot distinguish from a real
+    # seam tone (see the low-band cap in detect_spin).
+    SPIN_LOW_BAND_SUSPECT_MAX_RPM = 3100.0
+    # Polynomial order for envelope detrending before the spin FFT.
+    # Order 3 follows the smooth range-falloff decay across the window
+    # but cannot track a >=33 Hz seam tone (>=2 cycles in any window
+    # long enough to pass SPIN_MIN_SAMPLES), so real spin is preserved.
+    SPIN_DETREND_POLY_ORDER = 3
+    # Ball-signal-end detection: the analysis window must stop when the
+    # ball signal dies (net impact indoors), not at the end of the
+    # capture — the amplitude cliff plus dead air corrupts the envelope
+    # FFT. Signal is "lost" when the smoothed envelope stays below
+    # SPIN_SIGNAL_LOSS_THRESHOLD x (early-window median) for
+    # SPIN_SIGNAL_LOSS_HOLD_SAMPLES.
+    SPIN_SIGNAL_LOSS_SMOOTH_SAMPLES = 90   # ~3 ms moving average
+    SPIN_SIGNAL_LOSS_REF_SAMPLES = 450     # first ~15 ms sets reference level
+    SPIN_SIGNAL_LOSS_THRESHOLD = 0.15      # fraction of reference level
+    SPIN_SIGNAL_LOSS_HOLD_SAMPLES = 150    # ~5 ms sustained loss
     SPIN_UPPER_RAIL_BINS = 2         # Top N bins of valid range = "upper rail"
     SPIN_PRIOR_MIN_RELATIVE_MAG = 0.40  # Candidate must be this strong to displace argmax
     SPIN_PRIOR_MAX_RELATIVE_ERROR = 0.55  # Candidate must be within this fraction of expected
@@ -416,6 +436,116 @@ class RollingBufferProcessor:
         """
         return self._process_capture(capture, self.STEP_SIZE_OVERLAP)
 
+    def _local_noise_floor(
+        self, valid_mag: np.ndarray, peak_idx: int, window_samples: int
+    ) -> float:
+        """Noise level around the peak, excluding the peak's main lobe.
+
+        Takes the *max* of the two sides' medians: a genuine narrow tone
+        has both sides at the true noise floor, while a peak riding the
+        top of a red-noise slope has at least one side nearly as high as
+        the peak itself. A pooled median would let the rolled-off side
+        mask the slope.
+
+        The exclusion zone scales with the Hann main-lobe width in
+        zero-padded bins (2 x FFT_SIZE / window_samples per side), so a
+        short analysis window's wider tone skirt is not counted as noise.
+        """
+        # A real Hann tone reaches its first null 2 x FFT/N padded bins
+        # from the peak; beyond that only -31 dB sidelobes remain. The
+        # neighborhood is the immediate shoulder just past the null — a
+        # red-noise bump's tell-tale is that this shoulder stays near
+        # peak level, and a wider window would dilute it with far bins
+        # that have already rolled off.
+        exclude = int(np.ceil(2 * self.SPIN_ENVELOPE_FFT_SIZE / max(window_samples, 1)))
+        half_width = 3 * exclude
+        lo = max(0, peak_idx - half_width)
+        hi = min(len(valid_mag), peak_idx + half_width + 1)
+        side_floors = []
+        for side in (
+            valid_mag[lo : max(lo, peak_idx - exclude)],
+            valid_mag[min(hi, peak_idx + exclude + 1) : hi],
+        ):
+            live = side[side > 0]
+            # A side needs a few live bins to give a meaningful median
+            # (the leakage guard zeroes bins near the low band edge).
+            if live.size >= 3:
+                side_floors.append(float(np.median(live)))
+        return max(side_floors) if side_floors else 0.0
+
+    def _spin_peak_is_persistent(
+        self, ball_envelope: np.ndarray, peak_freq_hz: float
+    ) -> bool:
+        """Whether the picked seam tone is present in both halves of the window.
+
+        A real seam tone persists for the whole ball flight; an envelope-noise
+        fluctuation concentrates its energy in part of the window. Demoting
+        non-persistent picks is the single-window analogue of tracking
+        sideband traces across successive spectra.
+        """
+        half = len(ball_envelope) // 2
+        if half < self.SPIN_MIN_SAMPLES // 2:
+            return True  # window too short to split meaningfully
+        for segment in (ball_envelope[:half], ball_envelope[half:]):
+            seg = segment - np.mean(segment)
+            windowed = seg * np.hanning(len(seg))
+            magnitude = np.abs(np.fft.fft(windowed, self.SPIN_ENVELOPE_FFT_SIZE))
+            freqs = np.fft.fftfreq(self.SPIN_ENVELOPE_FFT_SIZE, d=1 / self.SAMPLE_RATE)
+            half_fft = self.SPIN_ENVELOPE_FFT_SIZE // 2
+            magnitude, freqs = magnitude[1:half_fft], freqs[1:half_fft]
+            valid = (freqs >= self.SPIN_MIN_SEAM_HZ) & (freqs <= self.SPIN_MAX_SEAM_HZ)
+            valid_mag, valid_freqs = magnitude[valid], freqs[valid]
+            if not np.any(valid_mag > 0):
+                return False
+            floor = float(np.median(valid_mag[valid_mag > 0]))
+            # Tolerance: the half-window's natural resolution (±2 bins)
+            tol_hz = 2.0 * self.SAMPLE_RATE / len(seg)
+            near = np.abs(valid_freqs - peak_freq_hz) <= tol_hz
+            if not near.any() or floor <= 0:
+                return False
+            near_max = float(valid_mag[near].max())
+            # The pick must be above the floor AND (near-)dominant in
+            # this half. A broad noise bump keeps energy near the pick
+            # but its dominant frequency wanders across the bump; a real
+            # tone stays pinned at the same frequency in every half.
+            if near_max < 2.5 * floor or near_max < 0.7 * float(valid_mag.max()):
+                return False
+        return True
+
+    def _ball_signal_end_sample(self, envelope: np.ndarray, start_sample: int) -> int:
+        """Return the absolute sample index where the ball signal ends.
+
+        Detects sustained loss of the bandpassed ball tone (net impact
+        indoors) by comparing the smoothed envelope against the level at
+        the start of the ball window. Returns len(envelope) when no loss
+        is found, so outdoor shots keep the full capture.
+        """
+        tail = envelope[start_sample:]
+        if len(tail) < self.SPIN_SIGNAL_LOSS_REF_SAMPLES:
+            return len(envelope)
+
+        kernel = np.ones(self.SPIN_SIGNAL_LOSS_SMOOTH_SAMPLES)
+        kernel /= self.SPIN_SIGNAL_LOSS_SMOOTH_SAMPLES
+        smoothed = np.convolve(tail, kernel, mode="same")
+        reference = float(np.median(smoothed[: self.SPIN_SIGNAL_LOSS_REF_SAMPLES]))
+        if reference <= 0:
+            return len(envelope)
+
+        below = smoothed < reference * self.SPIN_SIGNAL_LOSS_THRESHOLD
+        hold = self.SPIN_SIGNAL_LOSS_HOLD_SAMPLES
+        if len(below) < hold:
+            return len(envelope)
+        sustained = np.convolve(below.astype(float), np.ones(hold), mode="valid") >= hold
+        if not sustained.any():
+            return len(envelope)
+        loss_offset = int(np.argmax(sustained))
+        logger.info(
+            "[PROCESSOR] Ball signal lost at %.1fms (window trimmed from %.1fms)",
+            (start_sample + loss_offset) / self.SAMPLE_RATE * 1000,
+            len(envelope) / self.SAMPLE_RATE * 1000,
+        )
+        return start_sample + loss_offset
+
     def detect_spin(
         self,
         capture: IQCapture,
@@ -468,10 +598,11 @@ class RollingBufferProcessor:
         # Amplitude envelope
         envelope = np.abs(filtered)
 
-        # Trim to ball-present window (from ball onset to end of capture)
+        # Trim to ball-present window: from ball onset to where the ball
+        # signal dies (net impact indoors), falling back to capture end.
         start_sample = max(0, int(ball_timestamp_ms * self.SAMPLE_RATE / 1000))
         spin_window_start_sample = start_sample
-        spin_window_end_sample = len(envelope)
+        spin_window_end_sample = self._ball_signal_end_sample(envelope, start_sample)
         ball_envelope = envelope[spin_window_start_sample:spin_window_end_sample]
 
         # Trim filter transients from both ends. sosfiltfilt's internal
@@ -512,12 +643,17 @@ class RollingBufferProcessor:
             weak_modulation = modulation_depth < 0.01
 
         # Remove DC and apply Hann window
-        ball_envelope -= envelope_mean
+        ball_envelope = ball_envelope - envelope_mean
         if envelope_std < 1e-6:
             return SpinResult.no_spin_detected(
                 "Envelope variation too low",
                 modulation_depth=modulation_depth,
             )
+        # Detrend slow envelope drift (range falloff) so it cannot leak
+        # into the low end of the seam band and shadow real driver spin.
+        x = np.arange(len(ball_envelope), dtype=np.float64)
+        trend = np.polyval(np.polyfit(x, ball_envelope, self.SPIN_DETREND_POLY_ORDER), x)
+        ball_envelope = ball_envelope - trend
         windowed = ball_envelope * np.hanning(len(ball_envelope))
 
         # --- Primary: FFT on envelope ---
@@ -563,8 +699,17 @@ class RollingBufferProcessor:
         at_lower_rail = peak_idx < leakage + self.SPIN_UPPER_RAIL_BINS
         at_upper_rail = peak_idx >= n_valid - self.SPIN_UPPER_RAIL_BINS
 
-        # SNR: peak vs median noise floor in valid range
+        # SNR: peak vs the stricter of two noise floors. The global
+        # median catches white noise; the local median catches red
+        # envelope noise, which forms broad low-frequency bumps whose
+        # peaks tower over the global median while sitting barely above
+        # their own neighborhood. A real seam tone is a narrow line
+        # (Hann main lobe) above its local floor; a noise-bump peak is
+        # not. Without the local floor, toneless red noise reads as
+        # high-confidence ~2000-3300 RPM spin.
         noise_floor = np.median(valid_mag[valid_mag > 0]) if np.any(valid_mag > 0) else 1.0
+        local_floor = self._local_noise_floor(valid_mag, peak_idx, len(windowed))
+        noise_floor = max(noise_floor, local_floor)
         fft_snr = peak_mag / noise_floor if noise_floor > 0 else 0
         spin_candidates = self._build_spin_candidates(
             valid_mag,
@@ -627,23 +772,27 @@ class RollingBufferProcessor:
                 candidates=spin_candidates,
             )
 
-        # Lower-rail picks survive the leakage zeroing only if energy
-        # leaks just past the guard. Treat them as suspect: require
-        # modulation depth to clearly exceed the weak-modulation
-        # threshold (i.e., a real seam tone rather than envelope wander).
+        # Lower-rail picks sit where residual envelope drift leaks past
+        # the detrend. Treat them as suspect: require modulation depth
+        # to clearly exceed the weak-modulation threshold AND medium
+        # SNR (a real low-spin driver tone is strong; noise picks in
+        # this zone hover just above the report floor).
         if at_lower_rail and (
-            modulation_depth is None or modulation_depth < 0.012
+            modulation_depth is None
+            or modulation_depth < 0.012
+            or fft_snr < self.SPIN_SNR_MEDIUM
         ):
             logger.warning(
                 "[PROCESSOR] Spin rejected: lower-rail peak at %.0f RPM "
-                "(mod %.4f, envelope-DC leakage)",
+                "(mod %.4f, SNR %.1f, envelope-drift leakage suspected)",
                 spin_rpm,
                 modulation_depth if modulation_depth is not None else float("nan"),
+                fft_snr,
             )
             return SpinResult.no_spin_detected(
                 f"Lower-rail peak at {spin_rpm:.0f} RPM "
-                f"(mod {modulation_depth or 0:.4f}, "
-                f"envelope-DC leakage suspected)",
+                f"(mod {modulation_depth or 0:.4f}, SNR {fft_snr:.1f}, "
+                f"envelope-drift leakage suspected)",
                 snr=fft_snr,
                 modulation_depth=modulation_depth,
                 peak_freq_hz=peak_freq,
@@ -815,6 +964,18 @@ class RollingBufferProcessor:
             quality = "low"
             confidence = 0.3
 
+        # A seam tone must persist across the whole window — a pick whose
+        # energy lives in only half the window is an envelope-noise
+        # fluctuation, however sharp its spectral peak looks.
+        if not self._spin_peak_is_persistent(ball_envelope, peak_freq):
+            logger.info(
+                "[PROCESSOR] Spin demoted: %.0f RPM peak not persistent "
+                "across both window halves",
+                spin_rpm,
+            )
+            confidence = min(confidence, 0.3)
+            quality = "low"
+
         # Weak modulation caps confidence — the envelope FFT peak may be
         # noise rather than real seam modulation.
         if weak_modulation:
@@ -822,11 +983,17 @@ class RollingBufferProcessor:
             if quality == "high":
                 quality = "medium"
 
-        # Low-edge picks can be real low-spin driver candidates, but
-        # real Trackman comparison sessions also show 3300-3500 RPM
-        # rail artifacts on irons/wedges. Keep the candidate visible for
-        # analysis, but never treat it as a reliable spin measurement.
-        if at_lower_rail:
+        # Low-band picks (<= ~3100 RPM / ~52 Hz) can be real driver spin,
+        # and the detrended FFT now reports their correct value — but at
+        # a ~136 ms window this band has an irreducible noise-mimic
+        # problem: lowpassed envelope noise produces sustained narrowband
+        # components here that are physically indistinguishable from a
+        # seam tone within a single capture (and real TrackMan sessions
+        # showed exactly such artifacts on irons/wedges). Report the
+        # value, but never as reliable. Lifting this cap requires an
+        # estimator with more signal energy (dechirped Doppler sidebands)
+        # or a longer observation window.
+        if at_lower_rail or spin_rpm <= self.SPIN_LOW_BAND_SUSPECT_MAX_RPM:
             confidence = min(confidence, 0.5)
             if quality in ("high", "medium"):
                 quality = "low"

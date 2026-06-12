@@ -400,6 +400,7 @@ class TestKLD7TrackerRingBuffer:
                 arrival_timestamp=999.9,
                 complete_timestamp=1000.0,
                 read_duration_ms=100.0,
+                done_frame_number=1234,
             )
         )
 
@@ -409,6 +410,7 @@ class TestKLD7TrackerRingBuffer:
         assert snap[0]["arrival_timestamp"] == 999.9
         assert snap[0]["complete_timestamp"] == 1000.0
         assert snap[0]["read_duration_ms"] == 100.0
+        assert snap[0]["done_frame_number"] == 1234
 
     def test_snapshot_buffer_omits_has_radc_when_no_radc(self):
         tracker = self._make_tracker()
@@ -1186,8 +1188,6 @@ class TestRADCAngleExtraction:
             snr_linear=10.0,
             angle_deg=7.0,
             speed_mph=117.0,
-            raw_angle_deg=7.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.038,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1199,8 +1199,6 @@ class TestRADCAngleExtraction:
             snr_linear=VERTICAL_RULE_WEAK_ADJACENT_SNR_FLOOR + 0.1,
             angle_deg=11.0,
             speed_mph=117.0,
-            raw_angle_deg=11.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.071,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1225,8 +1223,6 @@ class TestRADCAngleExtraction:
             snr_linear=6.0,
             angle_deg=2.0,
             speed_mph=117.0,
-            raw_angle_deg=2.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.012,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1238,8 +1234,6 @@ class TestRADCAngleExtraction:
             snr_linear=10.0,
             angle_deg=7.0,
             speed_mph=117.0,
-            raw_angle_deg=7.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.038,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1263,8 +1257,6 @@ class TestRADCAngleExtraction:
             snr_linear=6.0,
             angle_deg=2.0,
             speed_mph=117.0,
-            raw_angle_deg=2.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.012,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1276,8 +1268,6 @@ class TestRADCAngleExtraction:
             snr_linear=10.0,
             angle_deg=7.0,
             speed_mph=117.0,
-            raw_angle_deg=7.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.038,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1289,8 +1279,6 @@ class TestRADCAngleExtraction:
             snr_linear=8.0,
             angle_deg=11.0,
             speed_mph=117.0,
-            raw_angle_deg=11.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.071,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1314,8 +1302,6 @@ class TestRADCAngleExtraction:
             snr_linear=12.0,
             angle_deg=2.0,
             speed_mph=117.0,
-            raw_angle_deg=2.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.012,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1339,8 +1325,6 @@ class TestRADCAngleExtraction:
                 snr_linear=VERTICAL_RULE_WEAK_ADJACENT_SNR_FLOOR + 0.1,
                 angle_deg=5.0 + idx,
                 speed_mph=117.0,
-                raw_angle_deg=5.0 + idx,
-                geom_bearing_deg=0.0,
                 t_after_impact_s=0.040 + idx * 0.030,
                 phase_coherence=0.99,
                 peak_width_bins=5,
@@ -1366,8 +1350,6 @@ class TestRADCAngleExtraction:
             snr_linear=10.0,
             angle_deg=7.0,
             speed_mph=117.0,
-            raw_angle_deg=7.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.038,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1379,8 +1361,6 @@ class TestRADCAngleExtraction:
             snr_linear=VERTICAL_RULE_WEAK_ADJACENT_SNR_FLOOR + 0.1,
             angle_deg=3.0,
             speed_mph=117.0,
-            raw_angle_deg=3.0,
-            geom_bearing_deg=0.0,
             t_after_impact_s=0.071,
             phase_coherence=0.99,
             peak_width_bins=5,
@@ -1843,3 +1823,172 @@ class TestRADCAngleExtraction:
                 "vertical_flight_window_net_distance_ft": 12.0,
             }
         ]
+
+
+def _make_iq_pair_with_fringe(
+    velocity_kmh,
+    angle_deg,
+    wobble_deg=0.0,
+    wobble_cycles=2,
+    am_depth=0.0,
+    amplitude=1000.0,
+    n=256,
+):
+    """Synthesize complex F1A/F2A I/Q for one frame.
+
+    The F2A steering phase tracks ``angle_deg`` plus an optional sinusoidal
+    wobble (simulating a ground-bounce fringe sweeping the blended angle),
+    and F2A amplitude is optionally modulated by ``am_depth`` at the same
+    rate (simulating the channel-balance oscillation of a fringe).
+    """
+    from openflight.kld7.radc import ANTENNA_SPACING_M, WAVELENGTH_M
+
+    max_speed_kmh = 100.0
+    if velocity_kmh >= 0:
+        norm_freq = velocity_kmh / (2 * max_speed_kmh)
+    else:
+        norm_freq = 1.0 + velocity_kmh / (2 * max_speed_kmh)
+
+    t = np.arange(n)
+    carrier = 2 * np.pi * norm_freq * t
+    fringe = 2 * np.pi * wobble_cycles * t / n
+    inst_angle_rad = np.radians(angle_deg + wobble_deg * np.sin(fringe))
+    steering = 2 * np.pi * ANTENNA_SPACING_M * np.sin(inst_angle_rad) / WAVELENGTH_M
+
+    f1a = amplitude * np.exp(1j * carrier)
+    f2a = amplitude * (1.0 + am_depth * np.sin(fringe)) * np.exp(1j * (carrier + steering))
+    return f1a, f2a
+
+
+class TestDCAliasBlindZone:
+    """Ball speeds that alias onto DC are buried in the DC clutter mask
+    (K-LD7 ±100 km/h wrap: ~118-131 mph lands within ~11 km/h of bin 0)."""
+
+    def test_blind_zone_band(self):
+        from openflight.kld7.radc import is_dc_alias_blind_zone
+
+        # 124 mph = 199.5 km/h aliases to -0.5 km/h — dead center of DC
+        assert is_dc_alias_blind_zone(124.0)
+        # Edges of the empirical 118-131 mph band
+        assert is_dc_alias_blind_zone(119.0)  # aliases to -8.5 km/h
+        assert is_dc_alias_blind_zone(130.0)  # aliases to +9.2 km/h
+        # Clear speeds on either side of the band
+        assert not is_dc_alias_blind_zone(110.0)  # -23.0 km/h
+        assert not is_dc_alias_blind_zone(140.0)  # +25.3 km/h
+        # Typical iron / minimum pipeline speeds are nowhere near DC
+        assert not is_dc_alias_blind_zone(72.0)
+        assert not is_dc_alias_blind_zone(35.0)
+
+    def _frames_with_tone(self, aliased_kmh, amplitude=6000):
+        synth = TestRADCAngleExtraction()
+        impact_ts = time.time()
+        quiet = synth._make_quiet_radc_payload()
+        frames = [{"timestamp": impact_ts - (6 - i) * 0.056, "radc": quiet} for i in range(6)]
+        tone = synth._make_radc_payload_with_tone(aliased_kmh, angle_deg=5.0, amplitude=amplitude)
+        frames.append({"timestamp": impact_ts + 0.056, "radc": tone})
+        return frames
+
+    def test_extract_flags_blind_zone_and_caps_confidence(self):
+        from openflight.kld7.radc import extract_launch_angle
+
+        # 119 mph aliases to -8.5 km/h: detectable (outside the 8-bin DC
+        # mask) but inside the blind-zone margin where clutter dominates.
+        ball_speed_mph = 119.0
+        aliased_kmh = (ball_speed_mph * 1.609) % 200.0 - 200.0
+
+        results = extract_launch_angle(
+            self._frames_with_tone(aliased_kmh),
+            ops243_ball_speed_mph=ball_speed_mph,
+        )
+
+        assert results
+        assert results[0]["dc_blind_zone"] is True
+        assert results[0]["confidence"] <= 0.35
+
+    def test_extract_clear_speed_not_flagged(self):
+        from openflight.kld7.radc import extract_launch_angle
+
+        ball_speed_mph = 72.0
+        aliased_kmh = (ball_speed_mph * 1.609) % 200.0 - 200.0
+
+        results = extract_launch_angle(
+            self._frames_with_tone(aliased_kmh),
+            ops243_ball_speed_mph=ball_speed_mph,
+        )
+
+        assert results
+        assert results[0]["dc_blind_zone"] is False
+
+
+class TestSubframeFringeMetrics:
+    """Per-frame sub-frame STFT metrics exposing ground-bounce fringes:
+    elevation ripple and F1A/F2A balance excursion across 64-sample windows."""
+
+    def _peak_bin(self, velocity_kmh, fft_size=2048):
+        from openflight.kld7.radc import _velocity_to_bin
+
+        return _velocity_to_bin(velocity_kmh, fft_size)
+
+    def test_constant_angle_has_low_ripple(self):
+        from openflight.kld7.radc import subframe_fringe_metrics
+
+        f1a, f2a = _make_iq_pair_with_fringe(-84.0, angle_deg=8.0)
+        metrics = subframe_fringe_metrics(f1a, f2a, self._peak_bin(-84.0))
+
+        assert metrics is not None
+        assert metrics["subframe_count"] == 13
+        assert metrics["elev_p2p_deg"] < 1.0
+        assert metrics["balance_max"] - metrics["balance_min"] < 0.1
+
+    def test_fringe_wobble_detected(self):
+        from openflight.kld7.radc import subframe_fringe_metrics
+
+        f1a, f2a = _make_iq_pair_with_fringe(
+            -84.0, angle_deg=8.0, wobble_deg=6.0, wobble_cycles=2, am_depth=0.4
+        )
+        metrics = subframe_fringe_metrics(f1a, f2a, self._peak_bin(-84.0))
+
+        assert metrics is not None
+        assert metrics["elev_p2p_deg"] > 4.0
+        assert metrics["balance_max"] - metrics["balance_min"] > 0.3
+
+    def test_zero_signal_returns_none(self):
+        from openflight.kld7.radc import subframe_fringe_metrics
+
+        zeros = np.zeros(256, dtype=np.complex128)
+        assert subframe_fringe_metrics(zeros, zeros, 1186) is None
+
+    def test_extract_attaches_fringe_metrics_for_selected_frames(self):
+        from openflight.kld7.radc import extract_launch_angle
+
+        synth = TestRADCAngleExtraction()
+        impact_ts = time.time()
+        quiet = synth._make_quiet_radc_payload()
+        frames = [{"timestamp": impact_ts - (6 - i) * 0.056, "radc": quiet} for i in range(6)]
+        tone = synth._make_radc_payload_with_tone(-84.0, angle_deg=5.0, amplitude=6000)
+        frames.append({"timestamp": impact_ts + 0.056, "radc": tone})
+
+        results = extract_launch_angle(frames, ops243_ball_speed_mph=72.0)
+
+        assert results
+        fringe = results[0]["fringe_metrics"]
+        assert isinstance(fringe, list) and fringe
+        entry = fringe[0]
+        assert entry["frame_index"] in results[0]["selected_frame_indices"]
+        for key in ("subframe_count", "elev_p2p_deg", "balance_min", "balance_max"):
+            assert key in entry
+
+
+class TestRADCDiagnosticsPassthrough:
+    def test_selection_diagnostics_include_blind_zone_and_fringe(self):
+        from openflight.kld7.tracker import _radc_selection_diagnostics
+
+        best = {
+            "estimator": "naive",
+            "dc_blind_zone": True,
+            "fringe_metrics": [{"frame_index": 6, "elev_p2p_deg": 7.2}],
+        }
+        diagnostics = _radc_selection_diagnostics(best, relaxed_retry=False)
+
+        assert diagnostics["dc_blind_zone"] is True
+        assert diagnostics["fringe_metrics"] == [{"frame_index": 6, "elev_p2p_deg": 7.2}]

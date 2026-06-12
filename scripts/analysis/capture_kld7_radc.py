@@ -46,7 +46,7 @@ from pathlib import Path
 try:
     from kld7 import KLD7, FrameCode, KLD7Exception
 except ImportError:
-    print("kld7 package not installed. Run: pip install kld7")
+    print("kld7 package not installed. Reinstall the project: uv pip install -e '.[ui]'")
     sys.exit(1)
 
 # Add src to path for OPS243 import. This script lives in scripts/analysis.

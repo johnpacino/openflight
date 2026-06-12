@@ -40,7 +40,8 @@ For every test pass, preserve enough raw data and diagnostics to answer:
      spin rail filtering.
 3. Confirm OPS243 rolling buffer mode is active and sound trigger re-arms after
    each shot.
-4. Confirm K-LD7 orientation and udev symlinks:
+4. Confirm K-LD7 orientation and udev symlinks
+   (`./scripts/setup/setup_kld7_devices.sh --show`):
    - horizontal: `/dev/kld7_horizontal`
    - vertical: `/dev/kld7_vertical`
 5. Confirm both K-LD7 FTDI adapters are in low-latency mode. Run this once on

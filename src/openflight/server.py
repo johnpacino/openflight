@@ -16,10 +16,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from flask import Flask, Response, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
+from .ballistics import resolve_launch, simulate
 from .kld7.geometry import GEOM_BALL_ABOVE_RADAR_FT
 from .launch_monitor import ClubType, Shot
 from .ops243 import Direction, SpeedReading, set_show_raw_readings
@@ -61,6 +62,7 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 monitor = None
 mock_mode: bool = False
 debug_mode: bool = False
+cli_debug_enabled: bool = False
 debug_log_file = None
 debug_log_path: Optional[Path] = None
 
@@ -69,6 +71,12 @@ kld7_vertical = None
 kld7_horizontal = None
 experimental_kld7_radc_tuning: bool = False
 experimental_kld7_raw_radc_logging: bool = False
+
+# Ballistic model toggle. When True, shot carry comes from the physics
+# simulator whenever a vertical launch angle is available. When False
+# (default), all carry computations go through the legacy table estimator.
+# The simulator is opt-in until coefficients are validated against TM.
+ballistics_enabled: bool = False
 
 _DEFAULT_KLD7_RADC_TUNING = {
     "radc_speed_tolerance_mph": 10.0,
@@ -693,6 +701,257 @@ def _warn_if_kld7_snapshot_lacks_post_shot_frames(
     )
 
 
+def _reset_kld7_after_shot(orientation: str, tracker) -> None:
+    """Clear a K-LD7 ring buffer after shot processing without stopping streaming."""
+    if not tracker:
+        return
+    try:
+        tracker.reset()
+        logger.debug("[SERVER] K-LD7 %s buffer reset after shot", orientation)
+    except Exception as exc:
+        logger.warning("[SERVER] K-LD7 %s buffer reset failed: %s", orientation, exc, exc_info=True)
+        log_session_error(
+            "K-LD7 buffer reset after shot failed",
+            component="server",
+            context={"stage": "kld7_reset", "orientation": orientation},
+            exc=exc,
+        )
+
+
+def _kld7_debug_anchor_state(timestamps: list[float], anchor_timestamp: float) -> dict:
+    """Return where a synthetic timestamp lands inside a K-LD7 buffer."""
+    if not timestamps:
+        return {
+            "anchor_timestamp": anchor_timestamp,
+            "anchor_frame_index": None,
+            "anchor_t_ms": None,
+            "plus_50ms_frame_index": None,
+            "plus_50ms_t_ms": None,
+        }
+
+    anchor_frame_index = min(
+        range(len(timestamps)),
+        key=lambda idx: abs(timestamps[idx] - anchor_timestamp),
+    )
+    plus_50_timestamp = anchor_timestamp + 0.050
+    plus_50ms_frame_index = min(
+        range(len(timestamps)),
+        key=lambda idx: abs(timestamps[idx] - plus_50_timestamp),
+    )
+    return {
+        "anchor_timestamp": anchor_timestamp,
+        "anchor_frame_index": anchor_frame_index,
+        "anchor_t_ms": round((timestamps[anchor_frame_index] - anchor_timestamp) * 1000.0, 2),
+        "plus_50ms_frame_index": plus_50ms_frame_index,
+        "plus_50ms_t_ms": round(
+            (timestamps[plus_50ms_frame_index] - anchor_timestamp) * 1000.0,
+            2,
+        ),
+    }
+
+
+def _kld7_buffer_timing_debug(
+    buffer_frames: list,
+    *,
+    impact_timestamp: Optional[float],
+    snapshot_host_time: Optional[float],
+) -> dict:
+    """Return shot-time K-LD7 buffer-position diagnostics."""
+    timestamps = [
+        float(frame["timestamp"])
+        for frame in buffer_frames
+        if isinstance(frame, dict) and frame.get("timestamp") is not None
+    ]
+    spacings_ms = [
+        (current - previous) * 1000.0 for previous, current in zip(timestamps, timestamps[1:])
+    ]
+    debug = {
+        "snapshot_host_time": snapshot_host_time,
+        "impact_timestamp": impact_timestamp,
+        "snapshot_delay_ms": (
+            round((snapshot_host_time - impact_timestamp) * 1000.0, 2)
+            if snapshot_host_time is not None and impact_timestamp is not None
+            else None
+        ),
+        "buffer_oldest_timestamp": timestamps[0] if timestamps else None,
+        "buffer_newest_timestamp": timestamps[-1] if timestamps else None,
+        "buffer_frame_count": len(buffer_frames),
+        "buffer_radc_frame_count": sum(
+            1
+            for frame in buffer_frames
+            if isinstance(frame, dict) and (frame.get("has_radc") or frame.get("radc_b64"))
+        ),
+        "buffer_span_s": (
+            round(timestamps[-1] - timestamps[0], 3) if len(timestamps) >= 2 else None
+        ),
+        "buffer_median_spacing_ms": (
+            round(statistics.median(spacings_ms), 2) if spacings_ms else None
+        ),
+    }
+    if impact_timestamp is not None:
+        debug.update(_kld7_debug_anchor_state(timestamps, impact_timestamp))
+    return debug
+
+
+def _kld7_debug_buffer_state(
+    orientation: str,
+    tracker,
+    *,
+    anchor_timestamp: Optional[float] = None,
+) -> dict:
+    """Return compact K-LD7 ring-buffer timing diagnostics for debug endpoints."""
+    if not tracker:
+        return {"orientation": orientation, "connected": False}
+
+    try:
+        frames = tracker.snapshot_buffer()
+    except Exception as exc:
+        logger.warning(
+            "[SERVER] K-LD7 %s debug snapshot failed: %s",
+            orientation,
+            exc,
+            exc_info=True,
+        )
+        return {
+            "orientation": orientation,
+            "connected": True,
+            "snapshot_error": str(exc),
+        }
+
+    timestamps = [
+        float(frame["timestamp"])
+        for frame in frames
+        if isinstance(frame, dict) and frame.get("timestamp") is not None
+    ]
+    spacings_ms = [
+        (current - previous) * 1000.0 for previous, current in zip(timestamps, timestamps[1:])
+    ]
+    done_numbers = [
+        int(frame["done_frame_number"])
+        for frame in frames
+        if isinstance(frame, dict) and frame.get("done_frame_number") is not None
+    ]
+    done_gaps = [
+        current - previous for previous, current in zip(done_numbers, done_numbers[1:])
+    ]
+    now = time.time()
+    state = {
+        "orientation": orientation,
+        "connected": True,
+        "frame_count": len(frames),
+        "radc_frame_count": sum(1 for frame in frames if frame.get("has_radc")),
+        "oldest_age_s": round(now - timestamps[0], 3) if timestamps else None,
+        "newest_age_s": round(now - timestamps[-1], 3) if timestamps else None,
+        "span_s": round(timestamps[-1] - timestamps[0], 3) if len(timestamps) >= 2 else None,
+        "median_spacing_ms": round(statistics.median(spacings_ms), 2) if spacings_ms else None,
+        "min_spacing_ms": round(min(spacings_ms), 2) if spacings_ms else None,
+        "max_spacing_ms": round(max(spacings_ms), 2) if spacings_ms else None,
+        "done_frame_count": len(done_numbers),
+        "done_first": done_numbers[0] if done_numbers else None,
+        "done_last": done_numbers[-1] if done_numbers else None,
+        "done_gap_count": sum(1 for gap in done_gaps if gap != 1),
+    }
+    if anchor_timestamp is not None:
+        state["anchor"] = _kld7_debug_anchor_state(timestamps, anchor_timestamp)
+    return state
+
+
+def _kld7_debug_state_payload(anchor_timestamp: Optional[float] = None) -> dict:
+    """Build the JSON payload for K-LD7 debug buffer inspection."""
+    return {
+        "debug_mode": debug_mode,
+        "timestamp": datetime.now().isoformat(),
+        "anchor_timestamp": anchor_timestamp,
+        "vertical": _kld7_debug_buffer_state(
+            "vertical",
+            kld7_vertical,
+            anchor_timestamp=anchor_timestamp,
+        ),
+        "horizontal": _kld7_debug_buffer_state(
+            "horizontal",
+            kld7_horizontal,
+            anchor_timestamp=anchor_timestamp,
+        ),
+    }
+
+
+def _parse_kld7_debug_anchor_timestamp() -> Optional[float]:
+    """Parse optional debug anchor query params into a host epoch timestamp."""
+    anchor_timestamp = request.args.get("anchor_timestamp", type=float)
+    if anchor_timestamp is not None:
+        return anchor_timestamp
+
+    anchor_age_s = request.args.get("anchor_age_s", type=float)
+    if anchor_age_s is not None:
+        return time.time() - anchor_age_s
+
+    return None
+
+
+def _kld7_debug_endpoint_enabled() -> bool:
+    """Return true when K-LD7 debug REST endpoints may be used."""
+    return debug_mode or cli_debug_enabled
+
+
+def _debug_endpoint_enabled() -> bool:
+    """Return true when debug REST endpoints may be used."""
+    return debug_mode or cli_debug_enabled
+
+
+def _ops_clock_sync_debug() -> dict:
+    """Return compact active OPS clock-sync diagnostics when available."""
+    radar = getattr(monitor, "radar", None) if monitor is not None else None
+    clock_sync = getattr(radar, "last_clock_sync", None)
+    if not isinstance(clock_sync, dict):
+        return {}
+
+    reads = clock_sync.get("reads") or []
+    last_host_time = None
+    if reads and isinstance(reads[-1], dict):
+        last_host_time = reads[-1].get("host_after") or reads[-1].get("host_mid")
+
+    return {
+        "ops_clock_sync_method": clock_sync.get("clock_sync_method"),
+        "ops_clock_sync_usable": clock_sync.get("usable_for_trigger_timestamps"),
+        "ops_clock_offset_used": clock_sync.get("best_offset_s"),
+        "ops_clock_sync_best_read_latency_ms": clock_sync.get("best_read_latency_ms"),
+        "ops_clock_sync_spread_ms": clock_sync.get("offset_spread_ms"),
+        "ops_clock_sync_rollover_uncertainty_ms": clock_sync.get("rollover_uncertainty_ms"),
+        "ops_clock_sync_age_s": (
+            round(time.time() - float(last_host_time), 3)
+            if last_host_time is not None
+            else None
+        ),
+    }
+
+
+def _shot_timing_debug_payload(shot: Shot) -> dict:
+    """Return the shot timestamp chain used to anchor K-LD7 extraction."""
+    impact_offset_from_sound_ms = None
+    if shot.impact_timestamp is not None and shot.impact_timestamp_kld7 is not None:
+        impact_offset_from_sound_ms = round(
+            (shot.impact_timestamp_kld7 - shot.impact_timestamp) * 1000.0,
+            2,
+        )
+
+    payload = {
+        "trigger_timestamp": shot.impact_timestamp,
+        "trigger_timestamp_source": shot.trigger_timestamp_source,
+        "impact_timestamp_ops_transition": shot.impact_timestamp_kld7,
+        "impact_timestamp_kld7": shot.impact_timestamp_kld7,
+        "impact_timestamp_source": shot.impact_timestamp_source,
+        "impact_timestamp_ms": shot.impact_timestamp_ms,
+        "impact_offset_from_trigger_ms": impact_offset_from_sound_ms,
+        "ops_trigger_time_raw": shot.ops_trigger_time,
+        "ops_sample_time_raw": shot.ops_sample_time,
+        "first_byte_timestamp": shot.first_byte_timestamp,
+        "clock_sync_offset_s": shot.clock_sync_offset_s,
+        "trigger_offset_ms": shot.trigger_offset_ms,
+    }
+    payload.update(_ops_clock_sync_debug())
+    return payload
+
+
 def _kld7_angle_log_payload(
     angle,
     axis_field: str,
@@ -879,6 +1138,69 @@ def api_shutdown():
     return {"status": "shutting_down"}, 200
 
 
+@app.route("/api/debug/kld7/buffers", methods=["GET"])
+def debug_kld7_buffers():
+    """Inspect K-LD7 ring-buffer timing state while running with --debug."""
+    if not _debug_endpoint_enabled():
+        return jsonify({"error": "Debug mode is not enabled"}), 403
+
+    return jsonify(_kld7_debug_state_payload(_parse_kld7_debug_anchor_timestamp()))
+
+
+@app.route("/api/debug/kld7/reset", methods=["POST"])
+def debug_reset_kld7_buffers():
+    """Reset K-LD7 ring buffers without stopping their streams."""
+    if not _debug_endpoint_enabled():
+        return jsonify({"error": "Debug mode is not enabled"}), 403
+
+    before = _kld7_debug_state_payload()
+    _reset_kld7_after_shot("vertical", kld7_vertical)
+    _reset_kld7_after_shot("horizontal", kld7_horizontal)
+    after = _kld7_debug_state_payload()
+
+    return jsonify({"reset": True, "before": before, "after": after})
+
+
+@app.route("/api/debug/ops/clock-sync", methods=["POST"])
+def debug_ops_clock_sync():
+    """Read OPS C? through the live radar object and log the offset summary."""
+    if not _debug_endpoint_enabled():
+        return jsonify({"error": "Debug mode is not enabled"}), 403
+
+    radar = getattr(monitor, "radar", None) if monitor is not None else None
+    if radar is None or not hasattr(radar, "read_clock_sync"):
+        return jsonify({"error": "OPS radar is not available"}), 503
+
+    samples = request.args.get("samples", default=7, type=int)
+    samples = max(1, min(samples, 36))
+
+    try:
+        summary = radar.read_clock_sync(samples=samples)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("[SERVER] Debug OPS clock sync read failed: %s", exc, exc_info=True)
+        log_session_error(
+            "Debug OPS clock sync read failed",
+            component="server",
+            context={"stage": "debug_ops_clock_sync", "samples": samples},
+            exc=exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+    payload = dict(summary or {})
+    payload["source"] = "debug_endpoint"
+    payload["requested_samples"] = samples
+
+    session_log = get_session_logger()
+    if session_log:
+        session_log.log_clock_sync(
+            device="ops243",
+            port=getattr(radar, "port", "auto"),
+            summary=payload,
+        )
+
+    return jsonify(payload)
+
+
 # Camera functions
 def init_camera(
     model_path: str = None,
@@ -985,7 +1307,7 @@ def init_kld7(
             orientation=orientation,
             angle_offset_deg=angle_offset_deg,
             base_freq=base_freq,
-            buffer_seconds=6.0,
+            buffer_seconds=_KLD7_BUFFER_SECONDS,
             radc_speed_tolerance_mph=radc_speed_tolerance_mph,
             radc_centroid_floor_frac=radc_centroid_floor_frac,
             radc_spectrum_source=radc_spectrum_source,
@@ -1524,11 +1846,13 @@ def on_shot_detected(shot: Shot):
     logger.info("[SERVER] Shot callback: %.1f mph", shot.ball_speed_mph)
 
     kld7_ms = None
+    kld7_timing_debug = None
     # Process K-LD7 angle radars (vertical = launch angle, horizontal = club path)
     try:
         if shot.mode != "mock":
             kld7_start = time.time()
             shot_ts = shot.impact_timestamp or kld7_start
+            kld7_timing_debug = _shot_timing_debug_payload(shot)
             session_log = get_session_logger()
             if kld7_vertical or kld7_horizontal:
                 _maybe_wait_for_kld7_post_shot_frames(shot_ts)
@@ -1540,6 +1864,13 @@ def on_shot_detected(shot: Shot):
                     raw_buffer = kld7_vertical.snapshot_buffer(include_radc_payload=True)
                 else:
                     raw_buffer = kld7_vertical.snapshot_buffer()
+                vertical_snapshot_host_time = time.time()
+                vertical_timing_debug = _kld7_buffer_timing_debug(
+                    raw_buffer,
+                    impact_timestamp=shot.impact_timestamp_kld7 or shot_ts,
+                    snapshot_host_time=vertical_snapshot_host_time,
+                )
+                kld7_timing_debug["vertical"] = vertical_timing_debug
                 _warn_if_kld7_buffer_underfilled("vertical", len(raw_buffer))
                 _warn_if_kld7_raw_payload_missing(
                     "vertical",
@@ -1632,9 +1963,8 @@ def on_shot_detected(shot: Shot):
                         ),
                         club_angle=_kld7_angle_log_payload(club_angle_v, "vertical_deg"),
                         raw_payload_expected=raw_payload_expected,
+                        timing_debug=vertical_timing_debug,
                     )
-
-                kld7_vertical.reset()
 
             # --- Horizontal K-LD7 (club path / aim direction) ---
             if kld7_horizontal:
@@ -1643,6 +1973,13 @@ def on_shot_detected(shot: Shot):
                     raw_buffer_h = kld7_horizontal.snapshot_buffer(include_radc_payload=True)
                 else:
                     raw_buffer_h = kld7_horizontal.snapshot_buffer()
+                horizontal_snapshot_host_time = time.time()
+                horizontal_timing_debug = _kld7_buffer_timing_debug(
+                    raw_buffer_h,
+                    impact_timestamp=shot.impact_timestamp_kld7 or shot_ts,
+                    snapshot_host_time=horizontal_snapshot_host_time,
+                )
+                kld7_timing_debug["horizontal"] = horizontal_timing_debug
                 _warn_if_kld7_buffer_underfilled("horizontal", len(raw_buffer_h))
                 _warn_if_kld7_raw_payload_missing(
                     "horizontal",
@@ -1729,9 +2066,8 @@ def on_shot_detected(shot: Shot):
                         ),
                         club_angle=_kld7_angle_log_payload(club_angle_h, "horizontal_deg"),
                         raw_payload_expected=raw_payload_expected_h,
+                        timing_debug=horizontal_timing_debug,
                     )
-
-                kld7_horizontal.reset()
 
             # Derive spin axis from face angle (H. launch) minus club path
             if shot.launch_angle_horizontal is not None and shot.club_path_deg is not None:
@@ -1758,6 +2094,10 @@ def on_shot_detected(shot: Shot):
             },
             exc=e,
         )
+    finally:
+        if shot.mode != "mock":
+            _reset_kld7_after_shot("vertical", kld7_vertical)
+            _reset_kld7_after_shot("horizontal", kld7_horizontal)
 
     # Try to get launch angle from camera BEFORE emitting shot
     # Skip camera for mock shots — they already have simulated launch angle
@@ -1833,32 +2173,48 @@ def on_shot_detected(shot: Shot):
             shot.launch_angle_vertical,
         )
 
-    # Compute spin-adjusted carry using measured spin (if reliable) or club average
+    # Compute carry. Prefer the physics simulator (drag + Magnus, RK4) when
+    # ballistics is enabled and a vertical launch angle is available; fall
+    # back to the table estimator otherwise (either ballistics disabled or
+    # angle missing → resolve_launch returns None).
     _MIN_RELIABLE_SPIN_CONF = 0.6
     if shot.carry_spin_adjusted is None and shot.mode != "mock":
-        has_reliable_spin = (
-            shot.spin_rpm
-            and shot.spin_rpm > 0
-            and shot.spin_confidence is not None
-            and shot.spin_confidence >= _MIN_RELIABLE_SPIN_CONF
-        )
-        spin_for_carry = (
-            shot.spin_rpm
-            if has_reliable_spin
-            else get_optimal_spin_for_ball_speed(shot.ball_speed_mph, shot.club)
-        )
-        shot.carry_spin_adjusted = estimate_carry_with_spin(
-            shot.ball_speed_mph,
-            spin_for_carry,
-            shot.club,
-            club_speed_mph=shot.club_speed_mph,
-        )
-        logger.info(
-            "[SERVER] Spin-adjusted carry: %.0f yds (spin: %.0f rpm%s)",
-            shot.carry_spin_adjusted,
-            spin_for_carry,
-            "" if shot.spin_rpm and shot.spin_rpm > 0 else " avg",
-        )
+        conditions = resolve_launch(shot) if ballistics_enabled else None
+        if conditions is not None:
+            trajectory = simulate(conditions)
+            shot.carry_spin_adjusted = trajectory.carry_yards
+            logger.info(
+                "[SERVER] Ballistic carry: %.0f yds (spin: %.0f rpm, source: %s)",
+                shot.carry_spin_adjusted,
+                conditions.spin_rpm,
+                conditions.spin_source,
+            )
+        else:
+            has_reliable_spin = (
+                shot.spin_rpm
+                and shot.spin_rpm > 0
+                and shot.spin_confidence is not None
+                and shot.spin_confidence >= _MIN_RELIABLE_SPIN_CONF
+            )
+            spin_for_carry = (
+                shot.spin_rpm
+                if has_reliable_spin
+                else get_optimal_spin_for_ball_speed(shot.ball_speed_mph, shot.club)
+            )
+            shot.carry_spin_adjusted = estimate_carry_with_spin(
+                shot.ball_speed_mph,
+                spin_for_carry,
+                shot.club,
+                club_speed_mph=shot.club_speed_mph,
+            )
+            reason = "ballistics disabled" if not ballistics_enabled else "no launch angle"
+            logger.info(
+                "[SERVER] Table carry (%s): %.0f yds (spin: %.0f rpm%s)",
+                reason,
+                shot.carry_spin_adjusted,
+                spin_for_carry,
+                "" if shot.spin_rpm and shot.spin_rpm > 0 else " avg",
+            )
     if shot.spin_rejection_reason:
         logger.info(
             "[SERVER] Spin unavailable: %s (snr=%s, candidate=%s rpm)",
@@ -1916,6 +2272,7 @@ def on_shot_detected(shot: Shot):
                 pipeline_ms={
                     "kld7": round(kld7_ms, 1) if kld7_ms is not None else None,
                 },
+                kld7_timing_debug=kld7_timing_debug,
             )
     except Exception as e:
         logger.warning("[SERVER] Failed to log shot: %s", e, exc_info=True)
@@ -2366,6 +2723,16 @@ def main():
     )
     parser.add_argument("--no-logging", action="store_true", help="Disable session logging")
     parser.add_argument(
+        "--ballistics",
+        action="store_true",
+        help=(
+            "Enable the physics-based carry simulator (drag + Magnus, RK4). "
+            "When set, shots with a vertical launch angle use the simulator "
+            "for carry; otherwise they fall back to the legacy table estimator. "
+            "Default: disabled (all shots use the table)."
+        ),
+    )
+    parser.add_argument(
         "--trigger",
         choices=["polling", "threshold", "speed", "sound"],
         default="polling",
@@ -2563,9 +2930,12 @@ def main():
     )
     args = parser.parse_args()
 
+    global cli_debug_enabled
     global experimental_kld7_radc_tuning
     global experimental_kld7_raw_radc_logging
     global active_kld7_radc_tuning
+    global ballistics_enabled
+    cli_debug_enabled = bool(args.debug)
     experimental_kld7_raw_radc_logging = args.experimental_kld7_raw_radc_logging
     experimental_kld7_radc_tuning = args.experimental_kld7_radc_tuning
     global ball_speed_correction_enabled
@@ -2574,6 +2944,7 @@ def main():
     ball_speed_correction_enabled = args.ball_speed_cosine_correction
     ball_speed_correction_distance_ft = args.kld7_ball_distance
     ball_speed_correction_ball_above_radar_ft = -args.kld7_radar_height_inches / 12.0
+    ballistics_enabled = args.ballistics
     kld7_radc_tuning_kwargs = _kld7_radc_tuning_kwargs(args)
     active_kld7_radc_tuning = dict(kld7_radc_tuning_kwargs)
 
@@ -2602,6 +2973,11 @@ def main():
     else:
         init_session_logger(enabled=False)
         print("Session logging DISABLED")
+
+    if ballistics_enabled:
+        print("Ballistic carry model: ENABLED (simulator + drag/Magnus)")
+    else:
+        print("Ballistic carry model: DISABLED (table fallback for all shots)")
 
     # Configure radar logging if requested
     if args.radar_log:

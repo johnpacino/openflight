@@ -31,6 +31,8 @@ _RADC_SELECTION_DIAGNOSTIC_KEYS = (
     "geom_fit_rmse_deg",
     "geom_single_frame_resid_deg",
     "weak_adjacent_frame_used",
+    "dc_blind_zone",
+    "fringe_metrics",
     "raw_angle_deg",
     "angle_offset_deg",
     "spectrum_source",
@@ -209,7 +211,10 @@ class KLD7Tracker:
     def connect(self) -> bool:
         """Connect to K-LD7 and configure for golf."""
         if find_spec("kld7") is None:
-            logger.error("[KLD7] kld7 package not installed. Run: pip install kld7")
+            logger.error(
+                "[KLD7] kld7 package not installed. Reinstall the project: "
+                "uv pip install -e '.[ui]'"
+            )
             return False
 
         port = self.port or _find_port()
@@ -467,27 +472,19 @@ class KLD7Tracker:
                     "[KLD7] Stream generator exited (frames=%d, %s)", frame_count, self.orientation
                 )
 
-            except KLD7Exception as e:
-                errors += 1
-                logger.warning(
-                    "[KLD7] Stream error %d/%d (%s): %s", errors, max_errors, self.orientation, e
-                )
-                if errors < max_errors:
-                    self._drain_after_stream_error()
-                    continue
-                reconnects += 1
-                if reconnects > max_reconnects:
-                    break
-                if self._reconnect_after_stream_errors(errors):
-                    errors = 0
-                    continue
-                break
-
             except Exception as e:
-                if _is_recoverable_stream_error(e):
+                # KLD7Exception is always treated as recoverable; other
+                # exceptions only when they match known transient patterns.
+                if isinstance(e, KLD7Exception) or _is_recoverable_stream_error(e):
                     errors += 1
+                    label = (
+                        "Stream error"
+                        if isinstance(e, KLD7Exception)
+                        else "Recoverable stream error"
+                    )
                     logger.warning(
-                        "[KLD7] Recoverable stream error %d/%d (%s): %s",
+                        "[KLD7] %s %d/%d (%s): %s",
+                        label,
                         errors,
                         max_errors,
                         self.orientation,
@@ -561,6 +558,7 @@ class KLD7Tracker:
                 "arrival_timestamp": f.arrival_timestamp,
                 "complete_timestamp": f.complete_timestamp,
                 "read_duration_ms": f.read_duration_ms,
+                "done_frame_number": f.done_frame_number,
             }
             for f in self._ring_buffer
             if f.radc is not None
@@ -570,8 +568,8 @@ class KLD7Tracker:
         if shot_timestamp is None:
             return frames, frames_available, 0
 
-        window_before_s = max(float(getattr(self, "buffer_seconds", 0.0) or 0.0), 0.0)
-        window_after_s = max(float(getattr(self, "shot_window_after_s", 0.0) or 0.0), 0.0)
+        window_before_s = max(float(self.buffer_seconds or 0.0), 0.0)
+        window_after_s = max(float(self.shot_window_after_s or 0.0), 0.0)
         start = shot_timestamp - window_before_s
         end = shot_timestamp + window_after_s
 
@@ -853,6 +851,8 @@ class KLD7Tracker:
                 entry["complete_timestamp"] = frame.complete_timestamp
             if frame.read_duration_ms is not None:
                 entry["read_duration_ms"] = frame.read_duration_ms
+            if frame.done_frame_number is not None:
+                entry["done_frame_number"] = frame.done_frame_number
             if frame.radc is not None:
                 entry["has_radc"] = True
                 if include_radc_payload:

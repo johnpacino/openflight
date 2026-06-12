@@ -75,6 +75,7 @@ class TestSessionErrorLogging:
 
     def test_on_shot_detected_logs_kld7_processing_error(self, monkeypatch):
         logged_errors = []
+        reset_calls = []
 
         class FailingTracker:
             orientation = "vertical"
@@ -89,7 +90,7 @@ class TestSessionErrorLogging:
                 return None
 
             def reset(self):
-                return None
+                reset_calls.append("vertical")
 
         monkeypatch.setattr(server_module, "kld7_vertical", FailingTracker())
         monkeypatch.setattr(server_module, "kld7_horizontal", None)
@@ -118,6 +119,7 @@ class TestSessionErrorLogging:
         assert logged_errors[0][1]["component"] == "server"
         assert logged_errors[0][1]["context"]["stage"] == "kld7"
         assert logged_errors[0][1]["exc"].__class__.__name__ == "RuntimeError"
+        assert reset_calls == ["vertical"]
 
     def test_set_radar_config_logs_failure_to_session(self, monkeypatch):
         logged_errors = []
@@ -495,6 +497,211 @@ class TestStaticRoutes:
 
         assert response.status_code == 200
         assert b'<div id="root"></div>' in response.data
+
+
+class TestKLD7DebugEndpoints:
+    """Tests for debug-only K-LD7 buffer inspection endpoints."""
+
+    def test_kld7_debug_buffers_requires_debug_mode(self, monkeypatch):
+        """K-LD7 debug endpoints should not be available in normal kiosk mode."""
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        monkeypatch.setattr(server_module, "cli_debug_enabled", False)
+
+        client = server_module.app.test_client()
+        response = client.get("/api/debug/kld7/buffers")
+
+        assert response.status_code == 403
+        assert response.get_json()["error"] == "Debug mode is not enabled"
+
+    def test_kld7_debug_buffers_allow_cli_debug(self, monkeypatch):
+        """The --debug CLI flag should enable K-LD7 debug endpoints."""
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        monkeypatch.setattr(server_module, "cli_debug_enabled", True)
+        monkeypatch.setattr(server_module, "kld7_vertical", None)
+        monkeypatch.setattr(server_module, "kld7_horizontal", None)
+
+        client = server_module.app.test_client()
+        response = client.get("/api/debug/kld7/buffers")
+
+        assert response.status_code == 200
+        assert response.get_json()["debug_mode"] is False
+
+    def test_kld7_debug_buffers_reports_timing_state(self, monkeypatch):
+        """Buffer debug should expose compact timing and dropped-DONE diagnostics."""
+
+        class StubTracker:
+            def snapshot_buffer(self):
+                return [
+                    {
+                        "timestamp": 100.00,
+                        "has_radc": True,
+                        "done_frame_number": 10,
+                    },
+                    {
+                        "timestamp": 100.03,
+                        "has_radc": True,
+                        "done_frame_number": 11,
+                    },
+                    {
+                        "timestamp": 100.09,
+                        "has_radc": False,
+                        "done_frame_number": 13,
+                    },
+                ]
+
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "kld7_vertical", StubTracker())
+        monkeypatch.setattr(server_module, "kld7_horizontal", None)
+
+        client = server_module.app.test_client()
+        response = client.get("/api/debug/kld7/buffers")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["vertical"]["connected"] is True
+        assert payload["vertical"]["frame_count"] == 3
+        assert payload["vertical"]["radc_frame_count"] == 2
+        assert payload["vertical"]["median_spacing_ms"] == 45.0
+        assert payload["vertical"]["done_gap_count"] == 1
+        assert payload["horizontal"]["connected"] is False
+
+    def test_kld7_debug_buffers_reports_anchor_position(self, monkeypatch):
+        """Debug buffer endpoint should map an anchor timestamp to frame indices."""
+
+        class StubTracker:
+            def snapshot_buffer(self):
+                return [
+                    {"timestamp": 100.00, "has_radc": True},
+                    {"timestamp": 100.03, "has_radc": True},
+                    {"timestamp": 100.06, "has_radc": True},
+                    {"timestamp": 100.09, "has_radc": True},
+                ]
+
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "kld7_vertical", StubTracker())
+        monkeypatch.setattr(server_module, "kld7_horizontal", None)
+
+        client = server_module.app.test_client()
+        response = client.get("/api/debug/kld7/buffers?anchor_timestamp=100.031")
+
+        assert response.status_code == 200
+        anchor = response.get_json()["vertical"]["anchor"]
+        assert anchor["anchor_frame_index"] == 1
+        assert anchor["anchor_t_ms"] == pytest.approx(-1.0)
+        assert anchor["plus_50ms_frame_index"] == 3
+        assert anchor["plus_50ms_t_ms"] == pytest.approx(59.0)
+
+    def test_kld7_debug_reset_clears_buffers(self, monkeypatch):
+        """Debug reset should use the same tracker reset hook as post-shot cleanup."""
+
+        class StubTracker:
+            def __init__(self):
+                self.frames = [
+                    {"timestamp": 100.00, "has_radc": True},
+                    {"timestamp": 100.03, "has_radc": True},
+                ]
+                self.reset_calls = 0
+
+            def snapshot_buffer(self):
+                return list(self.frames)
+
+            def reset(self):
+                self.reset_calls += 1
+                self.frames.clear()
+
+        vertical = StubTracker()
+        horizontal = StubTracker()
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "kld7_vertical", vertical)
+        monkeypatch.setattr(server_module, "kld7_horizontal", horizontal)
+
+        client = server_module.app.test_client()
+        response = client.post("/api/debug/kld7/reset")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["reset"] is True
+        assert payload["before"]["vertical"]["frame_count"] == 2
+        assert payload["before"]["horizontal"]["frame_count"] == 2
+        assert payload["after"]["vertical"]["frame_count"] == 0
+        assert payload["after"]["horizontal"]["frame_count"] == 0
+        assert vertical.reset_calls == 1
+        assert horizontal.reset_calls == 1
+
+    def test_ops_clock_sync_requires_debug_mode(self, monkeypatch):
+        """OPS C? debug reads should not be available in normal kiosk mode."""
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        monkeypatch.setattr(server_module, "cli_debug_enabled", False)
+
+        client = server_module.app.test_client()
+        response = client.post("/api/debug/ops/clock-sync")
+
+        assert response.status_code == 403
+        assert response.get_json()["error"] == "Debug mode is not enabled"
+
+    def test_ops_clock_sync_requires_radar(self, monkeypatch):
+        """OPS C? debug reads need the live monitor radar object."""
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "monitor", object())
+
+        client = server_module.app.test_client()
+        response = client.post("/api/debug/ops/clock-sync")
+
+        assert response.status_code == 503
+        assert response.get_json()["error"] == "OPS radar is not available"
+
+    def test_ops_clock_sync_logs_summary(self, monkeypatch):
+        """OPS C? debug endpoint should read through the live radar and log JSONL."""
+
+        class StubRadar:
+            port = "/dev/ttyACM0"
+
+            def __init__(self):
+                self.samples = None
+
+            def read_clock_sync(self, samples=7):
+                self.samples = samples
+                return {
+                    "samples": samples,
+                    "valid_samples": samples,
+                    "best_offset_s": 123.456,
+                    "usable_for_trigger_timestamps": True,
+                    "reads": [{"raw": '{"Clock":"1"}'}],
+                }
+
+        class StubMonitor:
+            def __init__(self):
+                self.radar = StubRadar()
+
+        class StubSessionLogger:
+            def __init__(self):
+                self.calls = []
+
+            def log_clock_sync(self, **kwargs):
+                self.calls.append(kwargs)
+
+        session_logger = StubSessionLogger()
+        monitor = StubMonitor()
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        monkeypatch.setattr(server_module, "monitor", monitor)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: session_logger)
+
+        client = server_module.app.test_client()
+        response = client.post("/api/debug/ops/clock-sync?samples=99")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert monitor.radar.samples == 36
+        assert payload["source"] == "debug_endpoint"
+        assert payload["requested_samples"] == 36
+        assert payload["best_offset_s"] == 123.456
+        assert session_logger.calls == [
+            {
+                "device": "ops243",
+                "port": "/dev/ttyACM0",
+                "summary": payload,
+            }
+        ]
 
 
 class TestShotToDict:
@@ -2051,3 +2258,112 @@ class TestOnShotDetected:
         assert shot.angle_source == "radar"
         assert shot.launch_angle_vertical == pytest.approx(18.7)
         assert shot.launch_angle_horizontal == pytest.approx(0.0)
+
+
+class TestCarryComputation:
+    """Tests for the ballistic carry path in on_shot_detected."""
+
+    def _patch_environment(self, monkeypatch):
+        monkeypatch.setattr(server_module, "kld7_vertical", None)
+        monkeypatch.setattr(server_module, "kld7_horizontal", None)
+        monkeypatch.setattr(server_module, "camera_tracker", None)
+        monkeypatch.setattr(server_module, "camera_enabled", False)
+        monkeypatch.setattr(server_module, "monitor", None)
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(server_module.socketio, "emit", lambda *args, **kwargs: None)
+
+    def test_carry_uses_ballistic_simulator_when_launch_angle_present(self, monkeypatch):
+        """A shot with a vertical launch angle should get carry from the physics sim."""
+        self._patch_environment(monkeypatch)
+        monkeypatch.setattr(server_module, "ballistics_enabled", True)
+
+        captured = {}
+
+        from openflight import ballistics as ballistics_module
+        real_simulate = ballistics_module.simulate
+
+        def spying_simulate(conditions, *args, **kwargs):
+            captured["conditions"] = conditions
+            return real_simulate(conditions, *args, **kwargs)
+
+        monkeypatch.setattr(server_module, "simulate", spying_simulate)
+
+        shot = Shot(
+            ball_speed_mph=165.0,
+            club_speed_mph=112.0,
+            timestamp=datetime.now(),
+            club=ClubType.DRIVER,
+            launch_angle_vertical=11.0,
+            launch_angle_confidence=0.8,
+            spin_rpm=2700,
+            spin_confidence=0.85,
+            angle_source="radar",
+        )
+
+        on_shot_detected(shot)
+
+        assert "conditions" in captured, "simulate() should have been called"
+        assert captured["conditions"].spin_source == "measured"
+        assert shot.carry_spin_adjusted is not None
+        assert 250 < shot.carry_spin_adjusted < 300
+
+    def test_carry_falls_back_to_table_when_resolve_returns_none(self, monkeypatch):
+        """When resolve_launch returns None, the table path should compute carry."""
+        self._patch_environment(monkeypatch)
+
+        monkeypatch.setattr(server_module, "resolve_launch", lambda shot: None)
+
+        def fail_simulate(*args, **kwargs):
+            raise AssertionError("simulate() must not be called when resolve_launch is None")
+
+        monkeypatch.setattr(server_module, "simulate", fail_simulate)
+
+        shot = Shot(
+            ball_speed_mph=150.0,
+            club_speed_mph=105.0,
+            timestamp=datetime.now(),
+            club=ClubType.DRIVER,
+            launch_angle_vertical=12.0,
+            spin_rpm=2700,
+            spin_confidence=0.85,
+            angle_source="radar",
+        )
+
+        on_shot_detected(shot)
+
+        assert shot.carry_spin_adjusted is not None
+        assert shot.carry_spin_adjusted > 0
+
+    def test_carry_skips_ballistic_when_ballistics_disabled(self, monkeypatch):
+        """When ballistics_enabled is False, the simulator must not run even
+        if a valid launch angle is present — carry falls through to the
+        table estimator. This is the default; `--ballistics` opts in."""
+        self._patch_environment(monkeypatch)
+        monkeypatch.setattr(server_module, "ballistics_enabled", False)
+
+        def fail_resolve(*args, **kwargs):
+            raise AssertionError("resolve_launch must not run when ballistics disabled")
+
+        def fail_simulate(*args, **kwargs):
+            raise AssertionError("simulate() must not run when ballistics disabled")
+
+        monkeypatch.setattr(server_module, "resolve_launch", fail_resolve)
+        monkeypatch.setattr(server_module, "simulate", fail_simulate)
+
+        shot = Shot(
+            ball_speed_mph=165.0,
+            club_speed_mph=112.0,
+            timestamp=datetime.now(),
+            club=ClubType.DRIVER,
+            launch_angle_vertical=11.0,
+            launch_angle_confidence=0.8,
+            spin_rpm=2700,
+            spin_confidence=0.85,
+            angle_source="radar",
+        )
+
+        on_shot_detected(shot)
+
+        assert shot.carry_spin_adjusted is not None
+        assert shot.carry_spin_adjusted > 0
