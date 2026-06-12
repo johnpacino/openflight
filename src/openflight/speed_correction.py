@@ -16,6 +16,11 @@ Validated offline against TrackMan ball speeds (2026-06):
 - 2026-06-08 bay, 128 shots: bias -2.15 -> +0.33 mph, |err| 2.83 -> 1.48
 - 2026-05-30 holdout, 26 shots: bias -2.26 -> +0.30, |err| 2.35 -> 1.31
 - Coleman cross-rig outdoor, 62 shots: bias -2.09 -> +0.65, median 0.58
+- Production configuration (OUR launch angles — 100 two-ray + 28
+  club-fallback — instead of TrackMan's): bias +0.32, |err| 1.52,
+  median 0.67. The LA dependence couples speed accuracy to launch-angle
+  accuracy, but LA errors are zero-mean post-calibration, so the
+  coupling adds ~0.1 mph of scatter and no bias.
 
 Known caveat: high-launch wedges on one outdoor rig overcorrected (~+3);
 under observation. Club speed does NOT need this correction — the club
