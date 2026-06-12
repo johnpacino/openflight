@@ -402,13 +402,17 @@ def _select_vertical_radar_launch(kld7_angle, shot: Shot) -> tuple[bool, dict]:
     details["soft_lane_min_deg"] = lane_min
     details["soft_lane_max_deg"] = lane_max
     if radar_angle_deg < lane_min or radar_angle_deg > lane_max:
-        details["selection_reason"] = "outside_soft_lane"
-        return False, details
+        details["accepted"] = True
+        details["selection_reason"] = "marginal_accept:outside_soft_lane"
+        details["acceptance_path"] = "marginal"
+        return True, details
 
     delta_deg = guard_details.get("delta_deg")
     if delta_deg is None or delta_deg > _VERTICAL_SOFT_ESTIMATE_DELTA_DEG:
-        details["selection_reason"] = "estimator_delta_too_large"
-        return False, details
+        details["accepted"] = True
+        details["selection_reason"] = "marginal_accept:estimator_delta_too_large"
+        details["acceptance_path"] = "marginal"
+        return True, details
 
     if kld7_angle.num_frames <= 0:
         details["selection_reason"] = "no_candidate_frames"
@@ -418,8 +422,10 @@ def _select_vertical_radar_launch(kld7_angle, shot: Shot) -> tuple[bool, dict]:
         kld7_angle.num_frames > _VERTICAL_SOFT_MAX_FRAME_COUNT
         and delta_deg > _VERTICAL_SOFT_TIGHT_DELTA_FOR_LONG_FRAME_DEG
     ):
-        details["selection_reason"] = "suspicious_frame_span"
-        return False, details
+        details["accepted"] = True
+        details["selection_reason"] = "marginal_accept:suspicious_frame_span"
+        details["acceptance_path"] = "marginal"
+        return True, details
 
     details["accepted"] = True
     if kld7_angle.confidence >= _MIN_VERTICAL_SOFT_RADAR_CONFIDENCE:
@@ -551,6 +557,11 @@ _KLD7_POST_SHOT_CAPTURE_DELAY_S = 0.18
 _MIN_VERTICAL_RADAR_CONFIDENCE = 0.80
 _MIN_VERTICAL_SOFT_RADAR_CONFIDENCE = 0.68
 _MIN_VERTICAL_LOW_CONFIDENCE_RADAR_CONFIDENCE = 0.65
+# Display confidence for radar measurements that pass the physics guard but
+# trip a soft consistency guard (club lane / estimator delta / frame span):
+# shown as radar with a single confidence dot (<0.4) instead of silently
+# being replaced by the club estimate.
+_VERTICAL_MARGINAL_DISPLAY_CONFIDENCE = 0.38
 _VERTICAL_SOFT_ESTIMATE_DELTA_DEG = 4.5
 _VERTICAL_SOFT_MAX_FRAME_COUNT = 40
 _VERTICAL_SOFT_TIGHT_DELTA_FOR_LONG_FRAME_DEG = 2.0
@@ -1554,9 +1565,14 @@ def on_shot_detected(shot: Shot):
                             kld7_angle.confidence * 100,
                         )
                     else:
+                        accepted_conf = kld7_angle.confidence
+                        if vertical_selection_details.get("acceptance_path") == "marginal":
+                            accepted_conf = min(
+                                accepted_conf, _VERTICAL_MARGINAL_DISPLAY_CONFIDENCE
+                            )
                         shot.launch_angle_vertical = kld7_angle.vertical_deg
-                        shot.launch_angle_confidence = kld7_angle.confidence
-                        shot.launch_angle_vertical_confidence = kld7_angle.confidence
+                        shot.launch_angle_confidence = accepted_conf
+                        shot.launch_angle_vertical_confidence = accepted_conf
                         shot.launch_angle_vertical_source = "radar"
                         shot.angle_source = "radar"
                         logger.info(

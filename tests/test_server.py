@@ -1349,7 +1349,7 @@ class TestOnShotDetected:
         assert shot.launch_angle_confidence == pytest.approx(0.89)
         assert shot.angle_source == "radar"
 
-    def test_low_confidence_vertical_kld7_angle_falls_back_to_estimate(self, monkeypatch):
+    def test_lane_disagreement_vertical_radar_shown_as_marginal_confidence(self, monkeypatch):
         """Weak vertical radar candidates should not override the launch model."""
 
         class StubTracker:
@@ -1387,9 +1387,11 @@ class TestOnShotDetected:
 
         on_shot_detected(shot)
 
-        assert shot.launch_angle_vertical_source == "estimated"
-        assert shot.angle_source == "estimated"
-        assert shot.launch_angle_vertical == pytest.approx(35.3)
+        # Lane disagreement no longer silently replaces the measurement:
+        # shown as radar with single-dot (marginal) confidence
+        assert shot.launch_angle_vertical_source == "radar"
+        assert shot.launch_angle_vertical == pytest.approx(10.7)
+        assert shot.launch_angle_vertical_confidence < 0.4
 
     def test_low_confidence_vertical_kld7_angle_soft_accepts_when_estimator_aligned(
         self, monkeypatch
@@ -1610,10 +1612,15 @@ class TestOnShotDetected:
 
         on_shot_detected(shot)
 
-        assert shot.launch_angle_vertical == pytest.approx(expected_launch)
-        assert shot.launch_angle_vertical_source == "estimated"
-        assert shot.angle_source == "estimated"
-        assert logged_buffers[0]["ball_angle"]["selection_reason"] == "estimator_delta_too_large"
+        # Marginal accept: shown as radar with single-dot confidence
+        # instead of silently replaced by the club estimate
+        assert shot.launch_angle_vertical_source == "radar"
+        assert shot.launch_angle_vertical != pytest.approx(expected_launch)
+        assert shot.launch_angle_vertical_confidence < 0.4
+        assert (
+            logged_buffers[0]["ball_angle"]["selection_reason"]
+            == "marginal_accept:estimator_delta_too_large"
+        )
 
     def test_vertical_estimate_preserves_radar_horizontal(self, monkeypatch):
         """Vertical fallback should not erase a horizontal radar measurement."""
