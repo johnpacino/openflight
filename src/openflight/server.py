@@ -25,6 +25,7 @@ from .launch_monitor import ClubType, Shot
 from .ops243 import Direction, SpeedReading, set_show_raw_readings
 from .rolling_buffer.monitor import estimate_carry_with_spin, get_optimal_spin_for_ball_speed
 from .session_logger import get_session_logger, init_session_logger, log_session_error
+from .speed_correction import correct_ball_speed
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -780,10 +781,18 @@ def _session_start_config() -> dict:
     return config
 
 
+ball_speed_correction_enabled = False
+ball_speed_correction_distance_ft = 5.5
+ball_speed_correction_ball_above_radar_ft = -4.0 / 12.0
+
+
 def shot_to_dict(shot: Shot) -> dict:
     """Convert Shot to JSON-serializable dict."""
     return {
         "ball_speed_mph": round(shot.ball_speed_mph, 1),
+        "ball_speed_raw_mph": (
+            round(shot.ball_speed_raw_mph, 1) if shot.ball_speed_raw_mph else None
+        ),
         "club_speed_mph": round(shot.club_speed_mph, 1) if shot.club_speed_mph else None,
         "smash_factor": round(shot.smash_factor, 2) if shot.smash_factor else None,
         "estimated_carry_yards": round(shot.estimated_carry_yards),
@@ -1805,6 +1814,25 @@ def on_shot_detected(shot: Shot):
     # rejected or missing axes fall back to conservative estimates.
     _ensure_user_facing_launch_angles(shot)
 
+    # Ball-speed cosine correction: the OPS reads the radial component of
+    # a ball departing at the launch angle. Applied AFTER the K-LD7 (which
+    # must anchor to the radial speed) and BEFORE carry/ballistics.
+    if ball_speed_correction_enabled and shot.launch_angle_vertical is not None:
+        raw_speed = shot.ball_speed_mph
+        shot.ball_speed_raw_mph = raw_speed
+        shot.ball_speed_mph = correct_ball_speed(
+            raw_speed,
+            shot.launch_angle_vertical,
+            ball_speed_correction_distance_ft,
+            ball_speed_correction_ball_above_radar_ft,
+        )
+        logger.info(
+            "[SERVER] Ball speed cosine correction: %.1f -> %.1f mph (LA %.1f)",
+            raw_speed,
+            shot.ball_speed_mph,
+            shot.launch_angle_vertical,
+        )
+
     # Compute spin-adjusted carry using measured spin (if reliable) or club average
     _MIN_RELIABLE_SPIN_CONF = 0.6
     if shot.carry_spin_adjusted is None and shot.mode != "mock":
@@ -2392,6 +2420,15 @@ def main():
         help="K-LD7 vertical angle offset in degrees (default: 0.0)",
     )
     parser.add_argument(
+        "--ball-speed-cosine-correction",
+        action="store_true",
+        help=(
+            "Correct OPS radial ball speed to true ball speed using the launch "
+            "angle and radar geometry (validated vs TrackMan; see "
+            "src/openflight/speed_correction.py)"
+        ),
+    )
+    parser.add_argument(
         "--kld7-vertical-estimator",
         choices=("geometry", "naive", "two_ray"),
         default="naive",
@@ -2531,6 +2568,12 @@ def main():
     global active_kld7_radc_tuning
     experimental_kld7_raw_radc_logging = args.experimental_kld7_raw_radc_logging
     experimental_kld7_radc_tuning = args.experimental_kld7_radc_tuning
+    global ball_speed_correction_enabled
+    global ball_speed_correction_distance_ft
+    global ball_speed_correction_ball_above_radar_ft
+    ball_speed_correction_enabled = args.ball_speed_cosine_correction
+    ball_speed_correction_distance_ft = args.kld7_ball_distance
+    ball_speed_correction_ball_above_radar_ft = -args.kld7_radar_height_inches / 12.0
     kld7_radc_tuning_kwargs = _kld7_radc_tuning_kwargs(args)
     active_kld7_radc_tuning = dict(kld7_radc_tuning_kwargs)
 

@@ -254,6 +254,9 @@ class Shot:
     impact_timestamp_kld7_gpio: Optional[float] = None
     impact_timestamp_kld7_ops: Optional[float] = None
     club_speed_mph: Optional[float] = None
+    # Raw OPS radial ball speed, kept when the cosine correction rewrites
+    # ball_speed_mph (radar bin anchoring must keep using the radial value)
+    ball_speed_raw_mph: Optional[float] = None
     peak_magnitude: Optional[float] = None
     readings: List[SpeedReading] = field(default_factory=list)
     club: ClubType = ClubType.DRIVER
