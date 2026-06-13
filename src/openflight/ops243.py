@@ -1051,7 +1051,7 @@ class OPS243Radar:
 
         return full_response
 
-    def wait_for_hardware_trigger(self, timeout: float = 30.0) -> str:
+    def wait_for_hardware_trigger(self, timeout: float = 30.0, dump_grace: float = 8.0) -> str:
         """
         Wait for hardware trigger to fire and read the buffer dump.
 
@@ -1060,7 +1060,11 @@ class OPS243Radar:
         (HOST_INT). Used with SoundTrigger (SparkFun SEN-14262).
 
         Args:
-            timeout: Maximum time to wait for trigger data
+            timeout: Maximum time to wait for the trigger to fire
+            dump_grace: Extra time allowed for the dump to finish once the
+                first byte has arrived. The ~46KB rolling-buffer dump takes
+                ~4-5s; a trigger firing near the end of the timeout window
+                must not have its dump cut off by the original deadline.
 
         Returns:
             Raw response string containing JSON lines, or empty string on timeout
@@ -1073,11 +1077,12 @@ class OPS243Radar:
 
         response_lines = []
         start_time = time.time()
+        deadline = start_time + timeout
         last_data_time = None
         bytes_received = 0
         self.last_hardware_trigger_first_byte_timestamp = None
 
-        while (time.time() - start_time) < timeout:
+        while time.time() < deadline:
             if self.serial.in_waiting:
                 first_byte_timestamp = time.time() if last_data_time is None else None
                 chunk = self.serial.read(self.serial.in_waiting)
@@ -1086,6 +1091,9 @@ class OPS243Radar:
                 if first_byte_timestamp is not None:
                     last_data_time = first_byte_timestamp
                     self.last_hardware_trigger_first_byte_timestamp = last_data_time
+                    # The trigger fired — the dump is now in flight. Extend
+                    # the deadline so a late trigger gets its full dump.
+                    deadline = max(deadline, last_data_time + dump_grace)
                     logger.debug(
                         "[OPS] Hardware trigger: first byte after %.1fs",
                         last_data_time - start_time,

@@ -1,5 +1,7 @@
 """Tests for OPS243 radar driver."""
 
+import time
+
 import pytest
 
 from openflight.ops243 import Direction, OPS243Radar, SpeedReading
@@ -340,3 +342,88 @@ class TestReadClockSync:
         radar.serial = None
         with pytest.raises(ConnectionError):
             radar.read_clock_sync(samples=1)
+
+
+class _ScheduledSerial:
+    """Serial stand-in that releases bytes on a wall-clock schedule.
+
+    Models the rolling-buffer dump: nothing arrives until the hardware
+    trigger fires, then ~46KB streams over several seconds. Schedule is
+    a list of (seconds_after_reset, bytes) pairs.
+    """
+
+    def __init__(self, schedule):
+        self.is_open = True
+        self._schedule = sorted(schedule, key=lambda item: item[0])
+        self._t0 = time.time()
+        self._consumed = 0
+
+    def reset_input_buffer(self):
+        self._t0 = time.time()
+        self._consumed = 0
+
+    def _released(self):
+        elapsed = time.time() - self._t0
+        return b"".join(data for t, data in self._schedule if t <= elapsed)
+
+    @property
+    def in_waiting(self):
+        return len(self._released()) - self._consumed
+
+    def read(self, n):
+        released = self._released()
+        chunk = released[self._consumed : self._consumed + n]
+        self._consumed += len(chunk)
+        return chunk
+
+
+class TestWaitForHardwareTrigger:
+    """Tests for the hardware-trigger read loop (sound trigger path)."""
+
+    # A complete dump ends with a closed Q array — the loop's completeness
+    # check requires '"Q"' followed by ']}'.
+    _DUMP = [
+        b'{"sample_time":946.077}\r\n{"trigger_time":946.145}\r\n',
+        b'{"I":[2168,2187,2155,2154]}\r\n',
+        b'{"Q":[2048,2050,2047,2049]}',
+    ]
+
+    def _radar(self, serial_obj):
+        radar = OPS243Radar.__new__(OPS243Radar)
+        radar.serial = serial_obj
+        radar.last_hardware_trigger_first_byte_timestamp = None
+        return radar
+
+    def test_trigger_near_timeout_still_reads_full_dump(self):
+        """A trigger firing just before the timeout must not truncate the dump.
+
+        Regression test: the wait loop bounded TOTAL elapsed time, so a
+        trigger at 26s of a 30s window had its ~4.5s dump cut off at 30.0s
+        ("Incomplete capture (missing: Q)"). Scaled down: trigger at 0.3s
+        of a 0.4s window, dump completes at 0.7s.
+        """
+        schedule = [
+            (0.30, self._DUMP[0]),
+            (0.50, self._DUMP[1]),
+            (0.70, self._DUMP[2]),
+        ]
+        radar = self._radar(_ScheduledSerial(schedule))
+        response = radar.wait_for_hardware_trigger(timeout=0.4)
+        assert response == b"".join(self._DUMP).decode("ascii")
+
+    def test_no_trigger_returns_empty_after_timeout(self):
+        """With no data at all, the wait still times out promptly."""
+        radar = self._radar(_ScheduledSerial([]))
+        start = time.time()
+        response = radar.wait_for_hardware_trigger(timeout=0.3)
+        assert response == ""
+        assert time.time() - start < 1.5
+
+    def test_complete_dump_returns_before_grace_expires(self):
+        """A dump that finishes early returns immediately on completeness."""
+        schedule = [(0.05, b"".join(self._DUMP))]
+        radar = self._radar(_ScheduledSerial(schedule))
+        start = time.time()
+        response = radar.wait_for_hardware_trigger(timeout=5.0)
+        assert response == b"".join(self._DUMP).decode("ascii")
+        assert time.time() - start < 1.0
