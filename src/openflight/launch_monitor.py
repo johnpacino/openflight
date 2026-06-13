@@ -277,6 +277,10 @@ class Shot:
     launch_angle_horizontal_source: Optional[str] = None
     spin_rpm: Optional[float] = None
     spin_confidence: Optional[float] = None
+    # Raw radar-measured spin, kept when --calculated-spin rewrites
+    # spin_rpm with the kinematic estimate (for offline scoring)
+    spin_rpm_measured: Optional[float] = None
+    spin_source: Optional[str] = None  # "measured", "calculated", or None
     spin_result_quality: Optional[str] = None
     spin_snr: Optional[float] = None
     spin_modulation_depth: Optional[float] = None

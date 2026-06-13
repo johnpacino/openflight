@@ -22,11 +22,12 @@ from flask_socketio import SocketIO
 
 from .ballistics import resolve_launch, simulate
 from .kld7.geometry import GEOM_BALL_ABOVE_RADAR_FT
-from .launch_monitor import ClubType, Shot
+from .launch_monitor import SPIN_CONFIDENCE_HIGH, ClubType, Shot
 from .ops243 import Direction, SpeedReading, set_show_raw_readings
 from .rolling_buffer.monitor import estimate_carry_with_spin, get_optimal_spin_for_ball_speed
 from .session_logger import get_session_logger, init_session_logger, log_session_error
 from .speed_correction import correct_ball_speed
+from .spin_estimate import calculated_spin_rpm
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -1043,6 +1044,7 @@ def _session_start_config() -> dict:
 ball_speed_correction_enabled = False
 ball_speed_correction_distance_ft = 5.5
 ball_speed_correction_ball_above_radar_ft = -4.0 / 12.0
+calculated_spin_enabled = False
 
 
 def shot_to_dict(shot: Shot) -> dict:
@@ -1076,6 +1078,10 @@ def shot_to_dict(shot: Shot) -> dict:
         "spin_axis_deg": shot.spin_axis_deg,
         # Spin data from rolling buffer mode
         "spin_rpm": round(shot.spin_rpm) if shot.spin_rpm else None,
+        "spin_rpm_measured": (
+            round(shot.spin_rpm_measured) if shot.spin_rpm_measured else None
+        ),
+        "spin_source": shot.spin_source,
         "spin_confidence": round(shot.spin_confidence, 2) if shot.spin_confidence else None,
         "spin_quality": shot.spin_quality,
         "spin_snr": round(shot.spin_snr, 2) if shot.spin_snr is not None else None,
@@ -1839,6 +1845,38 @@ def handle_shutdown():
     threading.Thread(target=_shutdown_process_after_delay, daemon=True).start()
 
 
+def _apply_calculated_spin(shot: Shot) -> bool:
+    """Replace radar-measured spin with the kinematic estimate.
+
+    The 24 GHz OPS return carries no usable spin line (see
+    spin_estimate.py), so when the vertical launch angle was actually
+    measured (radar/camera, not the club-table estimate), spin_rpm is
+    rewritten with 170*v*sin(LA)^1.2. The displaced measured value is
+    kept in spin_rpm_measured for offline scoring. Returns True when
+    the shot was rewritten.
+    """
+    if shot.launch_angle_vertical is None:
+        return False
+    if shot.launch_angle_vertical_source not in ("radar", "camera"):
+        return False
+    spin_calc = calculated_spin_rpm(shot.ball_speed_mph, shot.launch_angle_vertical)
+    if spin_calc is None:
+        return False
+    shot.spin_rpm_measured = shot.spin_rpm
+    shot.spin_rpm = spin_calc
+    shot.spin_confidence = SPIN_CONFIDENCE_HIGH
+    shot.spin_source = "calculated"
+    shot.spin_rejection_reason = None
+    logger.info(
+        "[SERVER] Calculated spin: %.0f rpm (v=%.1f mph, LA=%.1f deg, measured was %s)",
+        spin_calc,
+        shot.ball_speed_mph,
+        shot.launch_angle_vertical,
+        "%.0f rpm" % shot.spin_rpm_measured if shot.spin_rpm_measured else "none",
+    )
+    return True
+
+
 def on_shot_detected(shot: Shot):
     """Callback when a shot is detected - emit to all clients."""
     global ball_detected, ball_detection_confidence  # pylint: disable=global-statement
@@ -2172,6 +2210,11 @@ def on_shot_detected(shot: Shot):
             shot.ball_speed_mph,
             shot.launch_angle_vertical,
         )
+
+    # Calculated spin runs AFTER the cosine correction (the model is
+    # calibrated on true ball speed) and BEFORE carry/ballistics.
+    if calculated_spin_enabled:
+        _apply_calculated_spin(shot)
 
     # Compute carry. Prefer the physics simulator (drag + Magnus, RK4) when
     # ballistics is enabled and a vertical launch angle is available; fall
@@ -2796,6 +2839,17 @@ def main():
         ),
     )
     parser.add_argument(
+        "--calculated-spin",
+        action="store_true",
+        help=(
+            "Replace radar-measured spin with the kinematic estimate "
+            "(170*v*sin(LA)^1.2) when the launch angle was measured. The 24 GHz "
+            "OPS return carries no usable spin line (see "
+            "src/openflight/spin_estimate.py); the measured value is kept in "
+            "spin_rpm_measured for offline scoring"
+        ),
+    )
+    parser.add_argument(
         "--kld7-vertical-estimator",
         choices=("geometry", "naive", "two_ray"),
         default="naive",
@@ -2944,6 +2998,8 @@ def main():
     ball_speed_correction_enabled = args.ball_speed_cosine_correction
     ball_speed_correction_distance_ft = args.kld7_ball_distance
     ball_speed_correction_ball_above_radar_ft = -args.kld7_radar_height_inches / 12.0
+    global calculated_spin_enabled
+    calculated_spin_enabled = args.calculated_spin
     ballistics_enabled = args.ballistics
     kld7_radc_tuning_kwargs = _kld7_radc_tuning_kwargs(args)
     active_kld7_radc_tuning = dict(kld7_radc_tuning_kwargs)

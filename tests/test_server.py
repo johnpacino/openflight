@@ -2367,3 +2367,50 @@ class TestCarryComputation:
 
         assert shot.carry_spin_adjusted is not None
         assert shot.carry_spin_adjusted > 0
+
+
+class TestApplyCalculatedSpin:
+    """Tests for the --calculated-spin shot rewrite."""
+
+    def _shot(self, la=18.0, la_source="radar", ball_speed=115.0, spin=6800.0):
+        return Shot(
+            ball_speed_mph=ball_speed,
+            timestamp=datetime.now(),
+            club=ClubType.IRON_7,
+            launch_angle_vertical=la,
+            launch_angle_vertical_source=la_source,
+            spin_rpm=spin,
+            spin_confidence=0.3,
+            spin_rejection_reason="SNR too low",
+        )
+
+    def test_rewrites_spin_when_launch_angle_measured(self):
+        shot = self._shot()
+        assert server_module._apply_calculated_spin(shot) is True
+        # 170 * 115 * sin(18deg)^1.2 ~= 4800 rpm
+        assert 4500 < shot.spin_rpm < 5100
+        assert shot.spin_rpm_measured == 6800.0
+        assert shot.spin_source == "calculated"
+        assert shot.spin_confidence == pytest.approx(0.7)
+        assert shot.spin_rejection_reason is None
+
+    def test_untouched_when_launch_angle_estimated(self):
+        shot = self._shot(la_source="estimated")
+        assert server_module._apply_calculated_spin(shot) is False
+        assert shot.spin_rpm == 6800.0
+        assert shot.spin_source is None
+
+    def test_untouched_when_no_launch_angle(self):
+        shot = self._shot(la=None)
+        assert server_module._apply_calculated_spin(shot) is False
+        assert shot.spin_rpm == 6800.0
+
+    def test_untouched_when_launch_angle_outside_model_range(self):
+        shot = self._shot(la=1.0)
+        assert server_module._apply_calculated_spin(shot) is False
+        assert shot.spin_rpm == 6800.0
+
+    def test_camera_launch_angle_accepted(self):
+        shot = self._shot(la_source="camera")
+        assert server_module._apply_calculated_spin(shot) is True
+        assert shot.spin_source == "calculated"
