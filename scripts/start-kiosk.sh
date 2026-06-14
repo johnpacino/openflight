@@ -47,6 +47,8 @@ EXPERIMENTAL_KLD7_HORIZONTAL_IMPACT_ENERGY=""
 EXPERIMENTAL_KLD7_HORIZONTAL_RETRY_IMPACT_ENERGY=""
 EXPERIMENTAL_KLD7_HORIZONTAL_ANGLE_LIMIT=""
 BALLISTICS=false
+CALCULATED_SPIN=false
+BALL_SPEED_COSINE=false
 
 # Buffer split presets (pre/post trigger segments out of 32 total)
 # At 20ksps: each segment = 6.4ms, total buffer = 204.8ms
@@ -223,6 +225,14 @@ while [[ $# -gt 0 ]]; do
             BALLISTICS=true
             shift
             ;;
+        --calculated-spin)
+            CALCULATED_SPIN=true
+            shift
+            ;;
+        --ball-speed-cosine-correction)
+            BALL_SPEED_COSINE=true
+            shift
+            ;;
         --port|-p)
             PORT="$2"
             shift 2
@@ -348,6 +358,14 @@ fi
 
 if [ "$BALLISTICS" = true ]; then
     SERVER_CMD="$SERVER_CMD --ballistics"
+fi
+
+if [ "$CALCULATED_SPIN" = true ]; then
+    SERVER_CMD="$SERVER_CMD --calculated-spin"
+fi
+
+if [ "$BALL_SPEED_COSINE" = true ]; then
+    SERVER_CMD="$SERVER_CMD --ball-speed-cosine-correction"
 fi
 
 if [ -n "$TRIGGER" ]; then
