@@ -106,6 +106,15 @@ distance + height measured to ±1 cm (that IS the ground truth).
 4. **S1-B live shots:** switch to `config/iwr6843_levm_ball.cfg`, hit balls,
    confirm detection + speed vs OPS (both radars can run simultaneously —
    24 vs 60 GHz, no interference).
+   - **Keep the OPS + sound trigger running: it is the labeling system.**
+     Record the trigger timestamp per shot (the OPS session log already has
+     it). Each timestamp marks "impact here" in the LEVM stream, giving
+     labeled windows to characterize the real ball signature (points/frame,
+     SNR, range-walk shape, clutter) — the future software detector gets
+     built from these labels, no ML needed. Alignment only needs to be
+     window-accurate: known cross-device jitter is ~±60 ms = ±7 frames,
+     and the range-walk pattern within ±100 ms of impact is unambiguous.
+     No detection code is needed for Stage 1 itself.
 5. **S1-C height sweep:** same shots at 10 / 18 / 30 in mount heights.
    This dataset decides Variant A vs Variant B in the board requirements doc.
 
