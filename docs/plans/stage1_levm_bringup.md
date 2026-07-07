@@ -45,6 +45,10 @@ Press the reset switch (S2) after every mode change and after power-up
 ### 2.2 USB / serial
 
 - Micro-USB J5 (cable in box) = power + dual CP2105 USB-UART.
+  Boxed cable is likely micro-B -> USB-A: an M1 Mac needs a USB-A->C
+  adapter or a micro-B->USB-C cable. **Must be a DATA cable** — a
+  charge-only cable powers the LEDs but no serial ports appear (looks
+  exactly like a driver problem; swap cables before debugging drivers).
 - Two virtual COM ports appear: **Enhanced** = config/CLI UART (115200 baud),
   **Standard** = data UART (921600 baud).
 - macOS: if `ls /dev/tty.usbserial*` shows nothing, install the Silicon Labs
