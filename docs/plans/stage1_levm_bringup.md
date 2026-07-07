@@ -94,15 +94,25 @@ distance + height measured to ±1 cm (that IS the ground truth).
 ## 4. Day-one protocol (stock firmware, zero C code)
 
 1. Flash demo (§2.3). Functional mode. Note which /dev port is which.
-2. Send `config/iwr6843_levm_static.cfg` line-by-line to the CLI port
-   (the parser module's `send_config()` does this), or use TI's browser
-   Demo Visualizer for a first smoke test.
+2. Identify ports (`uv run python stage1_capture.py --list-ports`), then
+   capture with config + first-frame verification in one command:
+   ```
+   uv run python stage1_capture.py --cli <port> --data <port> \
+       --cfg config/iwr6843_levm_static.cfg \
+       --session ~/openflight_sessions/stage1/<date>_static_h250 \
+       --seconds 30 --verify 10
+   ```
+   The `--verify` output runs the A1/A3 checks from §5 automatically.
+   (TI's browser Demo Visualizer also works for a first smoke test.)
 3. **S1-A static test:** corner reflector at measured (range, height)
-   positions spanning −10°…+20° elevation from the radar. Capture the
-   **azimuth static heatmap TLV** (= per-antenna complex data; on the
-   rotated board this axis is elevation). Run `stage1_static_analysis`
-   (see `stage1_dryrun.py` — same code path, real bytes instead of
-   synthetic). Compare recovered angle vs tape-measure truth → Gate S1-A.
+   positions spanning −10°…+20° elevation from the radar. Fill the
+   geometry fields in the generated `session_meta.json`, then:
+   ```
+   uv run --extra analysis python stage1_analyze.py --session <dir>
+   ```
+   prints the per-frame angle table, median vs tape-measure truth, and the
+   **Gate S1-A PASS/FAIL verdict** directly. (Both tools are end-to-end
+   tested against synthetic sessions — `tests/test_stage1_tools.py`.)
 4. **S1-B live shots:** switch to `config/iwr6843_levm_ball.cfg`, hit balls,
    confirm detection + speed vs OPS (both radars can run simultaneously —
    24 vs 60 GHz, no interference).
