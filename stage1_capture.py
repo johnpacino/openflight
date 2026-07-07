@@ -45,7 +45,7 @@ import iwr6843_uart as uart
 
 META_TEMPLATE = {
     "date": "", "test": "EDIT_ME: static|ball", "firmware": "oob-demo-3.x",
-    "cfg_file": "", "range_res_m": 0.0468,
+    "cfg_file": "", "range_res_m": 0.0488,  # static cfg; ball cfg is 0.0469
     "radar_height_m": "EDIT_ME", "board_tilt_deg": "EDIT_ME",
     "tilt_method": "digital level", "tee_distance_m": "EDIT_ME",
     "net_distance_m": "EDIT_ME", "floor": "EDIT_ME",
@@ -144,7 +144,8 @@ def main() -> None:
           f"{' / ' + str(args.max_frames) + ' frames' if args.max_frames else ''})")
     t0, n = time.time(), 0
     try:
-        for frame in rdr.frames(raw_sink=str(raw_path)):
+        for frame in rdr.frames(raw_sink=str(raw_path),
+                                duration_s=args.seconds):
             n += 1
             if args.verify and n <= args.verify:
                 verify_frame(frame, n)

@@ -184,27 +184,51 @@ class SerialReader:
         self.data = serial.Serial(data_port, data_baud, timeout=0.05)
 
     def send_config(self, cfg_path: str, echo: bool = True) -> None:
-        """Send a .cfg line-by-line to the demo CLI, waiting for 'Done'."""
+        """Send a .cfg line-by-line to the demo CLI, waiting for each line's
+        'Done'. Uses a bounded read window (longer for sensorStart, which runs
+        calibration) so a missing/slow response can never hang the caller.
+        Raises RuntimeError on an explicit error reply."""
         with open(cfg_path) as f:
-            for line in f:
-                line = line.strip()
+            for raw in f:
+                line = raw.strip()
                 if not line or line.startswith("%"):
                     continue
                 self.cli.write((line + "\n").encode())
-                time.sleep(0.03)
-                resp = self.cli.read(256).decode(errors="replace")
+                window = 3.0 if line.startswith("sensorStart") else 1.0
+                resp = b""
+                t = time.time()
+                while time.time() - t < window:
+                    resp += self.cli.read(512)
+                    if b"Done" in resp or b"Error" in resp:
+                        break
+                text = resp.decode(errors="replace")
+                low = text.lower()
                 if echo:
-                    print(f">> {line}\n   {resp.strip()}")
-                if "Error" in resp:
-                    raise RuntimeError(f"config rejected: {line!r} -> {resp!r}")
+                    flat = " | ".join(s.strip() for s in text.splitlines()
+                                      if s.strip())
+                    print(f">> {line}\n   {flat}")
+                if any(k in low for k in
+                       ("error", "invalid", "not recognized", "failure")):
+                    raise RuntimeError(f"config rejected: {line!r} -> {text!r}")
+                if "done" not in low:
+                    print(f"   WARN: no 'Done' from {line!r} within {window}s "
+                          "(continuing)")
 
-    def frames(self, raw_sink: str | None = None) -> Iterator[Frame]:
-        """Yield frames forever; optionally tee raw bytes to a file
-        (ALWAYS pass raw_sink in real sessions — see bring-up doc rule)."""
+    def frames(self, raw_sink: str | None = None,
+               duration_s: float | None = None) -> Iterator[Frame]:
+        """Yield frames; optionally tee raw bytes to a file (ALWAYS pass
+        raw_sink in real sessions — see bring-up doc rule).
+
+        duration_s bounds the total capture wall-clock. It is checked every
+        read (~20 Hz) regardless of whether a frame completed, so a silent or
+        stalled stream can never hang the caller (the 2026-07-07 power bug)."""
         buf = b""
         sink = open(raw_sink, "ab") if raw_sink else None
+        t_start = time.time()
         try:
             while True:
+                if duration_s is not None and time.time() - t_start > duration_s:
+                    return
                 chunk = self.data.read(4096)
                 if chunk:
                     if sink:
