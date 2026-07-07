@@ -84,7 +84,7 @@ def main(argv=None) -> int:
     sess = Path(args.session).expanduser()
     raw = (sess / "raw_uart.bin").read_bytes()
     meta = json.loads((sess / "session_meta.json").read_text())
-    range_res = float(meta.get("range_res_m", 0.0468))
+    range_res = float(meta.get("range_res_m", 0.0488))  # static cfg, HW-verified
 
     rows = list(analyze_capture(raw, range_res))
     if not rows:

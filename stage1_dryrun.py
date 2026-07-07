@@ -31,7 +31,8 @@ import numpy as np
 import iwr6843_uart as uart
 from music_stage0_sim import GAMMA, LAM, est_music_fbss, gate_w, steer
 
-RANGE_RES = 0.0468        # m/bin for the STATIC cfg (see iwr6843_levm_static.cfg)
+RANGE_RES = 0.0488        # m/bin for the STATIC cfg (slope 60 MHz/us, HW-verified
+                          # 2026-07-07; see iwr6843_levm_static.cfg derived block)
 N_BINS = 128
 N_ANT = 8
 AMP = 3000.0              # reflector amplitude in int16 units (strong target)

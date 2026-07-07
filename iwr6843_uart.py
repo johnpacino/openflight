@@ -49,6 +49,8 @@ TLV_AZIMUTH_STATIC_HEATMAP = 4  # zero-Doppler per-antenna complex — S1-A inpu
 TLV_RANGE_DOPPLER_HEATMAP = 5
 TLV_STATS = 6
 TLV_SIDE_INFO = 7              # numDetObj x (snr, noise) int16, 0.1 dB units
+TLV_TEMPERATURE_STATS = 9      # SDK 3.5 emits this alongside STATS when
+                               # statsInfo=1 (seen on real 6843 frames 2026-07-07)
 
 N_VIRT_ANT = 8                 # LEVM azimuth line: TX1+TX3 x RX1-4 (SWRU585 Fig 4-2)
 

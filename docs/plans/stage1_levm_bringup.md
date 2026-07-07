@@ -15,6 +15,53 @@
 
 ---
 
+## 0. Hardware Day 1 findings (2026-07-07) — READ FIRST
+
+Board arrived pre-flashed with the stock mmw demo (SDK **3.5.0.4**, platform
+`0xa6843`) — no flashing needed. Bring-up on the **Pi** (macOS CP210x driver is
+blocked by the corporate MDM; the Pi's in-kernel `cp210x` sidesteps it). Ports:
+`/dev/ttyUSB0` = Enhanced/CLI (115200), `/dev/ttyUSB1` = Standard/data (921600).
+
+**What works now:** config → `sensorStart` → continuous azimuth-heatmap stream
+at 5 fps, zero frame drops. The `iwr6843_uart.py` parser is validated on real
+bytes: **A1 (TLV length = payload only) confirmed on 74/74 frames**, heatmap TLV
+= 8192 B = 256 bins × 8 ant × 4 B, all 8 virtual antennas live, FBSS-MUSIC runs
+clean end-to-end. Capture/analyze split: **Pi captures raw bytes, Mac analyzes**.
+
+**THE big gotcha — dedicated power.** The whole first night was lost to a
+"sensor starts but streams zero bytes" mystery. Root cause was **power
+starvation**: the LEVM shared a USB hub with the OPS243, and the 5 V rail sagged
+under RF/DSP load. Signature: `sensorStart` returns `Done`, CLI answers
+`version`, 5th LED on — but **zero frames on either UART, regardless of frame
+size** (ruled out bandwidth, DTR/RTS, and port mapping first). Fix: give the
+board its **own** USB port (direct-to-Pi), not a shared hub. Identical config
+then streamed immediately. *Never share USB power between the LEVM and the OPS.*
+
+**Config fixes needed for SDK 3.5** (now baked into `config/*.cfg`):
+- Ramp peak must stay ≤ 64 GHz. Draft `start 60.25 + slope 62.5 × 65 µs ramp`
+  peaked 64.3 GHz → `sensorStart` **Error -1**. Verified static profile:
+  `profileCfg 0 60 30 6 60 0 0 60 1 256 5000 0 0 30` (peaks 63.6 GHz).
+- `bpmCfg -1 0 0 0` is **mandatory** even when unused, else `sensorStart` →
+  "Full configuration must be provided".
+- `compRangeBiasAndRxChanPhase` needs the full **25-arg** (12-virtual-antenna)
+  form; the 17-arg (8-ant) form is rejected "Invalid usage".
+- Heatmap TLV ≈ 9 KB/frame → keep static cfg at **5 fps** (200 ms); 10 fps
+  overruns the 921600-baud UART.
+
+**Range resolution corrected:** verified slope 60 MHz/µs → **4.88 cm/bin**
+(not the 4.68 cm the draft slope 62.5 implied). `RANGE_RES` and
+`stage1_analyze` default updated; put `range_res_m: 0.0488` in `session_meta`.
+
+**Observation to chase in S1-A:** the uncalibrated per-antenna phase shows a
+~54° step at the **TX1→TX3 seam** (antennas 3→4); within each 4-element TX
+sub-array the ramp is linear. That seam offset is exactly what
+`measureRangeBiasAndRxChanPhase` (step 2) must remove before angles are trusted.
+
+**Deferred:** `stage1_capture.py send_config` hangs under live streaming (worked
+around with inline scripts on the Pi); fix before relying on that CLI tool.
+
+---
+
 ## 1. Pre-registered pass/fail gates (do not move these after data exists)
 
 | Gate | Test | PASS threshold |
