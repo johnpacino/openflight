@@ -70,11 +70,19 @@ download either way.
 
 ### 2.4 Toolchain note (Stage 1c only — not needed day one)
 
-Firmware *building* needs x86 Linux or Windows. John has **Parallels** —
-note: on Apple Silicon, use a **Windows 11 ARM VM** (its x64 emulation runs
-TI CCS/SDK installers; an ARM Linux VM will NOT run the x86 SDK). CrossOver
-may work for UniFlash but is unproven for CCS — prefer the Parallels VM.
-Set the VM + SDK download up before Stage 1c, not during.
+Firmware *building* needs an x86 toolchain (the SDK build chain is x86, and
+some TI components are 32-bit). On John's M1:
+- **Windows 11 ARM VM in Parallels = the safe path** (Windows emulates both
+  x64 and 32-bit x86; runs Windows CCS/SDK).
+- ARM Linux VM + Rosetta translates x86-64 Linux binaries only — any 32-bit
+  i386 component in TI's chain breaks it. Coin flip; don't depend on it.
+- Docker --platform linux/amd64 (QEMU) works in principle, slowest.
+Set this up before Stage 1c, not during.
+
+**Day one does NOT need the SDK installed anywhere:** the prebuilt
+`xwr68xx_mmw_demo.bin` can be downloaded directly from TI Resource Explorer
+in a browser (dev.ti.com → mmWave SDK / Radar Toolbox package). Flashing
+requires only that .bin + UniFlash (macOS desktop or browser, §2.3).
 
 ### 2.5 Rotated mount (the whole point)
 
