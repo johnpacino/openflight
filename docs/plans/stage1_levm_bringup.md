@@ -53,7 +53,14 @@ Press the reset switch (S2) after every mode change and after power-up
 - Power: single USB port is fine for TDM-MIMO (one TX at a time). Use a
   solid 5 V source; if flaky, powered hub.
 
-### 2.3 Flashing (UniFlash, works on macOS)
+### 2.3 Flashing (UniFlash)
+
+UniFlash options: **macOS desktop build** (preferred — offline, reliable
+serial), **browser flash at dev.ti.com** (installs a local TI Cloud Agent
+helper for port access), or Linux **x86** desktop (Parallels VM / PC — not
+the Pi). Flashing is macOS-friendly; only firmware *building* (Stage 1c)
+needs the x86 toolchain. The demo binary itself comes from the mmWave SDK
+download either way.
 
 1. S1 → Flashing mode, press reset.
 2. UniFlash → IWR6843 → serial connect on the **Enhanced** port.
