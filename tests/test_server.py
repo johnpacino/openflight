@@ -369,6 +369,7 @@ class TestKLD7Initialization:
             "vertical_estimator": "naive",
             "mount_tilt_deg": 18.0,
             "ball_distance_ft": 5.5,
+            "vertical_flight_window_net_distance_ft": 10.0,
         }
 
     def test_init_kld7_defaults_to_legacy_vertical_estimator(self, monkeypatch):
@@ -1056,7 +1057,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 calls.append(("ball", shot_timestamp))
                 return KLD7Angle(vertical_deg=12.0, confidence=0.8, num_frames=2)
@@ -1105,7 +1106,7 @@ class TestOnShotDetected:
                 return [{"timestamp": 1000.0, "has_radc": True, "radc_b64": "AQID"}]
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(vertical_deg=12.0, confidence=0.8, num_frames=2)
 
@@ -1161,7 +1162,7 @@ class TestOnShotDetected:
                 return [{"timestamp": 1000.0, "has_radc": True}]
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(vertical_deg=12.0, confidence=0.8, num_frames=2)
 
@@ -1213,7 +1214,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(vertical_deg=79.4, confidence=0.58, num_frames=1)
 
@@ -1250,7 +1251,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(vertical_deg=10.7, confidence=0.89, num_frames=6)
 
@@ -1283,7 +1284,7 @@ class TestOnShotDetected:
         assert shot.launch_angle_confidence == pytest.approx(0.89)
         assert shot.angle_source == "radar"
 
-    def test_low_confidence_vertical_kld7_angle_falls_back_to_estimate(self, monkeypatch):
+    def test_lane_disagreement_vertical_radar_shown_as_marginal_confidence(self, monkeypatch):
         """Weak vertical radar candidates should not override the launch model."""
 
         class StubTracker:
@@ -1293,7 +1294,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(vertical_deg=10.7, confidence=0.72, num_frames=6)
 
@@ -1321,9 +1322,11 @@ class TestOnShotDetected:
 
         on_shot_detected(shot)
 
-        assert shot.launch_angle_vertical_source == "estimated"
-        assert shot.angle_source == "estimated"
-        assert shot.launch_angle_vertical == pytest.approx(35.3)
+        # Lane disagreement no longer silently replaces the measurement:
+        # shown as radar with single-dot (marginal) confidence
+        assert shot.launch_angle_vertical_source == "radar"
+        assert shot.launch_angle_vertical == pytest.approx(10.7)
+        assert shot.launch_angle_vertical_confidence < 0.4
 
     def test_low_confidence_vertical_kld7_angle_soft_accepts_when_estimator_aligned(
         self, monkeypatch
@@ -1341,6 +1344,7 @@ class TestOnShotDetected:
                 shot_timestamp=None,
                 ball_speed_mph=None,
                 impact_timestamp=None,
+                **kwargs,
             ):
                 return KLD7Angle(
                     vertical_deg=19.9,
@@ -1421,6 +1425,7 @@ class TestOnShotDetected:
                 shot_timestamp=None,
                 ball_speed_mph=None,
                 impact_timestamp=None,
+                **kwargs,
             ):
                 return KLD7Angle(
                     vertical_deg=19.9,
@@ -1544,10 +1549,15 @@ class TestOnShotDetected:
 
         on_shot_detected(shot)
 
-        assert shot.launch_angle_vertical == pytest.approx(expected_launch)
-        assert shot.launch_angle_vertical_source == "estimated"
-        assert shot.angle_source == "estimated"
-        assert logged_buffers[0]["ball_angle"]["selection_reason"] == "estimator_delta_too_large"
+        # Marginal accept: shown as radar with single-dot confidence
+        # instead of silently replaced by the club estimate
+        assert shot.launch_angle_vertical_source == "radar"
+        assert shot.launch_angle_vertical != pytest.approx(expected_launch)
+        assert shot.launch_angle_vertical_confidence < 0.4
+        assert (
+            logged_buffers[0]["ball_angle"]["selection_reason"]
+            == "marginal_accept:estimator_delta_too_large"
+        )
 
     def test_vertical_estimate_preserves_radar_horizontal(self, monkeypatch):
         """Vertical fallback should not erase a horizontal radar measurement."""
@@ -1559,7 +1569,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(horizontal_deg=1.5, confidence=0.68, num_frames=3)
 
@@ -1602,7 +1612,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(horizontal_deg=16.1, confidence=0.68, num_frames=3)
 
@@ -1646,7 +1656,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(horizontal_deg=-8.1, confidence=0.31, num_frames=19)
 
@@ -1845,7 +1855,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(vertical_deg=18.7, confidence=0.8, num_frames=2)
 
@@ -1909,7 +1919,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(vertical_deg=15.0, confidence=0.7, num_frames=2)
 
@@ -1951,7 +1961,7 @@ class TestOnShotDetected:
                 return []
 
             def get_angle_for_shot(
-                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None
+                self, shot_timestamp=None, ball_speed_mph=None, impact_timestamp=None, **kwargs
             ):
                 return KLD7Angle(vertical_deg=18.7, confidence=0.8, num_frames=2)
 
@@ -2134,3 +2144,36 @@ class TestApplyCalculatedSpin:
         shot = self._shot(la_source="camera")
         assert server_module._apply_calculated_spin(shot) is True
         assert shot.spin_source == "calculated"
+
+
+class TestVerticalGateBypass:
+    """--kld7-vertical-raw: show the radar angle for every candidate."""
+
+    def _shot(self):
+        return SimpleNamespace(
+            club=ClubType.IRON_7, ball_speed_mph=110.0, club_speed_mph=86.0, spin_rpm=None
+        )
+
+    def test_default_marginal_accepts_out_of_lane_reading(self):
+        # 0.6 deg for a 7-iron is outside the soft lane. It clears the hard
+        # physics guard, so it is shown as a low-confidence (marginal) radar
+        # reading rather than silently replaced by the club estimate.
+        angle = KLD7Angle(vertical_deg=0.6, confidence=0.65, num_frames=1)
+        accepted, details = server_module._select_vertical_radar_launch(angle, self._shot())
+        assert accepted is True
+        assert details["selection_reason"] == "marginal_accept:outside_soft_lane"
+        assert details["acceptance_path"] == "marginal"
+
+    def test_bypass_accepts_anything_with_a_candidate(self, monkeypatch):
+        monkeypatch.setattr(server_module, "_VERTICAL_RADAR_GATE_BYPASS", True)
+        angle = KLD7Angle(vertical_deg=0.6, confidence=0.65, num_frames=1)
+        accepted, details = server_module._select_vertical_radar_launch(angle, self._shot())
+        assert accepted is True
+        assert details["selection_reason"] == "gate_bypassed"
+        assert details["acceptance_path"] == "bypass"
+
+    def test_bypass_still_needs_a_candidate(self, monkeypatch):
+        monkeypatch.setattr(server_module, "_VERTICAL_RADAR_GATE_BYPASS", True)
+        assert server_module._select_vertical_radar_launch(None, self._shot())[0] is False
+        no_angle = KLD7Angle(vertical_deg=None, confidence=0.9, num_frames=2)
+        assert server_module._select_vertical_radar_launch(no_angle, self._shot())[0] is False

@@ -405,6 +405,12 @@ def _select_vertical_radar_launch(kld7_angle, shot: Shot) -> tuple[bool, dict]:
     if not kld7_angle or kld7_angle.vertical_deg is None:
         return False, details
 
+    if _VERTICAL_RADAR_GATE_BYPASS:
+        details["accepted"] = True
+        details["selection_reason"] = "gate_bypassed"
+        details["acceptance_path"] = "bypass"
+        return True, details
+
     radar_angle_deg = kld7_angle.vertical_deg
     plausible, guard_details = radar_launch_is_plausible(
         radar_angle_deg=radar_angle_deg,
@@ -436,13 +442,17 @@ def _select_vertical_radar_launch(kld7_angle, shot: Shot) -> tuple[bool, dict]:
     details["soft_lane_min_deg"] = lane_min
     details["soft_lane_max_deg"] = lane_max
     if radar_angle_deg < lane_min or radar_angle_deg > lane_max:
-        details["selection_reason"] = "outside_soft_lane"
-        return False, details
+        details["accepted"] = True
+        details["selection_reason"] = "marginal_accept:outside_soft_lane"
+        details["acceptance_path"] = "marginal"
+        return True, details
 
     delta_deg = guard_details.get("delta_deg")
     if delta_deg is None or delta_deg > _VERTICAL_SOFT_ESTIMATE_DELTA_DEG:
-        details["selection_reason"] = "estimator_delta_too_large"
-        return False, details
+        details["accepted"] = True
+        details["selection_reason"] = "marginal_accept:estimator_delta_too_large"
+        details["acceptance_path"] = "marginal"
+        return True, details
 
     if kld7_angle.num_frames <= 0:
         details["selection_reason"] = "no_candidate_frames"
@@ -452,8 +462,10 @@ def _select_vertical_radar_launch(kld7_angle, shot: Shot) -> tuple[bool, dict]:
         kld7_angle.num_frames > _VERTICAL_SOFT_MAX_FRAME_COUNT
         and delta_deg > _VERTICAL_SOFT_TIGHT_DELTA_FOR_LONG_FRAME_DEG
     ):
-        details["selection_reason"] = "suspicious_frame_span"
-        return False, details
+        details["accepted"] = True
+        details["selection_reason"] = "marginal_accept:suspicious_frame_span"
+        details["acceptance_path"] = "marginal"
+        return True, details
 
     details["accepted"] = True
     if kld7_angle.confidence >= _MIN_VERTICAL_SOFT_RADAR_CONFIDENCE:
@@ -585,6 +597,16 @@ _KLD7_POST_SHOT_CAPTURE_DELAY_S = 0.18
 _MIN_VERTICAL_RADAR_CONFIDENCE = 0.80
 _MIN_VERTICAL_SOFT_RADAR_CONFIDENCE = 0.68
 _MIN_VERTICAL_LOW_CONFIDENCE_RADAR_CONFIDENCE = 0.65
+# Test-mode escape hatch (--kld7-vertical-raw): when True,
+# _select_vertical_radar_launch accepts ANY vertical radar candidate and skips
+# every guard, so the UI shows the radar's launch angle for every shot the
+# estimator produces. Default False leaves production behavior unchanged.
+_VERTICAL_RADAR_GATE_BYPASS = False
+# Display confidence for radar measurements that pass the physics guard but
+# trip a soft consistency guard (club lane / estimator delta / frame span):
+# shown as radar with a single confidence dot (<0.4) instead of silently
+# being replaced by the club estimate.
+_VERTICAL_MARGINAL_DISPLAY_CONFIDENCE = 0.38
 _VERTICAL_SOFT_ESTIMATE_DELTA_DEG = 4.5
 _VERTICAL_SOFT_MAX_FRAME_COUNT = 40
 _VERTICAL_SOFT_TIGHT_DELTA_FOR_LONG_FRAME_DEG = 2.0
@@ -981,6 +1003,7 @@ def init_kld7(
     vertical_estimator="naive",
     mount_tilt_deg=18.0,
     ball_distance_ft=5.5,
+    vertical_flight_window_net_distance_ft=10.0,
 ) -> bool:
     """Initialize a single K-LD7 angle radar tracker.
 
@@ -1012,6 +1035,7 @@ def init_kld7(
             vertical_estimator=vertical_estimator,
             mount_tilt_deg=mount_tilt_deg,
             ball_distance_ft=ball_distance_ft,
+            vertical_flight_window_net_distance_ft=vertical_flight_window_net_distance_ft,
         )
         if tracker.connect():
             tracker.start()
@@ -1753,6 +1777,7 @@ def on_shot_detected(shot: Shot):
                     shot_timestamp=shot_ts,
                     ball_speed_mph=shot.ball_speed_mph,
                     impact_timestamp=shot.impact_timestamp_kld7,
+                    club=shot.club,
                 )
                 vertical_selection_details = None
                 if kld7_angle and kld7_angle.vertical_deg is not None:
@@ -1771,9 +1796,14 @@ def on_shot_detected(shot: Shot):
                             kld7_angle.confidence * 100,
                         )
                     else:
+                        accepted_conf = kld7_angle.confidence
+                        if vertical_selection_details.get("acceptance_path") == "marginal":
+                            accepted_conf = min(
+                                accepted_conf, _VERTICAL_MARGINAL_DISPLAY_CONFIDENCE
+                            )
                         shot.launch_angle_vertical = kld7_angle.vertical_deg
-                        shot.launch_angle_confidence = kld7_angle.confidence
-                        shot.launch_angle_vertical_confidence = kld7_angle.confidence
+                        shot.launch_angle_confidence = accepted_conf
+                        shot.launch_angle_vertical_confidence = accepted_conf
                         shot.launch_angle_vertical_source = "radar"
                         shot.angle_source = "radar"
                         logger.info(
@@ -2651,16 +2681,11 @@ def main():
     parser.add_argument(
         "--kld7-angle-offset",
         type=float,
-        default=0.0,
-        help="K-LD7 vertical angle offset in degrees (default: 0.0)",
-    )
-    parser.add_argument(
-        "--ball-speed-cosine-correction",
-        action="store_true",
+        default=1.5,
         help=(
-            "Correct OPS radial ball speed to true ball speed using the launch "
-            "angle and radar geometry (validated vs TrackMan; see "
-            "src/openflight/speed_correction.py)"
+            "K-LD7 vertical boresight offset in degrees. Not user-measurable "
+            "without a corner reflector; 1.5 is the calibrated default for the "
+            "standard mount (default: 1.5)"
         ),
     )
     parser.add_argument(
@@ -2675,27 +2700,31 @@ def main():
         ),
     )
     parser.add_argument(
-        "--kld7-vertical-estimator",
-        choices=("geometry", "naive"),
-        default="naive",
-        help=(
-            "Vertical launch-angle estimator: 'naive' (legacy bearing average + offset, "
-            "default) or 'geometry' (trajectory fit)"
-        ),
-    )
-    parser.add_argument(
         "--kld7-mount-tilt",
         type=float,
-        default=18.0,
-        help="K-LD7 vertical radar mount tilt in degrees, for the geometry estimator (default: 18.0)",
+        default=None,
+        help=(
+            "K-LD7 vertical radar mount tilt in degrees. REQUIRED with --kld7 — "
+            "measure it with a phone inclinometer against the radar face; there is "
+            "no default because a wrong tilt silently corrupts the launch angle"
+        ),
     )
     parser.add_argument(
         "--kld7-ball-distance",
         type=float,
-        default=5.5,
+        default=5.0,
+        help="Radar-to-tee distance in feet (default: 5.0)",
+    )
+    parser.add_argument(
+        "--net-distance",
+        dest="net_distance",
+        type=float,
+        default=10.0,
         help=(
-            "Ball-to-radar-front distance in feet, for the geometry estimator "
-            "(weak lever; default: 5.5)"
+            "Ball-to-net/screen distance in feet (two_ray). For nets beyond the "
+            "~11ft FSK range wrap, far-flight frames are de-aliased and kept "
+            "instead of dropped (default: 10.0; nets at/inside the wrap are "
+            "unaffected)."
         ),
     )
     parser.add_argument(
@@ -2706,6 +2735,16 @@ def main():
         help=(
             "K-LD7 radar height above the ball in inches, used by the ball-speed "
             "cosine correction geometry (default: 4.0)"
+        ),
+    )
+    parser.add_argument(
+        "--kld7-vertical-raw",
+        dest="kld7_vertical_raw",
+        action="store_true",
+        help=(
+            "TEST MODE: show the raw vertical launch angle for every shot the "
+            "estimator produces, bypassing all display guardrails (plausibility, "
+            "soft-lane, estimator-agreement, confidence floor). Default off."
         ),
     )
     parser.add_argument(
@@ -2721,11 +2760,13 @@ def main():
         help="K-LD7 horizontal angle offset in degrees (default: 0.0)",
     )
     parser.add_argument(
-        "--experimental-kld7-raw-radc-logging",
+        "--kld7-raw-logging",
+        dest="experimental_kld7_raw_radc_logging",
         action="store_true",
         help=(
-            "Include base64 raw K-LD7 RADC payloads in kld7_buffer session logs "
-            "for TrackMan replay without changing live angle extraction"
+            "Log raw K-LD7 RADC payloads (base64) in kld7_buffer session logs for "
+            "offline replay and the session reviewer, without changing live angle "
+            "extraction"
         ),
     )
     parser.add_argument(
@@ -2798,6 +2839,11 @@ def main():
     )
     args = parser.parse_args()
 
+    # Mount tilt cannot be defaulted safely (a wrong value silently biases the
+    # launch angle), so require it whenever the K-LD7 radars are enabled.
+    if args.kld7 and args.kld7_mount_tilt is None:
+        parser.error("--kld7-mount-tilt is required when --kld7 is passed")
+
     global experimental_kld7_radc_tuning
     global experimental_kld7_raw_radc_logging
     global active_kld7_radc_tuning
@@ -2807,9 +2853,14 @@ def main():
     global ball_speed_correction_enabled
     global ball_speed_correction_distance_ft
     global ball_speed_correction_ball_above_radar_ft
-    ball_speed_correction_enabled = args.ball_speed_cosine_correction
+    # The ball-speed cosine correction rides on --kld7: it needs a measured
+    # launch angle (from the vertical radar) to compute the radial->true
+    # correction, so there is no separate enable flag.
+    ball_speed_correction_enabled = args.kld7
     ball_speed_correction_distance_ft = args.kld7_ball_distance
     ball_speed_correction_ball_above_radar_ft = -args.kld7_radar_height_inches / 12.0
+    global _VERTICAL_RADAR_GATE_BYPASS
+    _VERTICAL_RADAR_GATE_BYPASS = args.kld7_vertical_raw
     global calculated_spin_enabled
     calculated_spin_enabled = args.calculated_spin
     ballistics_enabled = args.ballistics
@@ -2902,9 +2953,13 @@ def main():
             orientation="vertical",
             angle_offset_deg=args.kld7_angle_offset,
             base_freq=0,
-            vertical_estimator=args.kld7_vertical_estimator,
+            # The estimator is a fixed cascade: two_ray demodulation, falling
+            # back internally to the geometry fit and then naive averaging when
+            # two_ray refuses a shot. Not user-selectable.
+            vertical_estimator="two_ray",
             mount_tilt_deg=args.kld7_mount_tilt,
             ball_distance_ft=args.kld7_ball_distance,
+            vertical_flight_window_net_distance_ft=args.net_distance,
             **kld7_radc_tuning_kwargs,
         ):
             offset_str = (

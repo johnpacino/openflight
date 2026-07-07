@@ -27,10 +27,10 @@ KLD7_ANGLE_OFFSET=""
 KLD7_HORIZONTAL=false
 KLD7_HORIZONTAL_PORT=""
 KLD7_HORIZONTAL_OFFSET=""
-KLD7_GEOMETRY=false
-KLD7_VERTICAL_ESTIMATOR=""
 KLD7_MOUNT_TILT=""
 KLD7_BALL_DISTANCE=""
+NET_DISTANCE=""
+KLD7_VERTICAL_RAW=false
 EXPERIMENTAL_KLD7_RAW_RADC_LOGGING=false
 EXPERIMENTAL_KLD7_RADC_TUNING=false
 EXPERIMENTAL_KLD7_SPEED_TOLERANCE=""
@@ -45,7 +45,6 @@ EXPERIMENTAL_KLD7_HORIZONTAL_ANGLE_LIMIT=""
 BALLISTICS=false
 SIM=false
 CALCULATED_SPIN=false
-BALL_SPEED_COSINE=false
 
 # Buffer split presets (pre/post trigger segments out of 32 total)
 # At 20ksps: each segment = 6.4ms, total buffer = 204.8ms
@@ -118,20 +117,12 @@ while [[ $# -gt 0 ]]; do
             KLD7=true
             shift
             ;;
-        --kld7-geometry)
-            KLD7_GEOMETRY=true
-            shift
-            ;;
         --kld7-port)
             KLD7_PORT="$2"
             shift 2
             ;;
         --kld7-angle-offset)
             KLD7_ANGLE_OFFSET="$2"
-            shift 2
-            ;;
-        --kld7-vertical-estimator)
-            KLD7_VERTICAL_ESTIMATOR="$2"
             shift 2
             ;;
         --kld7-mount-tilt)
@@ -141,6 +132,14 @@ while [[ $# -gt 0 ]]; do
         --kld7-ball-distance)
             KLD7_BALL_DISTANCE="$2"
             shift 2
+            ;;
+        --net-distance)
+            NET_DISTANCE="$2"
+            shift 2
+            ;;
+        --kld7-vertical-raw)
+            KLD7_VERTICAL_RAW=true
+            shift
             ;;
         --kld7-horizontal)
             KLD7_HORIZONTAL=true
@@ -154,7 +153,7 @@ while [[ $# -gt 0 ]]; do
             KLD7_HORIZONTAL_OFFSET="$2"
             shift 2
             ;;
-        --experimental-kld7-raw-radc-logging)
+        --kld7-raw-logging)
             EXPERIMENTAL_KLD7_RAW_RADC_LOGGING=true
             shift
             ;;
@@ -214,10 +213,6 @@ while [[ $# -gt 0 ]]; do
             CALCULATED_SPIN=true
             shift
             ;;
-        --ball-speed-cosine-correction)
-            BALL_SPEED_COSINE=true
-            shift
-            ;;
         --port|-p)
             PORT="$2"
             shift 2
@@ -235,19 +230,9 @@ fi
 
 if [ "$TRACKMAN_TEST" = true ]; then
     KLD7=true
-    KLD7_GEOMETRY=true
     KLD7_HORIZONTAL=true
     EXPERIMENTAL_KLD7_RAW_RADC_LOGGING=true
     SESSION_LOCATION="${SESSION_LOCATION:-trackman}"
-fi
-
-if [ "$KLD7_GEOMETRY" = true ]; then
-    KLD7=true
-    KLD7_HORIZONTAL=true
-    KLD7_VERTICAL_ESTIMATOR="${KLD7_VERTICAL_ESTIMATOR:-geometry}"
-    KLD7_MOUNT_TILT="${KLD7_MOUNT_TILT:-10}"
-    KLD7_BALL_DISTANCE="${KLD7_BALL_DISTANCE:-5}"
-    KLD7_ANGLE_OFFSET="${KLD7_ANGLE_OFFSET:-2.5}"
 fi
 
 # Colors for output
@@ -267,6 +252,17 @@ warn() {
 error() {
     echo -e "${RED}[OpenFlight]${NC} $1"
 }
+
+# Mount tilt has no safe default (a wrong value silently biases the launch
+# angle), so it must be provided whenever the K-LD7 radars are enabled. Set
+# KLD7_MOUNT_TILT or pass --kld7-mount-tilt; measure it with a phone
+# inclinometer against the radar face.
+if [ "$KLD7" = true ] && [ -z "$KLD7_MOUNT_TILT" ]; then
+    error "K-LD7 enabled but mount tilt is unset."
+    error "  Measure the radar tilt (phone inclinometer) and pass --kld7-mount-tilt <deg>"
+    error "  or set KLD7_MOUNT_TILT in the environment."
+    exit 1
+fi
 
 cleanup() {
     log "Shutting down..."
@@ -354,10 +350,6 @@ if [ "$CALCULATED_SPIN" = true ]; then
     SERVER_CMD="$SERVER_CMD --calculated-spin"
 fi
 
-if [ "$BALL_SPEED_COSINE" = true ]; then
-    SERVER_CMD="$SERVER_CMD --ball-speed-cosine-correction"
-fi
-
 if [ -n "$TRIGGER" ]; then
     SERVER_CMD="$SERVER_CMD --trigger $TRIGGER"
 fi
@@ -375,7 +367,7 @@ if [ -n "$SESSION_LOCATION" ]; then
 fi
 
 if [ "$EXPERIMENTAL_KLD7_RAW_RADC_LOGGING" = true ]; then
-    SERVER_CMD="$SERVER_CMD --experimental-kld7-raw-radc-logging"
+    SERVER_CMD="$SERVER_CMD --kld7-raw-logging"
 fi
 
 if [ "$EXPERIMENTAL_KLD7_RADC_TUNING" = true ]; then
@@ -424,17 +416,18 @@ elif [ -n "$EXPERIMENTAL_KLD7_SPEED_TOLERANCE$EXPERIMENTAL_KLD7_CENTROID_FLOOR$E
     warn "Ignoring experimental K-LD7 RADC tuning values without --experimental-kld7-radc-tuning"
 fi
 
-# K-LD7 radar defaults when --kld7 is enabled
+# K-LD7 radar defaults when --kld7 is enabled. This enables the two-ray
+# launch-angle estimator and the ball-speed cosine correction on the server
+# side; mount tilt is required (checked above) and the offset defaults to the
+# calibrated 1.5 unless overridden.
 if [ "$KLD7" = true ]; then
     SERVER_CMD="$SERVER_CMD --kld7"
     SERVER_CMD="$SERVER_CMD --kld7-port ${KLD7_PORT:-/dev/kld7_vertical}"
-    SERVER_CMD="$SERVER_CMD --kld7-angle-offset ${KLD7_ANGLE_OFFSET:-8}"
-    # Geometry estimator config is forwarded only when set explicitly or via
-    # --kld7-geometry/--trackman-test. Plain --kld7 keeps the historical kiosk
-    # defaults unless the caller opts into the geometry field preset.
-    [ -n "$KLD7_VERTICAL_ESTIMATOR" ] && SERVER_CMD="$SERVER_CMD --kld7-vertical-estimator $KLD7_VERTICAL_ESTIMATOR"
-    [ -n "$KLD7_MOUNT_TILT" ] && SERVER_CMD="$SERVER_CMD --kld7-mount-tilt $KLD7_MOUNT_TILT"
+    SERVER_CMD="$SERVER_CMD --kld7-angle-offset ${KLD7_ANGLE_OFFSET:-1.5}"
+    SERVER_CMD="$SERVER_CMD --kld7-mount-tilt $KLD7_MOUNT_TILT"
     [ -n "$KLD7_BALL_DISTANCE" ] && SERVER_CMD="$SERVER_CMD --kld7-ball-distance $KLD7_BALL_DISTANCE"
+    [ -n "$NET_DISTANCE" ] && SERVER_CMD="$SERVER_CMD --net-distance $NET_DISTANCE"
+    [ "$KLD7_VERTICAL_RAW" = true ] && SERVER_CMD="$SERVER_CMD --kld7-vertical-raw"
     # Auto-enable horizontal if symlink exists and not explicitly disabled
     if [ "$KLD7_HORIZONTAL" != true ] && [ -e /dev/kld7_horizontal ]; then
         KLD7_HORIZONTAL=true

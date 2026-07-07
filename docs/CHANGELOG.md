@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`--kld7` now delivers the full launch-angle pipeline by default.** Enabling
+  the K-LD7 radars turns on the **two-ray multipath vertical launch-angle
+  estimator** (per-frame demodulation that separates the ball from its floor
+  reflection to recover true elevation instead of averaging across the
+  multipath) plus the **ball-speed cosine correction** (OPS radial → true
+  speed). Each shot is graded into a tour-derived Tier-1/Tier-2 confidence with
+  a tour-average boost for suppressed reads; measurements that clear the
+  physics guard but trip a soft consistency guard are shown as **marginal
+  (one-dot) confidence** rather than silently replaced by the club estimate.
+  Far-net flights are de-aliased past the FSK range wrap (`--net-distance`).
+- `--kld7-mount-tilt` is **required** with `--kld7` (measure with a phone
+  inclinometer — no safe default). `--kld7-angle-offset` defaults to the
+  calibrated `1.5`.
+- `--calculated-spin` (opt-in, off by default): replaces radar spin with the
+  kinematic estimate `170·v·sin(LA)^1.2`; the measured value is retained in
+  `spin_rpm_measured` for scoring.
+- `--kld7-vertical-raw` test mode surfaces the raw radar angle for every shot
+  (all display guards bypassed).
+- Offline `scripts/analysis/session_shot_report.py` per-shot HTML report, a
+  visual explainer (`docs/kld7-launch-angle-explained.html`), and a
+  setup/usage guide (`docs/kld7.md`).
+
+### Changed
+- The vertical estimator is now a fixed cascade (two_ray → geometry →
+  single-frame geometry → naive); it is no longer user-selectable. Launch-angle
+  source and confidence semantics changed accordingly.
+- `--experimental-kld7-raw-radc-logging` promoted to `--kld7-raw-logging` (it
+  is the standard replay/review path, not an experiment).
+
+### Removed
+- `--kld7-vertical-estimator` (estimator is a fixed cascade), `--kld7-geometry`
+  (kiosk preset), and `--ball-speed-cosine-correction` (folded into `--kld7`).
+  `--kld7-bypass-vertical-gate` renamed to `--kld7-vertical-raw`.
+
 ### Fixed
 - K-LD7 tracker: shots could silently lose their launch angle when the
   stream thread appended a frame while the shot path iterated the ring
