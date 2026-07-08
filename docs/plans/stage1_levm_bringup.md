@@ -262,6 +262,19 @@ distance + height measured to ±1 cm (that IS the ground truth).
      (§0); (b) **verify the ball cfg actually streams** — it has never been run
      on hardware (only the static cfg has); (c) EDIT geometry +
      `openflight_session_log` in the generated `session_meta.json`.
+   - **Step-0 pre-flight smoke test (clap + hand-wave)** — run this indoors
+     first; it proves the whole chain end-to-end in ~2 min (plumbing, NOT
+     detection quality). With OpenFlight + `ball_capture.py` both running:
+     1. **Clap** near the SEN-14262 → OpenFlight logs a `trigger_event`
+        (validates trigger chain + OPS-over-GPIO-UART).
+     2. **Wave a hand back-and-forth** through the beam → OPS records a speed
+        (a labeled event) AND `frames_index.csv` shows `n_det > 0` at that time
+        (both radars alive + TI streaming + timestamped).
+     3. Ctrl-C; confirm both logs have entries at matching wall-clock times
+        (alignment works) and `get_throttled=0x0` held (dual-radar power OK).
+     PASS = trigger logged + OPS speed + TI frames, timestamps aligned, power
+     steady → then go outside for real balls. No-ball trigger *rejects* are
+     expected; this tests the plumbing, not object detection.
 5. **S1-C height sweep:** same shots at 10 / 18 / 30 in mount heights.
    This dataset decides Variant A vs Variant B in the board requirements doc.
 
