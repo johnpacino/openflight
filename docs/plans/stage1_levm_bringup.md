@@ -36,6 +36,15 @@ under RF/DSP load. Signature: `sensorStart` returns `Done`, CLI answers
 size** (ruled out bandwidth, DTR/RTS, and port mapping first). Fix: give the
 board its **own** USB port (direct-to-Pi), not a shared hub. Identical config
 then streamed immediately. *Never share USB power between the LEVM and the OPS.*
+> **OPEN ITEM (2026-07-08) — dual-radar USB power:** running the LEVM **and**
+> OPS on the Pi 5's USB simultaneously trips **USB over-current** warnings
+> (`over-current change` on all root hubs; on-screen notice) even though the
+> 5 V rail held (`throttled=0x0`, `EXT5V_V`≈5.14 V steady, `usb_max_current_enable=1`
+> already set). So the rail didn't sag, but the Pi is current-limiting USB with
+> both attached — we're at/over the USB budget. RESOLVE before dual-radar ball
+> testing: (1) confirm a genuine 27 W/5 A Pi-5 PSU, or (2) put the OPS on a
+> powered USB hub (sure fix). Not a product concern — the custom board uses
+> GPIO UART + its own 5 V rail. Retest pending (Pi was powered off mid-check).
 
 **Config fixes needed for SDK 3.5** (now baked into `config/*.cfg`):
 - Ramp peak must stay ≤ 64 GHz. Draft `start 60.25 + slope 62.5 × 65 µs ramp`
