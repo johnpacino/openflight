@@ -251,6 +251,51 @@ distance + height measured to ±1 cm (that IS the ground truth).
   phase ramp across the 8 antennas. If the ramp has jumps, the ordering
   assumption is wrong — fix `VIRT_ANT_ORDER` in `iwr6843_uart.py`.
 
+## 5.5 Ball detection & launch-angle recovery — clutter separation (Stage-1c design)
+
+The moving ball must be separated from static clutter (floor, walls, mat, tee)
+before its per-antenna snapshot feeds MUSIC. The *simplest* separation is
+Doppler — the ball sits at non-zero Doppler, all static clutter at zero — and
+it works for the vast majority of shots. **But it fails in the Doppler
+wrap-to-zero blind bands**, and the detector must NOT rely on Doppler alone.
+
+**The blind bands (angle problem, not speed):** with FMCW-MIMO the max
+unambiguous velocity is `v_max = λ/(4·N_TX·Tc)` (~12 m/s for the 2-TX ball
+draft). Ball speeds near `N·2·v_max` (~54 / 107 / 161 mph, ~5–10 mph wide,
+wider with fewer chirps/frame) alias to ~0 Doppler → the ball collapses onto
+the static-clutter cell → MUSIC sees ball+clutter → **launch angle is
+corrupted.** Speed is unaffected (OPS243 CW-Doppler has no such band; range-walk
+is alias-immune). This is inherent to *all* FMCW-MIMO parts, not this chip.
+
+**Recovery — build the detector around these, in our Python pipeline (keep the
+demo's `clutterRemoval` OFF so the zero-Doppler cell is never zeroed):**
+
+1. **Static-clutter model + subtraction (primary).** Capture a short no-ball
+   reference (N frames of the empty scene) per session, model the static
+   range–antenna field, and subtract it. A zero-Doppler ball then stands out
+   even when its Doppler has wrapped — separation no longer depends on Doppler.
+2. **Range-walk gating.** The ball's range-vs-frame trajectory is unambiguous
+   even when Doppler wraps; use it to pick the ball's range bin and pull the
+   per-antenna snapshot *there*, rather than trusting the Doppler bin.
+3. **Club-adaptive `v_max` presets.** On club select, load a chirp preset whose
+   wrap multiples sit off that club's expected speed (mid-Doppler-span).
+4. **Detect-and-flag.** Range-walk gives true speed independently, so when a
+   shot lands near a wrap-to-zero multiple, flag launch angle **low-confidence**
+   (feeds the existing confidence cascade) instead of reporting a corrupted
+   value. Graceful degradation, never silent error.
+
+**Evidence the mechanism works:** the 2026-07-07 static sweep (§0) recovered a
+clean ±1° angle from a **zero-Doppler target** (a static reflector) at every
+height — precisely because clutter was handled (clutterRemoval off) and the
+target dominated its cell. A background-subtracted, range-gated ball in a wrap
+band is the same condition. So the fix is proven in principle; Stage-1c must
+validate it on a *real* shot that actually lands in a blind band.
+
+**Where this lives:** the future software detector (`shot_detector.py`,
+deferred until labeled real-shot data exists) + the Stage-1c custom-TLV angle
+path. All clutter handling stays in our Python pipeline — transparent and
+tunable, not the demo's black-box `clutterRemoval`.
+
 ## 6. Session data conventions
 
 ```
