@@ -35,6 +35,23 @@ streams per-antenna complex data over UART, with all launch-angle processing
 > STATIC-reflector proxy; the real moving-ball G1 answer still needs the
 > Stage-1c custom TLV — this sweep is the justification to build it.
 
+> **Production roadmap (captured 2026-07-08, post-Stage-1):**
+> - **Aim (horizontal start/launch direction) is a production requirement.** One
+>   IWR6843 can measure BOTH angles: TX1+TX3 (vertical line) = launch angle,
+>   **TX2** (offset axis) = aim — potentially replacing *both* K-LD7s. We run
+>   **2 TX now** (launch angle only) to validate the chip; TX2 stays off.
+>   Enabling aim later is **firmware/config, NOT a board change** — the custom
+>   antenna already includes TX2 provided it copies the full LEVM/ISK layout
+>   (§2, Variant A). COST to budget: 3-TX TDM drops v_max ⅓ (blind bands ~⅓
+>   closer → worse Doppler aliasing) and costs frame rate. MITIGATION: run aim
+>   as a separate **lower-rate mmWave subframe** (aim doesn't need high fps), so
+>   the high-rate 2-TX launch-angle subframe keeps its frame rate / v_max.
+> - **"Range mode" (future, pending chip validation):** the ball cfg maxes at
+>   ~6 m (128 samples × 4.69 cm — indoor/net corridor). Outdoor/range use needs
+>   a longer-range preset (more ADC samples or lower slope), traded against
+>   resolution or v_max — a selectable mode alongside the club-adaptive v_max
+>   presets. Deferred.
+
 ## 2. Two board variants — build ONE, chosen by G1/G2
 
 ### Variant A — "Aperture board" (if rotated-8-el passes at 10 in)
