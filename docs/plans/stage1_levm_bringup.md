@@ -246,6 +246,22 @@ distance + height measured to ±1 cm (that IS the ground truth).
      window-accurate: known cross-device jitter is ~±60 ms = ±7 frames,
      and the range-walk pattern within ±100 ms of impact is unambiguous.
      No detection code is needed for Stage 1 itself.
+   - **Run sequence (two processes, same Pi):** `ball_capture.py` is the
+     device-under-test capture; OpenFlight is the co-running label/reference:
+     1. OPS on GPIO UART + TI (LEVM) on USB; `get_throttled=0x0` — the §0
+        dual-radar power fix must be in place first.
+     2. Start **OpenFlight** (OPS + sound trigger + session logging; no UI/KLD7
+        needed) → logs shot speed + `trigger_event` timestamps = the labels.
+     3. Start **`ball_capture.py --cli /dev/ttyUSB0 --data /dev/ttyUSB1
+        --session .../<date>_ball`** → `raw_uart.bin` + `frames_index.csv`
+        (per-frame Unix-epoch timestamps). Ctrl-C to stop.
+     4. Hit shots. Pull BOTH to the Mac; align each OpenFlight trigger time to
+        `frames_index.csv` rows (shared Pi clock, ~±60 ms window), then
+        characterize the ball/club signature and compare detection/speed vs OPS.
+   - **Gating to-dos before a real S1-B session:** (a) dual-radar power fix
+     (§0); (b) **verify the ball cfg actually streams** — it has never been run
+     on hardware (only the static cfg has); (c) EDIT geometry +
+     `openflight_session_log` in the generated `session_meta.json`.
 5. **S1-C height sweep:** same shots at 10 / 18 / 30 in mount heights.
    This dataset decides Variant A vs Variant B in the board requirements doc.
 
