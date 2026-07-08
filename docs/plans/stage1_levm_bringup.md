@@ -57,8 +57,44 @@ then streamed immediately. *Never share USB power between the LEVM and the OPS.*
 sub-array the ramp is linear. That seam offset is exactly what
 `measureRangeBiasAndRxChanPhase` (step 2) must remove before angles are trusted.
 
-**Deferred:** `stage1_capture.py send_config` hangs under live streaming (worked
-around with inline scripts on the Pi); fix before relying on that CLI tool.
+**Fixed since:** the `stage1_capture.py` hang (commit 48de555) — `frames()` had
+no wall-clock budget so a silent/stalled stream span forever; `send_config` now
+uses a bounded read window. Also added `--overwrite` so re-runs don't append.
+
+### Static multipath height sweep (2026-07-07) — the Stage-1a result
+
+Rotated board, corner reflector at radar co-height (truth ≈ 0° elevation),
+82 in range, 100 frames/height, FBSS-MUSIC range-gated to the reflector bin,
+calibrated to the clean 37.5" baseline. Elevation deviation from baseline
+(= multipath bias; ~1° of it is hand-remount slop):
+
+| Mount | 37.5" | 24" | 18" | 14" | 10" | 6" | 4" |
+|-------|-------|-----|-----|-----|-----|----|----|
+| bias  | 0 (ref) | −0.7° | −1.3° | −1.1° | −1.3° | −0.7° | −3.2° |
+
+Within-capture spread ≈ 0° everywhere (static target). **Bias ≤1.3° across the
+whole 37.5"→6" range; only the sub-spec 4" mount breaks (−3.2°) where the floor
+bounce fully merges sub-bin.** A3 phase-ramp residual is non-monotonic (peaks
+~21° at 6" partial-merge, drops to ~7° at 4" full-merge) — a linear-ramp fit is
+NOT a reliable multipath gauge; the recovered MUSIC angle is.
+
+**Decisions from this sweep:**
+- **Target mount = 6"** (launch-monitor enclosure constraint; 10" needs a
+  redesign). 10" retained as a rigid 4"-riser A/B. 6" is only ~2" above the 4"
+  cliff — watch hitting-mat/floor thickness in practice.
+- **Mount ~10° up** (beam off floor → less bounce; centers typical launch
+  angles; matches OPS enclosure) and ALWAYS record the tilt (K-LD7 +2° lesson;
+  `true_LA = measured + mount_tilt`). Optimal tilt is a Stage-1c tuning knob.
+- Uncalibrated per-antenna phase shows a ~+38° TX1→TX3 seam offset; calibrate
+  (`measureRangeBiasAndRxChanPhase` or a Python per-antenna vector) first.
+- Range-gate the analysis to the reflector bin — global-argmax gets hijacked by
+  near-field floor clutter at low mounts (the 10" first-try contamination).
+
+**Caveat:** a strong STATIC reflector is a best-case proxy. The moving-ball
+answer (weaker target, rising from the tee, hard low-ball early frames) still
+needs the **Stage-1c custom TLV**. This sweep is the strongest justification to
+build it, and the 6"-vs-10"-riser A/B becomes decision-grade once a real ball
+can run through it.
 
 ---
 

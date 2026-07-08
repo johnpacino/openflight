@@ -23,6 +23,18 @@ streams per-antenna complex data over UART, with all launch-angle processing
 | G4 | Real per-unit phase-calibration stability (temp, mounting) | Whether field-cal routine is required in v1 software |
 | G5 | Velocity unfold (range-migration + Doppler) validated on real shots | Whether OPS is retired or kept for speed in v1 |
 
+> **Stage-1 result (2026-07-08): G1 static-reflector portion PASSED.** A
+> corner-reflector floor-multipath height sweep (37.5"→4", radar+reflector
+> co-height, rotated board, FBSS-MUSIC) recovered elevation within ~1° of the
+> clean baseline from 37.5" down through 6" (−1.3° at 10", −0.7° at 6"),
+> degrading to −3.2° only at the sub-spec 4" mount where the bounce fully
+> merges. **Target mount is now 6"** (launch-monitor enclosure constraint; 10"
+> would force an enclosure redesign) — 10" retained as a 4"-riser A/B. Mount
+> **~10° up** (beam off floor → less bounce; centers launch angles; matches the
+> OPS enclosure) and ALWAYS record the tilt. **CAVEAT:** this is a strong
+> STATIC-reflector proxy; the real moving-ball G1 answer still needs the
+> Stage-1c custom TLV — this sweep is the justification to build it.
+
 ## 2. Two board variants — build ONE, chosen by G1/G2
 
 ### Variant A — "Aperture board" (if rotated-8-el passes at 10 in)
