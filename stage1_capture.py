@@ -116,6 +116,9 @@ def main() -> None:
     ap.add_argument("--max-frames", type=int, default=0, help="0 = unlimited")
     ap.add_argument("--verify", type=int, default=5,
                     help="run A1/A3 checks on first N frames (0 = off)")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="replace an existing non-empty raw_uart.bin "
+                         "(default: refuse, so re-runs don't stack captures)")
     args = ap.parse_args()
 
     if args.list_ports:
@@ -140,6 +143,12 @@ def main() -> None:
         rdr.send_config(args.cfg)
 
     raw_path = sess / "raw_uart.bin"
+    if raw_path.exists() and raw_path.stat().st_size > 0:
+        if not args.overwrite:
+            ap.error(f"{raw_path} already has {raw_path.stat().st_size} bytes — "
+                     "captures append and would stack. Use a new --session dir, "
+                     "or pass --overwrite to replace it.")
+        raw_path.unlink()
     print(f"capturing -> {raw_path}  ({args.seconds}s"
           f"{' / ' + str(args.max_frames) + ' frames' if args.max_frames else ''})")
     t0, n = time.time(), 0
