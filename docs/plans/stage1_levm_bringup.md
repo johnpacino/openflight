@@ -44,7 +44,17 @@ then streamed immediately. *Never share USB power between the LEVM and the OPS.*
 > both attached — we're at/over the USB budget. RESOLVE before dual-radar ball
 > testing: (1) confirm a genuine 27 W/5 A Pi-5 PSU, or (2) put the OPS on a
 > powered USB hub (sure fix). Not a product concern — the custom board uses
-> GPIO UART + its own 5 V rail. Retest pending (Pi was powered off mid-check).
+> GPIO UART + its own 5 V rail.
+> **PLANNED FIX (hardware on hand):** the X1206 UPS HAT has 2× USB-A
+> **power-output** sockets (power only, no data). So: **OPS power → X1206 USB**,
+> **OPS data → Pi GPIO UART** (OPS243 J3 3.3 V TTL: TX→GPIO15/pin10,
+> RX→GPIO14/pin8, shared GND — same J3 header as the HOST_INT trigger); **TI
+> stays on the Pi's USB.** OPS current then flows from the UPS, not the Pi's USB
+> controller, so the Pi's USB budget feeds only the TI → no over-current.
+> Pi side: `raspi-config` enable serial hw / disable login shell; `ops243.py`
+> opens `/dev/serial0` instead of USB (same API over UART, match baud). Verify
+> OPS243 J3 UART pins + baud against its datasheet. This also moves the OPS onto
+> the same GPIO-UART path the future custom TI board will use. Retest pending.
 
 **Config fixes needed for SDK 3.5** (now baked into `config/*.cfg`):
 - Ramp peak must stay ≤ 64 GHz. Draft `start 60.25 + slope 62.5 × 65 µs ramp`
