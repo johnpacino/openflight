@@ -51,22 +51,38 @@ def pack_dump(cube: np.ndarray, *, n_tx: int, trigger_frame: int = 0,
     return hdr + iq.tobytes()
 
 
-def parse_dump(raw: bytes):
-    """Dump bytes -> (meta dict, complex cube [n_frames, cpf, n_rx, n_samples])."""
+def parse_header(raw: bytes) -> dict:
+    """Unpack just the 20-byte header -> meta dict (validates magic + format).
+
+    Lets the runtime size the burst before the full payload has arrived.
+    """
     (magic, ver, nf, cpf, ntx, nrx, ns,
      fmt, _pad, trig, _pad2) = HEADER.unpack_from(raw, 0)
     if magic != MAGIC:
         raise ValueError(f"bad magic {magic!r} (expected {MAGIC!r})")
     if fmt != SAMPLE_INT16_IQ:
         raise ValueError(f"unsupported sample_fmt {fmt}")
+    return dict(version=ver, n_frames=nf, chirps_per_frame=cpf, n_tx=ntx,
+                n_rx=nrx, n_samples=ns, trigger_frame=trig)
+
+
+def payload_nbytes(meta: dict) -> int:
+    """Bytes of int16-I/Q ADC payload following the header."""
+    return (meta["n_frames"] * meta["chirps_per_frame"]
+            * meta["n_rx"] * meta["n_samples"] * 4)
+
+
+def parse_dump(raw: bytes):
+    """Dump bytes -> (meta dict, complex cube [n_frames, cpf, n_rx, n_samples])."""
+    meta = parse_header(raw)
+    nf, cpf, nrx, ns = (meta["n_frames"], meta["chirps_per_frame"],
+                        meta["n_rx"], meta["n_samples"])
     n = nf * cpf * nrx * ns
     body = np.frombuffer(raw, dtype="<i2", offset=HEADER.size, count=2 * n)
     if body.size < 2 * n:
         raise ValueError(f"short payload: {body.size} i16 < {2 * n} needed")
     iq = body.astype(np.float64)
     cube = (iq[0::2] + 1j * iq[1::2]).reshape(nf, cpf, nrx, ns)
-    meta = dict(version=ver, n_frames=nf, chirps_per_frame=cpf, n_tx=ntx,
-                n_rx=nrx, n_samples=ns, trigger_frame=trig)
     return meta, cube
 
 
