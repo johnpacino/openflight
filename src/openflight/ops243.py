@@ -25,7 +25,6 @@ Speed limits by sample rate:
 
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -153,12 +152,6 @@ class OPS243Radar:
             List of port names that might be OPS243 devices
         """
         ports = []
-        # HARDCODE (2026-07-09): the OPS is wired to the Pi's GPIO UART
-        # (/dev/ttyAMA0) per the dual-radar power fix (see Stage-1 runbook).
-        # The GPIO UART is NOT a USB device, so it never shows up in comports();
-        # prefer it explicitly when present so auto-detect lands on it.
-        if os.path.exists("/dev/ttyAMA0"):
-            ports.append("/dev/ttyAMA0")
         for port in serial.tools.list_ports.comports():
             # OPS243 shows up as USB serial device
             if port.vid in OPS243Radar.VENDOR_IDS or "ACM" in port.device:
