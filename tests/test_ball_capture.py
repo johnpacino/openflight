@@ -39,6 +39,30 @@ class TestFrameIndexRow:
             "1,1720000000.1234,0,,"
 
 
+class TestClassifyPorts:
+    def test_picks_responder_as_cli_other_as_data(self):
+        cli, data = uart.classify_ports(
+            ["/dev/portA", "/dev/portB"], lambda p: p == "/dev/portB")
+        assert cli == "/dev/portB"
+        assert data == "/dev/portA"
+
+    def test_first_responder_short_circuits(self):
+        probed = []
+
+        def is_cli(p):
+            probed.append(p)
+            return True
+
+        cli, data = uart.classify_ports(["/dev/a", "/dev/b"], is_cli)
+        assert (cli, data) == ("/dev/a", "/dev/b")
+        assert probed == ["/dev/a"]  # stopped at the first responder
+
+    def test_raises_when_none_answer(self):
+        import pytest
+        with pytest.raises(RuntimeError):
+            uart.classify_ports(["/dev/a", "/dev/b"], lambda p: False)
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

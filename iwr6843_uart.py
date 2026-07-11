@@ -277,6 +277,74 @@ class SerialReader:
                 sink.close()
 
 
+# ------------------------------------------------------------- port detection
+# The LEVM's CP2105 exposes two UARTs (CLI 115200 / data 921600). Their /dev
+# names are NOT stable — macOS swaps SLAB_USBtoUART <-> SLAB_USBtoUART3 across
+# power-cycles — so detect the CLI at runtime instead of hardcoding.
+
+def _levm_candidate_ports():
+    """The CP2105 pair: SLAB_USBtoUART* (macOS) or ttyUSB* (Linux/Pi)."""
+    import glob
+    for pattern in ("/dev/tty.SLAB_USBtoUART*", "/dev/ttyUSB*"):
+        found = sorted(glob.glob(pattern))
+        if found:
+            return found
+    return []
+
+
+def _port_answers_cli(port, baud=115200, wait_s=1.2):
+    """True if ``port`` answers the mmw-demo CLI (``sensorStop`` -> ``Done``).
+    Opens without asserting DTR/RTS so the probe can't reset the board."""
+    import serial
+    try:
+        s = serial.Serial()
+        s.port, s.baudrate, s.timeout = port, baud, 0.3
+        s.dtr = False
+        s.rts = False
+        s.open()
+    except Exception:  # noqa: BLE001 - an unopenable port is simply "not CLI"
+        return False
+    try:
+        s.reset_input_buffer()
+        s.write(b"sensorStop\n")
+        deadline = time.time() + wait_s
+        buf = b""
+        while time.time() < deadline:
+            buf += s.read(256)
+            if b"Done" in buf or b"mmwDemo" in buf:
+                return True
+        return False
+    finally:
+        s.close()
+
+
+def classify_ports(candidates, is_cli):
+    """Return ``(cli_port, data_port)`` given candidate ports and an
+    ``is_cli(port) -> bool`` probe. Pure (hardware lives in ``is_cli``), so the
+    selection logic is unit-testable without a radar attached."""
+    cli = next((p for p in candidates if is_cli(p)), None)
+    if cli is None:
+        raise RuntimeError(
+            f"no mmw-demo CLI port found among {candidates!r} "
+            "(is the LEVM powered and running the demo?)")
+    others = [p for p in candidates if p != cli]
+    if not others:
+        raise RuntimeError(f"found CLI {cli!r} but no second (data) port")
+    return cli, others[0]
+
+
+def find_levm_ports():
+    """Auto-detect ``(cli_port, data_port)`` for the LEVM's CP2105 pair by
+    probing which port answers the CLI; the other is data. Absorbs the macOS
+    name re-map across power-cycles."""
+    candidates = _levm_candidate_ports()
+    if len(candidates) < 2:
+        raise RuntimeError(
+            "expected 2 CP2105 ports (SLAB_USBtoUART*/ttyUSB*), "
+            f"found {candidates!r}")
+    return classify_ports(candidates, _port_answers_cli)
+
+
 # --------------------------------------------------- synthetic frame builder
 # Used by tests and stage1_dryrun.py. Kept here so the byte conventions have
 # exactly one home: if a VERIFY-ON-HW assumption changes, fix it once and

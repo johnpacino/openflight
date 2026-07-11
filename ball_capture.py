@@ -76,8 +76,8 @@ def frame_index_row(frame: uart.Frame, t: float) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--cli", required=True, help="config/CLI port (115200)")
-    ap.add_argument("--data", required=True, help="data port (921600)")
+    ap.add_argument("--cli", help="config/CLI port (115200); auto-detected if omitted")
+    ap.add_argument("--data", help="data port (921600); auto-detected if omitted")
     ap.add_argument("--cfg", default="config/iwr6843_levm_ball.cfg",
                     help="ball .cfg to send before capture")
     ap.add_argument("--no-config", action="store_true",
@@ -106,7 +106,11 @@ def main(argv=None) -> int:
         meta_path.write_text(json.dumps(meta, indent=2))
         print(f"created {meta_path} — EDIT geometry + openflight_session_log")
 
-    rdr = uart.SerialReader(args.cli, args.data)
+    cli, data = args.cli, args.data
+    if not (cli and data):
+        cli, data = uart.find_levm_ports()
+        print(f"auto-detected ports: CLI={cli}  data={data}")
+    rdr = uart.SerialReader(cli, data)
     if args.cfg and not args.no_config:
         print(f"sending {args.cfg} ...")
         rdr.send_config(args.cfg)
