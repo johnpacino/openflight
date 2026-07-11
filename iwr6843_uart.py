@@ -179,9 +179,24 @@ class SerialReader:
 
     def __init__(self, cli_port: str, data_port: str,
                  cli_baud: int = 115200, data_baud: int = 921600):
+        self.cli = self._open(cli_port, cli_baud, 0.5)
+        self.data = self._open(data_port, data_baud, 0.05)
+
+    @staticmethod
+    def _open(port: str, baud: int, timeout: float):
+        """Open without asserting DTR/RTS. On TI EVMs those lines can be tied to
+        NRST/boot-mode, so a plain ``serial.Serial(port, ...)`` open pulses them
+        and can reset or wedge the sensor. Setting the states before ``open()``
+        means they are never toggled."""
         import serial  # lazy: keeps tests hardware-free
-        self.cli = serial.Serial(cli_port, cli_baud, timeout=0.5)
-        self.data = serial.Serial(data_port, data_baud, timeout=0.05)
+        s = serial.Serial()
+        s.port = port
+        s.baudrate = baud
+        s.timeout = timeout
+        s.dtr = False
+        s.rts = False
+        s.open()
+        return s
 
     def send_config(self, cfg_path: str, echo: bool = True) -> None:
         """Send a .cfg line-by-line to the demo CLI, waiting for each line's
@@ -229,23 +244,34 @@ class SerialReader:
             while True:
                 if duration_s is not None and time.time() - t_start > duration_s:
                     return
-                chunk = self.data.read(4096)
+                # Drain everything available in one read (don't cap at 4096 or
+                # sit on the read timeout while data is flowing); fall back to a
+                # short blocking read(1) only when the port is idle. Slow draining
+                # here can backpressure the demo's UART and throttle its frame
+                # rate, so keep the buffer emptied.
+                n = self.data.in_waiting
+                chunk = self.data.read(n if n else 1)
                 if chunk:
                     if sink:
                         sink.write(chunk)
                     buf += chunk
-                start = find_magic(buf)
-                if start < 0:
-                    buf = buf[-len(MAGIC):]
-                    continue
-                frame, nxt = parse_frame(buf, start)
-                if frame is None:
-                    continue
-                if not frame.ok:
-                    print("WARN: TLV length reconciliation failed "
-                          "(see A1 note in module docstring)")
-                buf = buf[nxt:]
-                yield frame
+                # Yield EVERY complete frame currently buffered before reading
+                # again (the old loop yielded at most one frame per read).
+                while True:
+                    start = find_magic(buf)
+                    if start < 0:
+                        if len(buf) > len(MAGIC):
+                            buf = buf[-len(MAGIC):]
+                        break
+                    frame, nxt = parse_frame(buf, start)
+                    if frame is None:
+                        buf = buf[start:]  # incomplete frame; keep it, read more
+                        break
+                    if not frame.ok:
+                        print("WARN: TLV length reconciliation failed "
+                              "(see A1 note in module docstring)")
+                    buf = buf[nxt:]
+                    yield frame
         finally:
             if sink:
                 sink.close()
