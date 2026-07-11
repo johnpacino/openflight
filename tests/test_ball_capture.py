@@ -22,21 +22,21 @@ class TestFrameIndexRow:
                         [0.0, 1.5, 0.1, 2.0]], dtype=np.float32)
         frame = _frame({uart.TLV_DETECTED_POINTS: pts.tobytes()}, 42)
         assert ball_capture.frame_index_row(frame, 1000.5) == \
-            "42,1000.5000,2,1.500,+2.00"
+            "42,1000.5000,0,2,1.500,+2.00"
 
     def test_no_detected_points_tlv_yields_empty_fields(self):
         frame = _frame({uart.TLV_STATS: b"\x00" * 24}, 7)
-        assert ball_capture.frame_index_row(frame, 5.0) == "7,5.0000,0,,"
+        assert ball_capture.frame_index_row(frame, 5.0) == "7,5.0000,0,0,,"
 
     def test_empty_point_cloud_yields_zero_and_empty(self):
         frame = _frame({uart.TLV_DETECTED_POINTS: b""}, 9)
-        assert ball_capture.frame_index_row(frame, 12.25) == "9,12.2500,0,,"
+        assert ball_capture.frame_index_row(frame, 12.25) == "9,12.2500,0,0,,"
 
     def test_timestamp_has_sub_ms_resolution(self):
         # 0.1 ms matters: cross-device alignment window is ~±60 ms
         frame = _frame({uart.TLV_STATS: b""}, 1)
         assert ball_capture.frame_index_row(frame, 1720000000.1234) == \
-            "1,1720000000.1234,0,,"
+            "1,1720000000.1234,0,0,,"
 
 
 class TestClassifyPorts:

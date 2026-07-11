@@ -39,7 +39,7 @@ import numpy as np
 
 import iwr6843_uart as uart
 
-INDEX_HEADER = "frame_number,t_epoch,n_det,nearest_range_m,nearest_doppler"
+INDEX_HEADER = "frame_number,t_epoch,cpu_cycles,n_det,nearest_range_m,nearest_doppler"
 
 META_TEMPLATE = {
     "date": "", "test": "ball", "firmware": "oob-demo-3.5.0.4",
@@ -56,8 +56,10 @@ META_TEMPLATE = {
 
 
 def frame_index_row(frame: uart.Frame, t: float) -> str:
-    """One CSV index line: frame_number, wall-clock epoch, detected-point count,
-    and the nearest detected point's range + doppler (quick activity glance).
+    """One CSV index line: frame_number, host wall-clock epoch, the sensor's own
+    frame timestamp (``cpu_cycles`` — gives jitter-free inter-frame Δt, immune to
+    host read-batching, so range-walk *rate* is trustworthy), detected-point
+    count, and the nearest detected point's range + doppler.
 
     Pure and hardware-free so it can be unit-tested against synthetic frames.
     Empty fields when the frame carries no detected-points TLV / no points."""
@@ -71,7 +73,8 @@ def frame_index_row(frame: uart.Frame, t: float) -> str:
             i = int(np.argmin(np.hypot(pts[:, 0], pts[:, 1])))
             rng = f"{np.hypot(pts[i, 0], pts[i, 1]):.3f}"
             dop = f"{pts[i, 3]:+.2f}"
-    return f"{frame.header.frame_number},{t:.4f},{n_det},{rng},{dop}"
+    return (f"{frame.header.frame_number},{t:.4f},"
+            f"{frame.header.time_cpu_cycles},{n_det},{rng},{dop}")
 
 
 def main(argv=None) -> int:
