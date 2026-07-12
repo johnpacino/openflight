@@ -121,17 +121,40 @@ static void l3_frameStartISR(uintptr_t arg)
     gNumFrame++;
 }
 
-/* CLI "l3dump": freeze the ring (disable the EDMA), stream RING_FRAMES frames of
- * real ADC, then re-arm. The Pi frames the burst by the header's byte count. */
+/* Start the RF front-end (config must already be applied). Shared by
+ * sensorStart and the post-dump restart. */
+static int32_t l3_startFrontEnd(void)
+{
+    MMWave_CalibrationCfg calibrationCfg;
+    int32_t               errCode;
+
+    memset((void *)&calibrationCfg, 0, sizeof(calibrationCfg));
+    calibrationCfg.dfeDataOutputMode                          = gCtrlCfg.dfeDataOutputMode;
+    calibrationCfg.u.chirpCalibrationCfg.enableCalibration    = true;
+    calibrationCfg.u.chirpCalibrationCfg.enablePeriodicity    = true;
+    calibrationCfg.u.chirpCalibrationCfg.periodicTimeInFrames = 10U;
+    return MMWave_start(gMMWaveHandle, &calibrationCfg, &errCode);
+}
+
+/* CLI "l3dump": STOP the front-end (chirp events cease -> ring static and all
+ * EDMA state quiesced), stream RING_FRAMES frames of real ADC, re-arm the EDMA
+ * race-free (no events in flight), then restart the RF. Re-arming while
+ * chirping raced the 45 us chirp events and eventually wedged the EDMA/CLI.
+ * The Pi frames the burst by the header's byte count. */
 int32_t l3_cli_dump(int32_t argc, char *argv[])
 {
     l3_dump_header_t h;
     uint32_t         i;
+    int32_t          errCode;
     (void)argc; (void)argv;
 
     if (!gCaptureActive) {
         return -1;
     }
+
+    /* Halt chirping; ignore informational return (demo does the same). */
+    (void)MMWave_stop(gMMWaveHandle, &errCode);
+    Task_sleep(10);
     EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
 
     l3_fill_header(&h, RING_FRAMES, 0);
@@ -140,7 +163,18 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
         UART_writePolling(gDataUart, (uint8_t *)g_ring[i], sizeof(g_ring[i]));
     }
 
-    (void)l3_armCapture();     /* reset dest to base + re-enable the event channel */
+    /* Re-arm with no chirp events possible, then restart the front-end. The
+     * ring realigns to slot 0 == first chirp of the first post-restart frame. */
+    if (l3_armCapture() < 0) {
+        CLI_write("Error: EDMA re-arm failed\n");
+        gCaptureActive = 0U;
+        return -1;
+    }
+    if (l3_startFrontEnd() < 0) {
+        CLI_write("Error: RF restart failed\n");
+        gCaptureActive = 0U;
+        return -1;
+    }
     return 0;
 }
 
@@ -293,7 +327,6 @@ static void l3_mmwaveCtrlTask(UArg arg0, UArg arg1)
 /* CLI "sensorStart": open -> config -> ADCBUF + arm capture EDMA -> start. */
 static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
 {
-    MMWave_CalibrationCfg calibrationCfg;
     MMWave_ErrorLevel     errorLevel;
     int16_t               mmwErr, subErr;
     int32_t               errCode;
@@ -335,16 +368,9 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     }
     gCaptureActive = 1U;
 
-    memset((void *)&calibrationCfg, 0, sizeof(calibrationCfg));
-    calibrationCfg.dfeDataOutputMode                          = gCtrlCfg.dfeDataOutputMode;
-    calibrationCfg.u.chirpCalibrationCfg.enableCalibration    = true;
-    calibrationCfg.u.chirpCalibrationCfg.enablePeriodicity    = true;
-    calibrationCfg.u.chirpCalibrationCfg.periodicTimeInFrames = 10U;
-
-    if (MMWave_start(gMMWaveHandle, &calibrationCfg, &errCode) < 0) {
+    if (l3_startFrontEnd() < 0) {
         gCaptureActive = 0U;
-        MMWave_decodeError(errCode, &errorLevel, &mmwErr, &subErr);
-        CLI_write("Error: MMWave_start failed [mmwave %d subsys %d]\n", mmwErr, subErr);
+        CLI_write("Error: MMWave_start failed\n");
         return -1;
     }
     return 0;
