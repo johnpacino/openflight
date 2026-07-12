@@ -325,6 +325,11 @@ static int32_t l3_configEdma(void)
     if (EDMA_linkParamSets(gEdmaHandle, L3_EDMA_CHANNEL, L3_EDMA_LINK_CHANNEL) != EDMA_NO_ERROR) {
         return -1;
     }
+    /* Self-link the shadow param set so it reloads forever -- without this the
+     * channel runs exactly twice (own set + one reload) then stalls. */
+    if (EDMA_linkParamSets(gEdmaHandle, L3_EDMA_LINK_CHANNEL, L3_EDMA_LINK_CHANNEL) != EDMA_NO_ERROR) {
+        return -1;
+    }
     return 0;
 }
 
