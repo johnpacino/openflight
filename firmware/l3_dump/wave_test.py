@@ -28,7 +28,24 @@ if _ROOT not in sys.path:
 import numpy as np                                   # noqa: E402
 import serial                                        # noqa: E402
 import iwr6843_l3dump as l3                           # noqa: E402
-from iwr6843_runtime import DUMP_CMD, read_dump       # noqa: E402
+from iwr6843_runtime import DUMP_CMD                  # noqa: E402
+
+
+def read_dump_greedy(ser, timeout_s):
+    """Frame one dump, draining in_waiting greedily (avoids RX overflow on the
+    big 5-frame transfer that the fixed-size read_dump loop drops)."""
+    buf = bytearray()
+    deadline = time.time() + timeout_s
+    while len(buf) < l3.HEADER.size and time.time() < deadline:
+        n = ser.in_waiting
+        buf += ser.read(n if n else 1)
+    need = l3.HEADER.size + l3.payload_nbytes(l3.parse_header(bytes(buf)))
+    while len(buf) < need and time.time() < deadline:
+        n = ser.in_waiting
+        buf += ser.read(n if n else (need - len(buf)))
+    if len(buf) < need:
+        raise TimeoutError(f"dump timeout ({len(buf)}/{need} B)")
+    return bytes(buf)
 
 
 def _open(port: str, baud: int, timeout: float = 0.3) -> serial.Serial:
@@ -139,7 +156,7 @@ def main() -> int:
             data.reset_input_buffer()
             cli.write(DUMP_CMD)
             t0 = time.time()
-            raw = read_dump(data.read, timeout_s=a.timeout)
+            raw = read_dump_greedy(data, timeout_s=a.timeout)
             print(f"dump: {len(raw)} bytes in {time.time()-t0:.1f}s")
             if a.save:
                 with open(a.save, "wb") as fh:
