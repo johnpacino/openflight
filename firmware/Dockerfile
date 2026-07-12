@@ -14,19 +14,27 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y \
       bison flex unzip wget ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# --- YOU PROVIDE the TI installers (login-gated; cannot be baked into git) ---
-# Download for LINUX x86 and drop the .bin files in firmware/ti_installers/:
-#   * mmwave_sdk_<ver>_Linux-x86_Installer.bin      (SDK 3.6.x, IWR6843)
-#   * ti-cgt-arm_<ver>, ti-cgt-c674x_<ver>          (R4F + DSP compilers)
-#   * bios_<ver>, xdctools_<ver>, sysconfig_<ver>   (versions per SDK release notes)
-#   * mmwave DFP, dsplib/mathlib as the SDK requires
+# --- TI toolchain (installers are user-provided in ti_installers/, git-ignored) ---
+# Present now: mmWave SDK 3.6.02, ARM/R4F CGT (tms470) 20.2.7, SYS/BIOS 6.73.01.01,
+# SysConfig 1.10.0, XDCtools 3.61.00.16. The DSP toolchain (C6000 CGT, DSPLIB, MATHLIB)
+# is intentionally absent — l3_dump is MSS-only, so the first build targets the R4F.
 COPY ti_installers/ /tmp/ti_installers/
-# Uncomment once the installers are present:
-# RUN chmod +x /tmp/ti_installers/*.bin && \
-#     for f in /tmp/ti_installers/*.bin; do "$f" --mode unattended --prefix /opt/ti; done
+
+# .bin/.run are InstallBuilder self-extractors (run headless via --mode unattended).
+# Each tool installs into its OWN dir under /opt/ti so nothing collides regardless of
+# how a given installer interprets --prefix. XDCtools ships as a .zip -> just unpack.
+# The find at the end prints the REAL install paths -> read them back for products.mak.
+RUN set -eux; \
+    cd /tmp/ti_installers; \
+    chmod +x *.bin *.run; \
+    ./mmwave_sdk_*Install.bin      --mode unattended --unattendedmodeui none --prefix /opt/ti/sdk; \
+    ./ti_cgt_tms470_*installer.bin --mode unattended --unattendedmodeui none --prefix /opt/ti/cgt-arm; \
+    ./bios_*.run                   --mode unattended --unattendedmodeui none --prefix /opt/ti/bios; \
+    ./sysconfig*.run               --mode unattended --unattendedmodeui none --prefix /opt/ti/sysconfig; \
+    unzip -q xdctools_*.zip -d /opt/ti/xdc; \
+    echo "=== installed dirs under /opt/ti ==="; find /opt/ti -maxdepth 2 -type d | sort
 
 ENV TI_ROOT=/opt/ti
-# ENV MMWAVE_SDK=/opt/ti/mmwave_sdk_<ver>
 WORKDIR /work
 CMD ["/bin/bash"]
 
