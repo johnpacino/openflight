@@ -17,6 +17,10 @@
 # buildDirectories, PLATFORM_*, SHMEM_ALLOC, GENERATE_METAIMAGE, etc.
 include $(MMWAVE_SDK_INSTALL_PATH)/ti/common/mmwave_sdk.mak
 
+# mmwave_sdk.mak's first target (buildDirectories) would otherwise become the
+# default goal, so a bare `make` builds nothing. Pin it to our app.
+.DEFAULT_GOAL := all
+
 APPNAME = l3_dump
 
 # Sources live alongside this makefile.
