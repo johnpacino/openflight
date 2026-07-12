@@ -214,6 +214,16 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
 
     if (!gSensorOpened) {
         CLI_getMMWaveExtensionOpenConfig(&gOpenCfg);
+        /* The CLI extension leaves these open-config fields unset; MMWave_open
+         * validates them (calibMonTimeUnit=0 -> MMWAVE_EINVALIDCALMONUNIT).
+         * Values mirror the mmw demo (60-64 GHz band, fresh calibration). */
+        gOpenCfg.freqLimitLow                = 600U;   /* 60.0 GHz */
+        gOpenCfg.freqLimitHigh               = 640U;   /* 64.0 GHz */
+        gOpenCfg.calibMonTimeUnit            = 1;
+        gOpenCfg.useCustomCalibration        = false;
+        gOpenCfg.customCalibrationEnableMask = 0x0U;
+        gOpenCfg.disableFrameStartAsyncEvent = false;
+        gOpenCfg.disableFrameStopAsyncEvent  = false;
         if (MMWave_open(gMMWaveHandle, &gOpenCfg, NULL, &errCode) < 0) {
             MMWave_decodeError(errCode, &errorLevel, &mmwErr, &subErr);
             CLI_write("Error: MMWave_open failed [mmwave %d subsys %d]\n", mmwErr, subErr);
