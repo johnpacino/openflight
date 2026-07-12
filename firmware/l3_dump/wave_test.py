@@ -143,7 +143,7 @@ def main() -> int:
         return 1
     print(f"CLI={cli_port}  DATA={data_port}")
     cli = _open(cli_port, 115200)
-    data = _open(data_port, 921600, timeout=0.3)
+    data = _open(data_port, 460800, timeout=0.3)
     try:
         if a.config:
             send_config(cli, a.cfg_path)

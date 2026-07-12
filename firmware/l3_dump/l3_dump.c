@@ -393,7 +393,11 @@ static void l3_initTask(UArg arg0, UArg arg1)
 
     UART_Params_init(&uartParams);
     uartParams.clockFrequency = gCpuClock;
-    uartParams.baudRate       = 921600;
+    /* 460800, NOT 921600: the 200 MHz UART clock cannot divide to 921600
+     * within UART tolerance (divisor 13.56 -> 3-4% baud error -> byte-level
+     * misframing on the wire; proven by 1-byte-shift forensics on captures).
+     * 460800 divides cleanly on both the IWR and the host's CP2105. */
+    uartParams.baudRate       = 460800;
     uartParams.isPinMuxDone    = 1;
     gDataUart = UART_open(1, &uartParams);
 
