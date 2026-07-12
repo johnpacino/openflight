@@ -74,6 +74,12 @@ static UART_Handle gCliUart;      /* MSS UARTA, instance 0, 115200, has RX */
 static UART_Handle gDataUart;     /* MSS UARTB, instance 1, 921600, TX only */
 static uint32_t    gCpuClock = 200U * 1000000U;
 
+/* Forward declarations: these reference each other out of definition order and
+ * are registered as callbacks (CLI table / datapath frame-done hook). */
+void    l3_on_frame_done(void);
+int32_t l3_cli_dump(int32_t argc, char *argv[]);
+void    l3_stream_dump(void);
+
 /* Fill the 20-byte dump header (dump_format.h / iwr6843_l3dump.HEADER). */
 static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
                            uint16_t trigger_frame)
