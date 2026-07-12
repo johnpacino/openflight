@@ -6,6 +6,11 @@
 # so this image only builds the .bin.
 FROM --platform=linux/amd64 ubuntu:22.04
 
+# Keep apt fully non-interactive: one of the base deps pulls in tzdata, which
+# otherwise blocks the build on a "select your geographic area" debconf prompt.
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
 # TI SDK installers are 32-bit-ish .bin self-extractors that want mono + i386 libs.
 RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y \
     --no-install-recommends \
