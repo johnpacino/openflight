@@ -29,10 +29,18 @@ COPY ti_installers/ /tmp/ti_installers/
 # Each tool installs into its OWN dir under /opt/ti so nothing collides regardless of
 # how a given installer interprets --prefix. XDCtools ships as a .zip -> just unpack.
 # The find at the end prints the REAL install paths -> read them back for products.mak.
+#
+# The SDK installer exits 1: AFTER its payload is on disk, its post-install step runs
+# three nested DSP-lib installers (dsplib c64Px/c674x, mathlib c674x) that abort when
+# headless. l3_dump is MSS-only (R4F) and never links those libs, so tolerate the exit
+# and instead assert the SDK packages/ tree landed (the grep fails the build if not).
 RUN set -eux; \
     cd /tmp/ti_installers; \
     chmod +x *.bin *.run; \
-    ./mmwave_sdk_*Install.bin      --mode unattended --unattendedmodeui none --prefix /opt/ti/sdk; \
+    ./mmwave_sdk_*Install.bin      --mode unattended --unattendedmodeui none --prefix /opt/ti/sdk \
+      || echo "SDK installer exited nonzero (known DSP-lib post-install abort) — continuing"; \
+    find /opt/ti/sdk -maxdepth 3 -type d -name packages | grep -q .; \
+    rm -f /opt/ti/sdk/*_Linux.bin; \
     ./ti_cgt_tms470_*installer.bin --mode unattended --unattendedmodeui none --prefix /opt/ti/cgt-arm; \
     ./bios_*.run                   --mode unattended --unattendedmodeui none --prefix /opt/ti/bios; \
     ./sysconfig*.run               --mode unattended --unattendedmodeui none --prefix /opt/ti/sysconfig; \
