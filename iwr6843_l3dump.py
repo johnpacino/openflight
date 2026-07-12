@@ -5,7 +5,9 @@ Contract (firmware <-> Pi), little-endian:
   header (20 B): magic 'ILD1', u16 version, u16 n_frames, u16 chirps_per_frame,
                  u8 n_tx, u8 n_rx, u16 n_samples, u8 sample_fmt (0=int16 I/Q),
                  u8 pad, u16 trigger_frame, u16 pad2
-  payload: per frame, per chirp, per rx: n_samples x (int16 I, int16 Q)
+  payload: per frame, per chirp, per rx: n_samples x (int16 Q, int16 I)
+  (TI ADCBUF native complex order is IMAG-first ["ImRe"] -- VERIFIED ON HW
+  2026-07-12: parsing Re-first put the ceiling/hand at negative range bins)
 
 Chirp order in a frame is TDM-interleaved: chirp c -> tx = c % n_tx,
 loop = c // n_tx. The rotated-board elevation virtual array is
@@ -46,8 +48,8 @@ def pack_dump(cube: np.ndarray, *, n_tx: int, trigger_frame: int = 0,
                       SAMPLE_INT16_IQ, 0, trigger_frame, 0)
     flat = cube.reshape(-1)
     iq = np.empty(flat.size * 2, dtype="<i2")
-    iq[0::2] = np.clip(np.round(flat.real), -32768, 32767).astype("<i2")
-    iq[1::2] = np.clip(np.round(flat.imag), -32768, 32767).astype("<i2")
+    iq[0::2] = np.clip(np.round(flat.imag), -32768, 32767).astype("<i2")  # Im first (TI ImRe)
+    iq[1::2] = np.clip(np.round(flat.real), -32768, 32767).astype("<i2")
     return hdr + iq.tobytes()
 
 
@@ -82,7 +84,7 @@ def parse_dump(raw: bytes):
     if body.size < 2 * n:
         raise ValueError(f"short payload: {body.size} i16 < {2 * n} needed")
     iq = body.astype(np.float64)
-    cube = (iq[0::2] + 1j * iq[1::2]).reshape(nf, cpf, nrx, ns)
+    cube = (iq[1::2] + 1j * iq[0::2]).reshape(nf, cpf, nrx, ns)  # ImRe: Q,I pairs
     return meta, cube
 
 
