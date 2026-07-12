@@ -1,19 +1,16 @@
 /* Stage-1c: L3 raw-ADC rolling buffer + dump-on-command  (IWR6843 MSS/R4F).
  *
- * MILESTONE 3 (this build): REAL raw-ADC capture. On top of 2b (RF configures
- * and free-runs, host-config over the CLI), this captures every chirp's raw
- * ADC into an L3 rolling buffer via EDMA, and `l3dump` freezes the ring and
- * streams the most recent RING_FRAMES frames of real per-antenna I/Q.
- *
- * Capture path (mirrors the SDK mem_capture/capture.c technique):
- *   DFE -> ADCBUF (one chirp, non-interleaved: [rx0 128 cplx][rx1]..[rx3])
- *   chirp-available ISR -> EDMA one chirp (CHIRP_BYTES) ADCBUF -> g_ring[slot]
- *   EDMA-done -> advance the destination by one chirp
- *   frame-start ISR -> that frame is complete: advance the ring slot (rolling)
- *   l3dump -> freeze at the next frame boundary, stream the ring, unfreeze
+ * MILESTONE 3 (this build): REAL raw-ADC capture via HARDWARE-triggered EDMA.
+ * The DFE's chirp-available hardware event (EDMA_TPCC0_REQ_DFE_CHIRP_AVAIL)
+ * directly triggers an EDMA that copies one chirp (CHIRP_BYTES) from the ADCBUF
+ * into the L3 rolling buffer -- the CPU is out of the per-chirp timing path, so
+ * there is no read-vs-write race (the earlier software-triggered version lost
+ * ~23% of chirps to that race). One self-linked SYNC_A param set fills the whole
+ * ring continuously (dest auto-advances per chirp, wraps every RING_CHIRPS).
+ * `l3dump` disables the channel (freeze), streams the ring, re-arms.
  *
  * Chirp order filled == chirp order fired == TDM (chirp c -> tx=c%N_TX,
- * loop=c/N_TX), which is exactly what iwr6843_l3dump expects.
+ * loop=c/N_TX), matching iwr6843_l3dump.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -52,18 +49,19 @@
 #define CHIRPS_PER_FRAME  (N_TX * LOOPS)                        /* 64 */
 #define FRAME_COMPLEX     (CHIRPS_PER_FRAME * N_RX * N_SAMPLES)   /* 32768 */
 #define FRAME_BYTES       (FRAME_COMPLEX * 2 * (uint32_t)sizeof(int16_t)) /* 128 KB */
-/* One chirp in ADCBUF (non-interleaved): N_RX x N_SAMPLES x 4 bytes (int16 I/Q). */
+/* One chirp in ADCBUF (non-interleaved): N_RX x N_SAMPLES x 4 bytes. */
 #define CHIRP_BYTES       (N_RX * N_SAMPLES * 2 * (uint32_t)sizeof(int16_t))  /* 2048 */
 
 /* --- rolling buffer (default L3 = 6 banks x 128 KB = 768 KB) ---------------- */
 #define RING_FRAMES  5
+#define RING_CHIRPS  (RING_FRAMES * CHIRPS_PER_FRAME)           /* 320 */
 
 #pragma DATA_SECTION(g_ring, ".l3ring")
 #pragma DATA_ALIGN(g_ring, 8)
 static int16_t g_ring[RING_FRAMES][FRAME_COMPLEX * 2];
 
-/* --- EDMA channel (free channel + shadow link, per SDK mem_capture) --------- */
-#define L3_EDMA_CHANNEL       EDMA_TPCC0_REQ_FREE_13
+/* --- EDMA: the DFE chirp-available hardware event channel + shadow link ----- */
+#define L3_EDMA_CHANNEL       EDMA_TPCC0_REQ_DFE_CHIRP_AVAIL
 #define L3_EDMA_LINK_CHANNEL  EDMA_NUM_DMA_CHANNELS
 
 /* --- SDK handles ----------------------------------------------------------- */
@@ -76,18 +74,10 @@ static ADCBuf_Handle gAdcbufHandle;
 static uint8_t       gSensorOpened;
 static uint32_t      gCpuClock = 200U * 1000000U;
 
-/* --- capture state (touched by ISRs) --------------------------------------- */
-static volatile uint8_t  gCaptureActive;    /* ring is being filled */
-static volatile uint8_t  gFreezeReq;        /* dump requested; freeze at next frame */
-static volatile uint8_t  gFrozen;           /* ring frozen (ISRs skip EDMA/advance) */
-static volatile uint8_t  gEdmaBusy;         /* an EDMA chirp transfer is in flight */
-static volatile uint32_t gCurrDstAddr;      /* EDMA dest for the next chirp (EDMA view) */
-static volatile uint32_t gHead;             /* frames completed (== next write slot base) */
-static volatile uint32_t gFrozenHead;       /* gHead latched at freeze */
-/* diagnostics */
-static volatile uint32_t gNumChirp;
-static volatile uint32_t gNumEdma;
-static volatile uint32_t gNumFrame;
+/* --- capture state / diagnostics ------------------------------------------- */
+static volatile uint8_t  gCaptureActive;
+static volatile uint32_t gNumFrame;     /* frame-start ISR count (liveness) */
+static volatile uint32_t gNumWrap;      /* EDMA ring-wrap count */
 
 /* Config pulled from the CLI mmWave extension (kept off the stack -- large). */
 static MMWave_OpenCfg gOpenCfg;
@@ -98,6 +88,7 @@ int32_t l3_cli_dump(int32_t argc, char *argv[]);
 static int32_t l3_cli_sensorStart(int32_t argc, char *argv[]);
 static int32_t l3_cli_sensorStop(int32_t argc, char *argv[]);
 static int32_t l3_cli_stats(int32_t argc, char *argv[]);
+static int32_t l3_armCapture(void);
 
 /* Fill the 20-byte dump header (dump_format.h / iwr6843_l3dump.HEADER). */
 static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
@@ -116,98 +107,40 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
     h->_pad2            = 0;
 }
 
-/* Chirp-available ISR: EDMA this chirp's ADC out of the ADCBUF into the ring.
- * Short + hardware-timed (fires per chirp ~ every 45 us). */
-static void l3_chirpISR(uintptr_t arg)
-{
-    (void)arg;
-    gNumChirp++;
-    if (!gCaptureActive || gFrozen || gEdmaBusy) {
-        return;
-    }
-    /* Copy one chirp (CHIRP_BYTES) from the ADCBUF base to the current slot. */
-    if (EDMA_setDestinationAddress(gEdmaHandle, (uint16_t)L3_EDMA_CHANNEL,
-                                   gCurrDstAddr) != EDMA_NO_ERROR) {
-        return;
-    }
-    if (EDMA_startDmaTransfer(gEdmaHandle, L3_EDMA_CHANNEL) != EDMA_NO_ERROR) {
-        return;
-    }
-    gEdmaBusy = 1U;
-}
-
-/* EDMA transfer-complete callback: advance the destination by one chirp. */
+/* EDMA ring-wrap completion (fires once per RING_CHIRPS; liveness only). */
 static void l3_edmaCB(uintptr_t arg, uint8_t tcCode)
 {
     (void)arg; (void)tcCode;
-    gNumEdma++;
-    gEdmaBusy = 0U;
-    gCurrDstAddr += CHIRP_BYTES;
+    gNumWrap++;
 }
 
-/* Frame-start ISR: the previous frame's chirps are all captured -> advance the
- * ring slot (rolling buffer). If a dump was requested, freeze here (at a clean
- * frame boundary) so the CLI task can stream a consistent window. */
+/* Frame-start ISR: liveness counter only (the EDMA fills the ring autonomously). */
 static void l3_frameStartISR(uintptr_t arg)
 {
-    uint32_t slot;
     (void)arg;
     gNumFrame++;
-    if (!gCaptureActive || gFrozen) {
-        return;
-    }
-    gHead++;                                  /* a frame just completed */
-    if (gFreezeReq) {
-        gFrozenHead = gHead;
-        gFrozen     = 1U;                     /* stop filling until the dump is done */
-        return;
-    }
-    slot          = gHead % RING_FRAMES;      /* next frame goes here */
-    gCurrDstAddr  = SOC_translateAddress((uint32_t)&g_ring[slot][0],
-                                         SOC_TranslateAddr_Dir_TO_EDMA, NULL);
-    gEdmaBusy     = 0U;
 }
 
-/* CLI "l3dump": freeze the ring at the next frame boundary, then stream the
- * most recent RING_FRAMES frames of real ADC, then resume capture. The Pi
- * frames the burst purely by the header's byte count. */
+/* CLI "l3dump": freeze the ring (disable the EDMA), stream RING_FRAMES frames of
+ * real ADC, then re-arm. The Pi frames the burst by the header's byte count. */
 int32_t l3_cli_dump(int32_t argc, char *argv[])
 {
     l3_dump_header_t h;
-    uint32_t         base, i, waited;
+    uint32_t         i;
     (void)argc; (void)argv;
 
     if (!gCaptureActive) {
         return -1;
     }
+    EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
 
-    /* Request a freeze and wait for the frame-start ISR to latch it (<= ~1 frame,
-     * 8 ms). Bounded so a stalled sensor can't hang the CLI. */
-    gFreezeReq = 1U;
-    for (waited = 0; waited < 200 && !gFrozen; waited++) {
-        Task_sleep(1);
-    }
-    if (!gFrozen) {                            /* sensor not producing frames */
-        gFreezeReq = 0U;
-        return -1;
-    }
-
-    /* Stream the RING_FRAMES completed frames, oldest -> newest. At freeze,
-     * gFrozenHead is the next-to-write slot, i.e. the oldest of the ring. */
     l3_fill_header(&h, RING_FRAMES, 0);
     UART_writePolling(gDataUart, (uint8_t *)&h, sizeof(h));
-    base = gFrozenHead;
     for (i = 0; i < RING_FRAMES; i++) {
-        uint32_t slot = (base + i) % RING_FRAMES;
-        UART_writePolling(gDataUart, (uint8_t *)g_ring[slot], sizeof(g_ring[slot]));
+        UART_writePolling(gDataUart, (uint8_t *)g_ring[i], sizeof(g_ring[i]));
     }
 
-    /* Resume the rolling buffer at the current slot. */
-    gCurrDstAddr = SOC_translateAddress((uint32_t)&g_ring[gHead % RING_FRAMES][0],
-                                        SOC_TranslateAddr_Dir_TO_EDMA, NULL);
-    gEdmaBusy  = 0U;
-    gFrozen    = 0U;
-    gFreezeReq = 0U;
+    (void)l3_armCapture();     /* reset dest to base + re-enable the event channel */
     return 0;
 }
 
@@ -215,9 +148,8 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 static int32_t l3_cli_stats(int32_t argc, char *argv[])
 {
     (void)argc; (void)argv;
-    CLI_write("chirps=%u edma=%u frames=%u head=%u active=%d frozen=%d\n",
-              (unsigned)gNumChirp, (unsigned)gNumEdma, (unsigned)gNumFrame,
-              (unsigned)gHead, (int)gCaptureActive, (int)gFrozen);
+    CLI_write("frames=%u wraps=%u active=%d\n",
+              (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive);
     return 0;
 }
 
@@ -229,7 +161,6 @@ static int32_t l3_configAdcBuf(void)
     uint32_t          rxChanMask = 0xFU;
     uint32_t          chirpThreshold = 1U;
     uint8_t           ch;
-    int32_t           rc;
 
     if (ADCBuf_control(gAdcbufHandle, ADCBufMMWave_CMD_CHANNEL_DISABLE,
                        (void *)&rxChanMask) != ADCBuf_STATUS_SUCCESS) {
@@ -237,7 +168,7 @@ static int32_t l3_configAdcBuf(void)
     }
     memset((void *)&dataFormat, 0, sizeof(dataFormat));
     dataFormat.adcOutFormat      = 0;   /* complex */
-    dataFormat.sampleInterleave  = 1;   /* per config/iwr6843_l3dump.cfg adcCfg/adcbuf */
+    dataFormat.sampleInterleave  = 1;
     dataFormat.channelInterleave = 1;   /* non-interleaved: RX in contiguous blocks */
     if (ADCBuf_control(gAdcbufHandle, ADCBufMMWave_CMD_CONF_DATA_FORMAT,
                        (void *)&dataFormat) != ADCBuf_STATUS_SUCCESS) {
@@ -246,12 +177,11 @@ static int32_t l3_configAdcBuf(void)
     memset((void *)&rxChanCfg, 0, sizeof(rxChanCfg));
     for (ch = 0; ch < N_RX; ch++) {
         rxChanCfg.channel = ch;
-        rc = ADCBuf_control(gAdcbufHandle, ADCBufMMWave_CMD_CHANNEL_ENABLE,
-                            (void *)&rxChanCfg);
-        if (rc != ADCBuf_STATUS_SUCCESS) {
+        if (ADCBuf_control(gAdcbufHandle, ADCBufMMWave_CMD_CHANNEL_ENABLE,
+                           (void *)&rxChanCfg) != ADCBuf_STATUS_SUCCESS) {
             return -1;
         }
-        rxChanCfg.offset += N_SAMPLES * 2 * (uint32_t)sizeof(int16_t); /* 512 B/chan */
+        rxChanCfg.offset += N_SAMPLES * 2 * (uint32_t)sizeof(int16_t);
     }
     if (ADCBuf_control(gAdcbufHandle, ADCBufMMWave_CMD_SET_PING_CHIRP_THRESHHOLD,
                        (void *)&chirpThreshold) != ADCBuf_STATUS_SUCCESS) {
@@ -264,14 +194,16 @@ static int32_t l3_configAdcBuf(void)
     return 0;
 }
 
-/* Configure the EDMA channel: ADCBUF -> ring, CHIRP_BYTES per software trigger. */
-static int32_t l3_configEdma(void)
+/* (Re)configure + enable the hardware-triggered capture EDMA. One SYNC_A param
+ * set: each DFE chirp-available event copies CHIRP_BYTES from the ADCBUF base to
+ * the current ring position; dest advances by CHIRP_BYTES per chirp; after
+ * RING_CHIRPS the self-linked shadow reloads (dest back to base) -> continuous. */
+static int32_t l3_armCapture(void)
 {
     EDMA_channelConfig_t   ch;
     EDMA_paramSetConfig_t *ps;
     EDMA_paramConfig_t     linkCfg;
     uint32_t               srcAddr, dstAddr;
-    int32_t                rc;
 
     srcAddr = SOC_translateAddress(SOC_XWR68XX_MSS_ADCBUF_BASE_ADDRESS,
                                    SOC_TranslateAddr_Dir_TO_EDMA, NULL);
@@ -281,39 +213,39 @@ static int32_t l3_configEdma(void)
     (void)EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
 
     memset((void *)&ch, 0, sizeof(ch));
-    ch.channelId   = L3_EDMA_CHANNEL;
-    ch.channelType = (uint8_t)EDMA3_CHANNEL_TYPE_DMA;
-    ch.paramId     = L3_EDMA_CHANNEL;
-    ch.eventQueueId = 1U;
+    ch.channelId    = L3_EDMA_CHANNEL;
+    ch.channelType  = (uint8_t)EDMA3_CHANNEL_TYPE_DMA;
+    ch.paramId      = L3_EDMA_CHANNEL;
+    ch.eventQueueId = 0U;
     ch.transferCompletionCallbackFxn    = l3_edmaCB;
     ch.transferCompletionCallbackFxnArg = (uintptr_t)0U;
 
     ps = &ch.paramSetConfig;
     ps->sourceAddress      = srcAddr;
     ps->destinationAddress = dstAddr;
-    ps->aCount             = (uint16_t)CHIRP_BYTES;
-    ps->bCount             = 1U;
+    ps->aCount             = (uint16_t)CHIRP_BYTES;   /* one chirp per event */
+    ps->bCount             = (uint16_t)RING_CHIRPS;   /* events before wrap */
     ps->cCount             = 1U;
-    ps->bCountReload       = ps->bCount;
-    ps->sourceBindex       = (int16_t)CHIRP_BYTES;
-    ps->destinationBindex  = (int16_t)CHIRP_BYTES;
+    ps->bCountReload       = (uint16_t)RING_CHIRPS;
+    ps->sourceBindex       = 0;                       /* always read ADCBUF base */
+    ps->destinationBindex  = (int16_t)CHIRP_BYTES;    /* advance dest per chirp */
     ps->sourceCindex       = 0;
     ps->destinationCindex  = 0;
     ps->linkAddress        = EDMA_NULL_LINK_ADDRESS;
-    ps->transferType       = (uint8_t)EDMA3_SYNC_AB;
+    ps->transferType       = (uint8_t)EDMA3_SYNC_A;
     ps->transferCompletionCode = (uint8_t)L3_EDMA_CHANNEL;
     ps->sourceAddressingMode      = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
     ps->destinationAddressingMode = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
     ps->fifoWidth          = (uint8_t)EDMA3_FIFO_WIDTH_8BIT;
     ps->isStaticSet        = false;
     ps->isEarlyCompletion  = false;
-    ps->isFinalTransferInterruptEnabled        = true;
+    ps->isFinalTransferInterruptEnabled        = true;    /* per wrap */
     ps->isIntermediateTransferInterruptEnabled = false;
     ps->isFinalChainingEnabled        = false;
     ps->isIntermediateChainingEnabled = false;
 
-    rc = EDMA_configChannel(gEdmaHandle, &ch, false);
-    if (rc != EDMA_NO_ERROR) {
+    /* isEventTriggered = true: the DFE chirp event drives the channel. */
+    if (EDMA_configChannel(gEdmaHandle, &ch, true) != EDMA_NO_ERROR) {
         return -1;
     }
     memcpy((void *)&linkCfg.paramSetConfig, (void *)ps, sizeof(EDMA_paramSetConfig_t));
@@ -325,9 +257,11 @@ static int32_t l3_configEdma(void)
     if (EDMA_linkParamSets(gEdmaHandle, L3_EDMA_CHANNEL, L3_EDMA_LINK_CHANNEL) != EDMA_NO_ERROR) {
         return -1;
     }
-    /* Self-link the shadow param set so it reloads forever -- without this the
-     * channel runs exactly twice (own set + one reload) then stalls. */
     if (EDMA_linkParamSets(gEdmaHandle, L3_EDMA_LINK_CHANNEL, L3_EDMA_LINK_CHANNEL) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    /* Arm the channel to respond to the hardware event. */
+    if (EDMA_enableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA) != EDMA_NO_ERROR) {
         return -1;
     }
     return 0;
@@ -351,7 +285,7 @@ static void l3_mmwaveCtrlTask(UArg arg0, UArg arg1)
     }
 }
 
-/* CLI "sensorStart": open -> config -> (ADCBUF + EDMA + start capture) -> start. */
+/* CLI "sensorStart": open -> config -> ADCBUF + arm capture EDMA -> start. */
 static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
 {
     MMWave_CalibrationCfg calibrationCfg;
@@ -384,24 +318,16 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
         return -1;
     }
 
-    /* Data path: ADCBUF format + EDMA channel, then arm the rolling buffer. */
     if (l3_configAdcBuf() < 0) {
         CLI_write("Error: ADCBUF config failed\n");
         return -1;
     }
-    if (l3_configEdma() < 0) {
-        CLI_write("Error: EDMA config failed\n");
+    gNumFrame = 0U;
+    gNumWrap  = 0U;
+    if (l3_armCapture() < 0) {
+        CLI_write("Error: EDMA arm failed\n");
         return -1;
     }
-    gHead        = 0U;
-    gNumChirp    = 0U;
-    gNumEdma     = 0U;
-    gNumFrame    = 0U;
-    gEdmaBusy    = 0U;
-    gFrozen      = 0U;
-    gFreezeReq   = 0U;
-    gCurrDstAddr = SOC_translateAddress((uint32_t)&g_ring[0][0],
-                                        SOC_TranslateAddr_Dir_TO_EDMA, NULL);
     gCaptureActive = 1U;
 
     memset((void *)&calibrationCfg, 0, sizeof(calibrationCfg));
@@ -424,25 +350,25 @@ static int32_t l3_cli_sensorStop(int32_t argc, char *argv[])
     int32_t errCode;
     (void)argc; (void)argv;
     gCaptureActive = 0U;
+    (void)EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
     MMWave_stop(gMMWaveHandle, &errCode);
     return 0;
 }
 
-/* System init task: UART, mmWave control, EDMA + ADCBUF + capture ISRs, CLI. */
+/* System init task: UART, mmWave control, EDMA + ADCBUF + frame-start ISR, CLI. */
 static void l3_initTask(UArg arg0, UArg arg1)
 {
-    MMWave_InitCfg       initCfg;
-    UART_Params          uartParams;
-    Task_Params          taskParams;
-    ADCBuf_Params        adcbufParams;
+    MMWave_InitCfg        initCfg;
+    UART_Params           uartParams;
+    Task_Params           taskParams;
+    ADCBuf_Params         adcbufParams;
     SOC_SysIntListenerCfg socIntCfg;
-    EDMA_instanceInfo_t  edmaInstanceInfo;
-    static CLI_Cfg       cliCfg;
-    int32_t              errCode;
+    EDMA_instanceInfo_t   edmaInstanceInfo;
+    static CLI_Cfg        cliCfg;
+    int32_t               errCode;
 
     (void)arg0; (void)arg1;
 
-    /* --- UARTs --- */
     UART_init();
     Pinmux_Set_FuncSel(SOC_XWR68XX_PINN5_PADBE, SOC_XWR68XX_PINN5_PADBE_MSS_UARTA_TX);
     Pinmux_Set_OverrideCtrl(SOC_XWR68XX_PINN5_PADBE,
@@ -466,7 +392,7 @@ static void l3_initTask(UArg arg0, UArg arg1)
     uartParams.isPinMuxDone    = 1;
     gDataUart = UART_open(1, &uartParams);
 
-    /* --- EDMA + ADCBUF drivers --- */
+    /* EDMA + ADCBUF drivers. */
     EDMA_init(0);
     gEdmaHandle = EDMA_open(0, &errCode, &edmaInstanceInfo);
     if (gEdmaHandle == NULL) {
@@ -483,14 +409,7 @@ static void l3_initTask(UArg arg0, UArg arg1)
         return;
     }
 
-    /* --- capture interrupts: chirp-available + frame-start --- */
-    memset((void *)&socIntCfg, 0, sizeof(socIntCfg));
-    socIntCfg.systemInterrupt = SOC_XWR68XX_MSS_CHIRP_AVAIL_IRQ;
-    socIntCfg.listenerFxn     = l3_chirpISR;
-    socIntCfg.arg             = (uintptr_t)0U;
-    if (SOC_registerSysIntListener(gSocHandle, &socIntCfg, &errCode) == NULL) {
-        return;
-    }
+    /* Frame-start liveness ISR (per-chirp capture is now the hardware EDMA). */
     memset((void *)&socIntCfg, 0, sizeof(socIntCfg));
     socIntCfg.systemInterrupt = SOC_XWR68XX_MSS_FRAME_START_INT;
     socIntCfg.listenerFxn     = l3_frameStartISR;
@@ -499,7 +418,7 @@ static void l3_initTask(UArg arg0, UArg arg1)
         return;
     }
 
-    /* --- mmWave control (FULL, ISOLATION) --- */
+    /* mmWave control (FULL, ISOLATION). */
     Mailbox_init(MAILBOX_TYPE_MSS);
     memset((void *)&initCfg, 0, sizeof(MMWave_InitCfg));
     initCfg.domain                  = MMWave_Domain_MSS;
@@ -528,9 +447,9 @@ static void l3_initTask(UArg arg0, UArg arg1)
     taskParams.stackSize = 3 * 1024;
     Task_create(l3_mmwaveCtrlTask, &taskParams, NULL);
 
-    /* --- CLI with the mmWave extension --- */
+    /* CLI with the mmWave extension. */
     cliCfg.cliPrompt             = "l3dump:/>";
-    cliCfg.cliBanner             = "OpenFlight L3-dump firmware (3: raw ADC capture)\n";
+    cliCfg.cliBanner             = "OpenFlight L3-dump firmware (3: HW-triggered ADC capture)\n";
     cliCfg.cliUartHandle         = gCliUart;
     cliCfg.socHandle             = gSocHandle;
     cliCfg.mmWaveHandle          = gMMWaveHandle;
