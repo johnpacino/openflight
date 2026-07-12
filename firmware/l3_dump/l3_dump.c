@@ -194,10 +194,15 @@ static int32_t l3_configAdcBuf(void)
     return 0;
 }
 
-/* (Re)configure + enable the hardware-triggered capture EDMA. One SYNC_A param
- * set: each DFE chirp-available event copies CHIRP_BYTES from the ADCBUF base to
- * the current ring position; dest advances by CHIRP_BYTES per chirp; after
- * RING_CHIRPS the self-linked shadow reloads (dest back to base) -> continuous. */
+/* (Re)configure + enable the hardware-triggered capture EDMA. Exact clone of
+ * the shipping demo's rangeproc dataIn (mmw_res.h + rangeProcHWA_ConfigEDMA_
+ * DataIn, non-interleaved): DFE_CHIRP_AVAIL event, queue 0, SYNC_AB with
+ * aCount=one RX chan (512 B), bCount=N_RX -- one event moves one whole chirp.
+ * Source stays at the ADCBUF base every event (srcCIdx=0, hardware presents the
+ * completed chirp there); dest advances one chirp per event through the ring
+ * (their dstCIdx toggled between 2 HWA banks; ours walks RING_CHIRPS slots).
+ * After RING_CHIRPS events the self-linked shadow reloads (dest back to ring
+ * base) -> continuous rolling capture. */
 static int32_t l3_armCapture(void)
 {
     EDMA_channelConfig_t   ch;
@@ -216,23 +221,23 @@ static int32_t l3_armCapture(void)
     ch.channelId    = L3_EDMA_CHANNEL;
     ch.channelType  = (uint8_t)EDMA3_CHANNEL_TYPE_DMA;
     ch.paramId      = L3_EDMA_CHANNEL;
-    ch.eventQueueId = 0U;
+    ch.eventQueueId = 0U;                 /* demo EDMAIN_EVENT_QUE = 0 */
     ch.transferCompletionCallbackFxn    = l3_edmaCB;
     ch.transferCompletionCallbackFxnArg = (uintptr_t)0U;
 
     ps = &ch.paramSetConfig;
     ps->sourceAddress      = srcAddr;
     ps->destinationAddress = dstAddr;
-    ps->aCount             = (uint16_t)CHIRP_BYTES;   /* one chirp per event */
-    ps->bCount             = (uint16_t)RING_CHIRPS;   /* events before wrap */
-    ps->cCount             = 1U;
-    ps->bCountReload       = (uint16_t)RING_CHIRPS;
-    ps->sourceBindex       = 0;                       /* always read ADCBUF base */
-    ps->destinationBindex  = (int16_t)CHIRP_BYTES;    /* advance dest per chirp */
-    ps->sourceCindex       = 0;
-    ps->destinationCindex  = 0;
+    ps->aCount             = (uint16_t)(N_SAMPLES * 2U * sizeof(int16_t)); /* 512: one RX chan */
+    ps->bCount             = (uint16_t)N_RX;          /* 4 arrays = one chirp per event */
+    ps->cCount             = (uint16_t)RING_CHIRPS;   /* events before wrap */
+    ps->bCountReload       = (uint16_t)N_RX;
+    ps->sourceBindex       = (int16_t)(N_SAMPLES * 2U * sizeof(int16_t)); /* step RX chans */
+    ps->destinationBindex  = (int16_t)(N_SAMPLES * 2U * sizeof(int16_t));
+    ps->sourceCindex       = 0;                       /* re-read ADCBUF base every event */
+    ps->destinationCindex  = (int16_t)CHIRP_BYTES;    /* advance dest one chirp per event */
     ps->linkAddress        = EDMA_NULL_LINK_ADDRESS;
-    ps->transferType       = (uint8_t)EDMA3_SYNC_A;
+    ps->transferType       = (uint8_t)EDMA3_SYNC_AB;
     ps->transferCompletionCode = (uint8_t)L3_EDMA_CHANNEL;
     ps->sourceAddressingMode      = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
     ps->destinationAddressingMode = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
