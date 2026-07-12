@@ -393,10 +393,14 @@ static void l3_initTask(UArg arg0, UArg arg1)
 
     UART_Params_init(&uartParams);
     uartParams.clockFrequency = gCpuClock;
-    /* 460800, NOT 921600: the 200 MHz UART clock cannot divide to 921600
-     * within UART tolerance (divisor 13.56 -> 3-4% baud error -> byte-level
-     * misframing on the wire; proven by 1-byte-shift forensics on captures).
-     * 460800 divides cleanly on both the IWR and the host's CP2105. */
+    /* BINARY write mode is ESSENTIAL: the driver default (UART_DATA_TEXT)
+     * inserts \r before every 0x0A byte, corrupting a raw binary stream with
+     * one-byte shifts (~1 insertion per 256 bytes). This -- not the EDMA, not
+     * the baud -- was the capture-corruption root cause. */
+    uartParams.writeDataMode  = UART_DATA_BINARY;
+    uartParams.readDataMode   = UART_DATA_BINARY;
+    /* 460800: divides cleanly from the 200 MHz UART clock (921600 does not:
+     * divisor 13.56 -> 3-4% baud error). Keep the safe rate. */
     uartParams.baudRate       = 460800;
     uartParams.isPinMuxDone    = 1;
     gDataUart = UART_open(1, &uartParams);
