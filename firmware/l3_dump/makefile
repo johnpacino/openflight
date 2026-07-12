@@ -62,7 +62,6 @@ MAP        = $(APPNAME)_mss.map
 OUT        = $(APPNAME)_mss.$(R4F_EXE_EXT)
 BIN        = $(APPNAME).bin
 APP_CMD    = mss_linker.cmd
-ROV_XS     = $(APPNAME)_mss_$(R4F_XS_SUFFIX).rov.xs
 SOURCES    = l3_dump.c
 DEPENDS    = $(addprefix $(PLATFORM_OBJDIR)/, $(SOURCES:.c=.$(R4F_DEP_EXT)))
 OBJECTS    = $(addprefix $(PLATFORM_OBJDIR)/, $(SOURCES:.c=.$(R4F_OBJ_EXT)))
@@ -82,7 +81,6 @@ all: buildDirectories appRTSC $(OBJECTS)
 	$(R4F_LD) $(R4F_LDFLAGS) $(L3_LOC_LIBS) $(L3_STD_LIBS)                  \
 	-l$(CONFIGPKG)/linker.cmd --map_file=$(MAP) $(OBJECTS)                  \
 	$(PLATFORM_R4F_LINK_CMD) $(APP_CMD) $(R4F_LD_RTS_FLAGS) -o $(OUT)
-	$(COPY_CMD) $(CONFIGPKG)/package/cfg/$(ROV_XS) $(ROV_XS)
 	@echo '******************************************************************'
 	@echo 'Built $(OUT)'
 	@echo '******************************************************************'
@@ -96,7 +94,7 @@ bin: all
 	@echo 'Built flashable $(BIN)'
 
 clean:
-	@$(DEL) $(OBJECTS) $(DEPENDS) $(MAP) $(OUT) $(BIN) $(ROV_XS)
+	@$(DEL) $(OBJECTS) $(DEPENDS) $(MAP) $(OUT) $(BIN)
 	@$(DEL) $(CONFIGPKG)
 	@$(DEL) $(PLATFORM_OBJDIR)
 
