@@ -35,12 +35,19 @@ def main() -> int:
     ap.add_argument("--data", required=True, help="TI data UART (921600)")
     ap.add_argument("--timeout", type=float, default=8.0,
                     help="seconds to wait for the full burst")
+    ap.add_argument("--cfg", default=None,
+                    help="optional .cfg to send first (2b: configures + starts "
+                         "the sensor via the CLI mmWave extension before dumping)")
     a = ap.parse_args()
 
     # SerialReader opens both ports without pulsing DTR/RTS (TI EVMs tie those to
     # NRST/boot-mode -- a plain open can reset the board).
     rdr = SerialReader(cli_port=a.cli, data_port=a.data)
     try:
+        if a.cfg:
+            # Echoes each line's response; sensorStart must reply "Done" (the
+            # firmware's handler returns 0 on a successful open/config/start).
+            rdr.send_config(a.cfg)
         rdr.data.reset_input_buffer()
         rdr.cli.write(DUMP_CMD)
         raw = read_dump(rdr.data.read, timeout_s=a.timeout)
