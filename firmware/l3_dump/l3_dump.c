@@ -31,6 +31,7 @@
 #include <ti/drivers/mailbox/mailbox.h>
 #include <ti/drivers/adcbuf/ADCBuf.h>
 #include <ti/drivers/edma/edma.h>
+#include <ti/control/mmwavelink/mmwavelink.h>
 #include <ti/control/mmwave/mmwave.h>
 #include <ti/utils/cli/cli.h>
 
@@ -78,6 +79,8 @@ static uint32_t      gCpuClock = 200U * 1000000U;
 static volatile uint8_t  gCaptureActive;
 static volatile uint32_t gNumFrame;     /* frame-start ISR count (liveness) */
 static volatile uint32_t gNumWrap;      /* EDMA ring-wrap count */
+static volatile uint32_t gCalibStatus;  /* RL_RF_AE_INITCALIBSTATUS payload */
+static volatile uint32_t gRfFaults;     /* CPU/ESM/analog fault events */
 
 /* Config pulled from the CLI mmWave extension (kept off the stack -- large). */
 static MMWave_OpenCfg gOpenCfg;
@@ -182,8 +185,9 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 static int32_t l3_cli_stats(int32_t argc, char *argv[])
 {
     (void)argc; (void)argv;
-    CLI_write("frames=%u wraps=%u active=%d\n",
-              (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive);
+    CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u\n",
+              (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
+              (unsigned)gCalibStatus, (unsigned)gRfFaults);
     return 0;
 }
 
@@ -306,11 +310,27 @@ static int32_t l3_armCapture(void)
     return 0;
 }
 
-/* mmWave async-event callback (minimal for bring-up). */
+/* mmWave async-event callback: record RF health (calibration status, faults). */
 static int32_t l3_mmwaveEvent(uint16_t msgId, uint16_t sbId, uint16_t sbLen,
                               uint8_t *payload)
 {
-    (void)msgId; (void)sbId; (void)sbLen; (void)payload;
+    uint16_t asyncSB = RL_GET_SBID_FROM_UNIQ_SBID(sbId);
+    (void)sbLen;
+
+    if (msgId == RL_RF_ASYNC_EVENT_MSG) {
+        switch (asyncSB) {
+            case RL_RF_AE_INITCALIBSTATUS_SB:
+                gCalibStatus = ((rlRfInitComplete_t *)payload)->calibStatus & 0x1FFFU;
+                break;
+            case RL_RF_AE_CPUFAULT_SB:
+            case RL_RF_AE_ESMFAULT_SB:
+            case RL_RF_AE_ANALOG_FAULT_SB:
+                gRfFaults++;
+                break;
+            default:
+                break;
+        }
+    }
     return 0;
 }
 
@@ -333,6 +353,14 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     (void)argc; (void)argv;
 
     if (!gSensorOpened) {
+        /* Demo sends this before the first MMWave_open (board PA supply cfg);
+         * values mirror the mmw demo's gRFLdoBypassCfg for this EVM class. */
+        rlRfLdoBypassCfg_t ldoCfg;
+        memset((void *)&ldoCfg, 0, sizeof(ldoCfg));
+        if (rlRfSetLdoBypassConfig(RL_DEVICE_MAP_INTERNAL_BSS, &ldoCfg) != 0) {
+            CLI_write("Error: rlRfSetLdoBypassConfig failed\n");
+            return -1;
+        }
         CLI_getMMWaveExtensionOpenConfig(&gOpenCfg);
         gOpenCfg.freqLimitLow                = 600U;
         gOpenCfg.freqLimitHigh               = 640U;
