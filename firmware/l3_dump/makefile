@@ -21,6 +21,11 @@ include $(MMWAVE_SDK_INSTALL_PATH)/ti/common/mmwave_sdk.mak
 # default goal, so a bare `make` builds nothing. Pin it to our app.
 .DEFAULT_GOAL := all
 
+# Variant builds override capture geometry (make clean first — same objects):
+#   make L3_VARIANT_DEFS="--define=LOOPS=16 --define=RING_FRAMES=12"     # B
+#   make L3_VARIANT_DEFS="--define=N_SAMPLES=64 --define=RING_FRAMES=12" # C
+R4F_CFLAGS += $(L3_VARIANT_DEFS)
+
 APPNAME = l3_dump
 
 # Sources live alongside this makefile.

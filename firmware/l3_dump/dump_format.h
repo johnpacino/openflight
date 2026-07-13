@@ -11,7 +11,8 @@
 #include <stdint.h>
 
 #define L3_DUMP_MAGIC       "ILD1"
-#define L3_DUMP_VERSION     2   /* v2: trigger_frame = oldest ring slot */
+#define L3_DUMP_VERSION     3   /* v2: trigger_frame = oldest ring slot;
+                                 * v3: frame_period_us populated */
 #define L3_SAMPLE_INT16_IQ  0
 
 typedef struct __attribute__((packed)) {
@@ -27,7 +28,9 @@ typedef struct __attribute__((packed)) {
     uint16_t trigger_frame;     /* v2+: OLDEST ring slot = time-order start
                                  * (slots stream in memory order; rotate by
                                  * this to get chronological frames). 0 in v1. */
-    uint16_t _pad2;
+    uint16_t frame_period_us;   /* v3+: frame periodicity in microseconds
+                                 * (self-describing timing for the range-walk
+                                 * speed fit). 0 in v1/v2 dumps (was padding). */
 } l3_dump_header_t;             /* sizeof == 20 */
 
 #endif /* L3_DUMP_FORMAT_H */

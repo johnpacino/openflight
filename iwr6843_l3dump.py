@@ -37,7 +37,7 @@ SAMPLE_INT16_IQ = 0
 
 
 def pack_dump(cube: np.ndarray, *, n_tx: int, trigger_frame: int = 0,
-              version: int = 1) -> bytes:
+              version: int = 1, frame_period_us: int = 0) -> bytes:
     """Complex cube [n_frames, chirps_per_frame, n_rx, n_samples] -> dump bytes.
 
     Reference packer: this is the exact byte layout the firmware must emit, and
@@ -45,7 +45,7 @@ def pack_dump(cube: np.ndarray, *, n_tx: int, trigger_frame: int = 0,
     """
     n_frames, cpf, n_rx, n_samples = cube.shape
     hdr = HEADER.pack(MAGIC, version, n_frames, cpf, n_tx, n_rx, n_samples,
-                      SAMPLE_INT16_IQ, 0, trigger_frame, 0)
+                      SAMPLE_INT16_IQ, 0, trigger_frame, frame_period_us)
     flat = cube.reshape(-1)
     iq = np.empty(flat.size * 2, dtype="<i2")
     iq[0::2] = np.clip(np.round(flat.imag), -32768, 32767).astype("<i2")  # Im first (TI ImRe)
@@ -59,13 +59,14 @@ def parse_header(raw: bytes) -> dict:
     Lets the runtime size the burst before the full payload has arrived.
     """
     (magic, ver, nf, cpf, ntx, nrx, ns,
-     fmt, _pad, trig, _pad2) = HEADER.unpack_from(raw, 0)
+     fmt, _pad, trig, period_us) = HEADER.unpack_from(raw, 0)
     if magic != MAGIC:
         raise ValueError(f"bad magic {magic!r} (expected {MAGIC!r})")
     if fmt != SAMPLE_INT16_IQ:
         raise ValueError(f"unsupported sample_fmt {fmt}")
     return dict(version=ver, n_frames=nf, chirps_per_frame=cpf, n_tx=ntx,
-                n_rx=nrx, n_samples=ns, trigger_frame=trig)
+                n_rx=nrx, n_samples=ns, trigger_frame=trig,
+                frame_period_us=period_us)   # 0 in v1/v2 dumps (was padding)
 
 
 def payload_nbytes(meta: dict) -> int:

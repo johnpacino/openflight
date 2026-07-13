@@ -41,6 +41,9 @@ def main() -> int:
     ap.add_argument("--cli", help="CLI UART (default: auto-detect)")
     ap.add_argument("--data", help="data UART (default: auto-detect)")
     ap.add_argument("--outdir", default=os.path.expanduser("~/openflight_shots"))
+    ap.add_argument("--cfg", default=l3host.CFG_PATH,
+                    help="RF config to send (variant builds need their own: "
+                         "config/iwr6843_l3dump_vB.cfg / _vC.cfg)")
     ap.add_argument("--no-config", action="store_true",
                     help="skip sending the cfg (sensor already running)")
     a = ap.parse_args()
@@ -63,8 +66,8 @@ def main() -> int:
         data_port, l3host.DATA_BAUD)
 
     if not a.no_config:
-        print("configuring sensor...")
-        l3host.send_config(cli)
+        print(f"configuring sensor ({os.path.basename(a.cfg)})...")
+        l3host.send_config(cli, a.cfg)
         print("sensor running.")
 
     trigger = threading.Event()

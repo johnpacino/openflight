@@ -42,11 +42,18 @@
 #define L3_CLI_TASK_PRIORITY   3
 #define L3_CTRL_TASK_PRIORITY  5
 
-/* --- capture geometry: MUST match the .cfg the host sends ------------------ */
+/* --- capture geometry: MUST match the .cfg the host sends ------------------
+ * N_SAMPLES / LOOPS / RING_FRAMES are overridable from the make line
+ * (variant builds: B = LOOPS=16 RING_FRAMES=12, C = N_SAMPLES=64
+ * RING_FRAMES=12). sensorStart REJECTS a cfg whose geometry mismatches. */
 #define N_TX              2
 #define N_RX              4
+#ifndef N_SAMPLES
 #define N_SAMPLES         128
+#endif
+#ifndef LOOPS
 #define LOOPS             32
+#endif
 #define CHIRPS_PER_FRAME  (N_TX * LOOPS)                        /* 64 */
 #define FRAME_COMPLEX     (CHIRPS_PER_FRAME * N_RX * N_SAMPLES)   /* 32768 */
 #define FRAME_BYTES       (FRAME_COMPLEX * 2 * (uint32_t)sizeof(int16_t)) /* 128 KB */
@@ -54,10 +61,12 @@
 #define CHIRP_BYTES       (N_RX * N_SAMPLES * 2 * (uint32_t)sizeof(int16_t))  /* 2048 */
 
 /* --- rolling buffer (default L3 = 6 banks x 128 KB = 768 KB) ----------------
- * 6 frames x 128 KB fills L3 EXACTLY (zero slack): .l3ring must stay the only
+ * The ring fills L3 EXACTLY (zero slack): .l3ring must stay the only
  * section in L3_RAM or the link fails — which is the desired failure mode. */
+#ifndef RING_FRAMES
 #define RING_FRAMES  6
-#define RING_CHIRPS  (RING_FRAMES * CHIRPS_PER_FRAME)           /* 384 */
+#endif
+#define RING_CHIRPS  (RING_FRAMES * CHIRPS_PER_FRAME)
 
 #pragma DATA_SECTION(g_ring, ".l3ring")
 #pragma DATA_ALIGN(g_ring, 8)
@@ -79,6 +88,7 @@ static uint32_t      gCpuClock = 200U * 1000000U;
 
 /* --- capture state / diagnostics ------------------------------------------- */
 static volatile uint8_t  gCaptureActive;
+static uint16_t gFramePeriodUs;         /* from the accepted frameCfg -> header */
 static volatile uint32_t gNumFrame;     /* frame-start ISR count (liveness) */
 static volatile uint32_t gRingFrame;    /* frames since last EDMA arm — the ring
                                          * realigns to slot 0 on every arm, so
@@ -114,7 +124,7 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
     h->sample_fmt       = L3_SAMPLE_INT16_IQ;
     h->_pad             = 0;
     h->trigger_frame    = trigger_frame;
-    h->_pad2            = 0;
+    h->frame_period_us  = gFramePeriodUs;
 }
 
 /* EDMA ring-wrap completion (fires once per RING_CHIRPS; liveness only). */
@@ -394,6 +404,25 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     }
 
     CLI_getMMWaveExtensionConfig(&gCtrlCfg);
+    /* Geometry guard: the ring/EDMA are compile-time sized, so a cfg with a
+     * different loop count or sample count would capture garbage silently.
+     * Refuse it loudly instead (three variant builds are in circulation). */
+    {
+        rlProfileCfg_t profCfg;
+        memset((void *)&profCfg, 0, sizeof(profCfg));
+        if ((gCtrlCfg.u.frameCfg.profileHandle[0] == NULL) ||
+            (MMWave_getProfileCfg(gCtrlCfg.u.frameCfg.profileHandle[0],
+                                  &profCfg, &errCode) < 0) ||
+            (profCfg.numAdcSamples != N_SAMPLES) ||
+            (gCtrlCfg.u.frameCfg.frameCfg.numLoops != LOOPS)) {
+            CLI_write("Error: cfg geometry mismatch — this firmware is built "
+                      "for %d samples x %d loops\n", N_SAMPLES, LOOPS);
+            return -1;
+        }
+        /* framePeriodicity LSB = 5 ns -> microseconds. */
+        gFramePeriodUs =
+            (uint16_t)(gCtrlCfg.u.frameCfg.frameCfg.framePeriodicity / 200U);
+    }
     if (MMWave_config(gMMWaveHandle, &gCtrlCfg, &errCode) < 0) {
         MMWave_decodeError(errCode, &errorLevel, &mmwErr, &subErr);
         CLI_write("Error: MMWave_config failed [mmwave %d subsys %d]\n", mmwErr, subErr);
