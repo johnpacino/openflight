@@ -49,7 +49,9 @@ def main() -> int:
         return 1
     print(f"CLI={cli_port}  DATA={data_port}")
     cli = l3host.open_port(cli_port, l3host.CLI_BAUD)
-    data = l3host.open_port(data_port, l3host.DATA_BAUD)
+    # v3 single-port firmware: one handle for CLI + dump
+    data = cli if data_port == cli_port else l3host.open_port(
+        data_port, l3host.DATA_BAUD)
 
     if not a.no_config:
         print("configuring sensor...")
@@ -94,7 +96,8 @@ def main() -> int:
     finally:
         stream.stop()
         cli.close()
-        data.close()
+        if data is not cli:
+            data.close()
     return 0
 
 

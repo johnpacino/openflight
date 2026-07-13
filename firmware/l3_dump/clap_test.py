@@ -52,11 +52,14 @@ def main() -> int:
     if not cli_port or not data_port:
         cli_port, data_port = l3host.detect_ports()
     if not cli_port or not data_port:
-        print("could not find the CP2105 pair (/dev/ttyUSB*) — board on & flashed?")
+        print("could not find the board (/dev/ttyUSB*) — on, flashed, v3?")
         return 1
     print(f"CLI={cli_port}  DATA={data_port}")
     cli = l3host.open_port(cli_port, l3host.CLI_BAUD)
-    data = l3host.open_port(data_port, l3host.DATA_BAUD)
+    # v3 single-port firmware: CLI and dump share one UART -> one handle
+    # (two handles on one tty would steal each other's bytes).
+    data = cli if data_port == cli_port else l3host.open_port(
+        data_port, l3host.DATA_BAUD)
 
     if not a.no_config:
         print("configuring sensor...")
@@ -106,7 +109,8 @@ def main() -> int:
         print("\nstopped.")
     finally:
         cli.close()
-        data.close()
+        if data is not cli:
+            data.close()
     return 0
 
 

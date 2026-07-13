@@ -1,9 +1,11 @@
 """Shared host-side helpers for the L3-dump bench/test harnesses.
 
 Used by shot_trigger.py (Mac mic trigger) and clap_test.py (Pi GPIO trigger).
-Knows the firmware contract: CLI UART 115200 (commands, DTR/RTS-safe open),
-data UART 460800 (dump stream), config/iwr6843_l3dump.cfg, and the dump
-geometry (5 frames x 64 chirps x 4 rx x 128 samples, ImRe int16 pairs).
+Firmware v3 contract (single-port): CLI commands AND the dump share UARTA =
+the CP2105 Enhanced interface at 1,041,667 baud (exact divisor IWR-side,
++0.17% CP2105-side); the dump is framed by its "ILD1" magic + header length.
+Dump geometry: n_frames x 64 chirps x 4 rx x 128 samples, ImRe int16 pairs
+(frame count read from the header — 5 in v1/v2, 6 in v2+).
 """
 from __future__ import annotations
 
@@ -19,9 +21,10 @@ if _ROOT not in sys.path:
 import numpy as np       # noqa: E402
 import serial            # noqa: E402
 
-CLI_BAUD = 115200
-DATA_BAUD = 460800
-FULL_DUMP = 20 + 5 * 131072   # header + 5 frames
+BAUD = 1041667                # v3 single-port rate (CLI + dump on one UART)
+CLI_BAUD = BAUD               # back-compat aliases: same port, same rate
+DATA_BAUD = BAUD
+FULL_DUMP = 20 + 6 * 131072   # header + 6 frames (fallback; header is truth)
 RANGE_RES_M = 0.0469
 # MUST match frameCfg periodicity in config/iwr6843_l3dump.cfg — the ball-speed
 # fit times cross-frame range walk with it. 0.008 before 2026-07-12 evening
@@ -53,7 +56,8 @@ def cmd(cli: serial.Serial, line: str, window: float = 1.5) -> str:
 
 
 def detect_ports():
-    """(cli, data) among the CP2105 pair; CLI = the port answering `help`.
+    """(cli, data) — with v3 single-port firmware BOTH are the same device
+    (the port answering `help` at BAUD). Kept as a pair for caller compat.
     macOS: /dev/tty.SLAB_USBtoUART*; Linux/Pi: /dev/ttyUSB*."""
     candidates = (sorted(glob.glob("/dev/tty.SLAB_USBtoUART*"))
                   or sorted(glob.glob("/dev/ttyUSB*")))
@@ -65,7 +69,7 @@ def detect_ports():
         r = cmd(s, "help")
         s.close()
         if "sensorStart" in r:
-            return p, next((q for q in candidates if q != p), None)
+            return p, p
     return None, None
 
 
@@ -88,11 +92,12 @@ def send_config(cli: serial.Serial, cfg_path: str = CFG_PATH,
 def read_dump_besteffort(data: serial.Serial, timeout_s: float = 40.0) -> bytes:
     """Greedy in_waiting drain; returns whatever arrives (tail loss tolerated).
 
-    Expected size comes from the dump's own header (n_frames etc.), so this
-    works across firmware versions (v1 = 5 frames, v2 = 6). Falls back to
-    FULL_DUMP if the header doesn't parse.
+    Syncs on the "ILD1" magic (on the shared v3 port the CLI's command echo
+    precedes the binary payload) and sizes the read from the dump's own
+    header, so it works across firmware versions. Falls back to FULL_DUMP
+    if a header never parses.
     """
-    from iwr6843_l3dump import HEADER, parse_header, payload_nbytes
+    from iwr6843_l3dump import HEADER, MAGIC, parse_header, payload_nbytes
     buf = b""
     expected = None
     t = time.time()
@@ -107,14 +112,17 @@ def read_dump_besteffort(data: serial.Serial, timeout_s: float = 40.0) -> bytes:
             # generous: the CP2105 has been seen to stall the stream for
             # >1.5 s mid-dump (cp210x -110 control timeouts) and then resume
             break
-        if expected is None and len(buf) >= HEADER.size:
-            try:
-                expected = HEADER.size + payload_nbytes(parse_header(buf))
-            except ValueError:
-                expected = FULL_DUMP
-        if expected and len(buf) >= expected:
+        if expected is None:
+            i = buf.find(MAGIC)
+            if i >= 0 and len(buf) - i >= HEADER.size:
+                buf = buf[i:]                    # drop CLI echo before magic
+                try:
+                    expected = HEADER.size + payload_nbytes(parse_header(buf))
+                except ValueError:
+                    expected = FULL_DUMP
+        elif len(buf) >= expected:
             break
-    return buf
+    return buf if expected is None else buf[:expected]
 
 
 LOOP_PRI_S = 90e-6            # per-TX chirp repeat (45 us x 2 TDM chirps)
