@@ -42,7 +42,7 @@ class ShotMeasurement:
 
         Provisional policy until TrackMan ranks the estimators.
         """
-        for method in ("tee", "free"):
+        for method in ("tee", "free", "two_ray"):
             fit = self.fits.get(method)
             if fit is not None:
                 return fit.launch_angle_deg
@@ -113,8 +113,11 @@ def process_dump(raw: bytes, cal: Calibration, *,
                              track=track)
     if track is None:
         return result
-    points = doa.angle_points(mti, track, geo, cal,
-                              coherent_loops=coherent_loops)
+    # Line fits use K=1: the plentiful per-loop points are what produced
+    # the winning consistency in the 2026-07-13 variant shootout. The strict
+    # coherent series (K>1) starves typical shots below min_points — it is
+    # reserved for two-ray, where few ultra-clean snapshots win.
+    points = doa.angle_points(mti, track, geo, cal, coherent_loops=1)
     result.n_angle_points = len(points)
     for fit in (trajectory.fit_free(points, cal),
                 trajectory.fit_tee(points, cal)):
