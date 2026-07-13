@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import json
 import re
 import sys
 import threading
@@ -66,6 +67,16 @@ def main() -> int:
           + (f"  tee @ {cal.tee_range_m} m" if cal.tee_range_m else
              "  (no --tee-m: tee-constrained fit disabled)"))
 
+    log_dir = os.path.expanduser("~/openflight_sessions")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(
+        log_dir, time.strftime("shot_test_%Y%m%d_%H%M%S.jsonl"))
+
+    def log(entry: dict) -> None:
+        entry["ts"] = time.time()
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+
     radar = IWR6843Radar(port=a.port)
     print(f"radar on {radar.port}")
     if not a.no_config:
@@ -82,6 +93,10 @@ def main() -> int:
     button = Button(a.trigger_pin, pull_up=False, bounce_time=None)
     button.when_pressed = trigger.set
 
+    log({"type": "session_start", "cfg": a.cfg, "cal": cal.source,
+         "tee_m": cal.tee_range_m, "prefix": prefix,
+         "coherent_loops": a.coherent_loops, "delay_ms": a.delay_ms})
+    print(f"session log: {log_path}")
     shot_no = len(glob.glob(os.path.join(a.outdir, prefix + "_*.l3dump")))
     print(f"\nARMED on BCM{a.trigger_pin} [{prefix}] — clap to test, "
           "then hit. Ctrl-C to stop.\n")
@@ -112,8 +127,13 @@ def main() -> int:
                 if a.movers:
                     for slot, rng_m, pwr in movers_by_slot(raw):
                         print(f"      slot {slot}: {rng_m:4.2f} m  P {pwr:.2e}")
+                log({"type": "shot", "n": shot_no, "file": path,
+                     "bytes": len(raw), "dump_s": round(t_dump, 3),
+                     **shot.to_dict()})
             except (ValueError, IndexError) as err:
                 print(f"  !! analysis failed: {err}")
+                log({"type": "shot_error", "n": shot_no, "file": path,
+                     "bytes": len(raw), "error": str(err)})
             health = radar.stats()
             for line in health.splitlines():
                 if "=" in line or "Error" in line:

@@ -48,6 +48,19 @@ class ShotMeasurement:
                 return fit.launch_angle_deg
         return None
 
+    def to_dict(self) -> dict:
+        """JSON-serializable record for session logging / later pairing."""
+        from dataclasses import asdict
+        return {
+            "geometry": asdict(self.geometry),
+            "ball_found": self.ball_found,
+            "track": asdict(self.track) if self.track else None,
+            "ball_speed_mph": self.ball_speed_mph,
+            "launch_angle_deg": self.launch_angle_deg,
+            "fits": {k: asdict(v) for k, v in self.fits.items()},
+            "n_angle_points": self.n_angle_points,
+        }
+
     def summary(self) -> str:
         """One human line for live display at the tee."""
         if not self.ball_found or self.track is None:
