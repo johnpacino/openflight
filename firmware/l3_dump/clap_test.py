@@ -87,7 +87,7 @@ def main() -> int:
             data.reset_input_buffer()
             cli.write(b"l3dump\n")
             shot += 1
-            print(f"[clap {shot}] TRIGGER (delay {a.delay_ms:.0f} ms) — dumping ~15 s...")
+            print(f"[clap {shot}] TRIGGER (delay {a.delay_ms:.0f} ms) — dumping ~8 s...")
             raw = l3host.read_dump_besteffort(data)
             fn = os.path.join(a.outdir, f"clap_{shot:03d}.l3dump")
             with open(fn, "wb") as fh:
