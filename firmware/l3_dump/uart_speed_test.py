@@ -9,7 +9,7 @@ reports per-dump throughput + integrity. No sound trigger needed.
     python3 firmware/l3_dump/uart_speed_test.py            # auto-detect port
     python3 firmware/l3_dump/uart_speed_test.py --n 10 --save-last
 
-NOTE: only works against v3 firmware (clap_test/l3host still speak v2's
+NOTE: only works against v3 firmware (shot_test/l3host speak v2's
 two-port 115200/460800 arrangement — if this script finds no CLI, you're
 probably running v2, and vice versa).
 """

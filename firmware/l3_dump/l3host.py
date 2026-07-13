@@ -1,6 +1,6 @@
 """Shared host-side helpers for the L3-dump bench/test harnesses.
 
-Used by shot_trigger.py (Mac mic trigger) and clap_test.py (Pi GPIO trigger).
+Used by shot_trigger.py (Mac mic trigger) and shot_test.py (Pi GPIO trigger).
 Firmware v3 contract (single-port): CLI commands AND the dump share UARTA =
 the CP2105 Enhanced interface at 1,041,667 baud (exact divisor IWR-side,
 +0.17% CP2105-side); the dump is framed by its "ILD1" magic + header length.

@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
-"""Clap test: SEN-14262 GPIO sound trigger -> L3 dump, on the Pi.
+"""Shot test: SEN-14262 GPIO sound trigger -> L3 dump, on the Pi.
 
-The Pi-rig version of shot_trigger.py: instead of the Mac microphone, the
-SparkFun SEN-14262's GATE output drives a Pi GPIO edge. On the edge the script
-waits --delay-ms (so the 40 ms ring fills with post-impact ball flight), fires
-`l3dump`, saves the dump, and prints per-frame range peaks + range-walk speed.
+(Formerly clap_test.py.) The SparkFun SEN-14262's GATE output drives a Pi
+GPIO edge. On the edge the script waits --delay-ms (so the ring fills with
+post-impact ball flight), fires `l3dump`, saves the dump, and prints the
+MTI movers + range-walk ball speed. Dumps are named shot[_variant]_NNN
+(variant tag derived from the --cfg name, e.g. _vB).
 
 Wiring (same sensor as the OPS rig, GATE re-pointed at the Pi):
     SEN-14262 GATE -> BCM <trigger-pin>       SEN-14262 VCC -> Pi 3.3V
     SEN-14262 GND  -> Pi GND
 IWR6843 LEVM on USB (both CP2105 UARTs enumerate as /dev/ttyUSB*).
 
-    python3 firmware/l3_dump/clap_test.py --trigger-pin 17
+    python3 firmware/l3_dump/shot_test.py --trigger-pin 17
 
-Validate with a CLAP near the sensor first (hence the name), then hit shots.
-Ctrl-C to stop. Dumps land in --outdir as clap_NNN.l3dump.
+Validate with a CLAP near the sensor first, then hit shots.
+Ctrl-C to stop.
 """
 from __future__ import annotations
 
 import argparse
 import glob
 import os
+import re
 import sys
 import threading
 import time
@@ -48,6 +50,9 @@ def main() -> int:
                     help="skip sending the cfg (sensor already running)")
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
+    # file prefix self-labels the variant: iwr6843_l3dump_vB.cfg -> shot_vB
+    m = re.search(r"l3dump(_[A-Za-z0-9]+)\.cfg$", os.path.basename(a.cfg))
+    prefix = "shot" + (m.group(1) if m else "")
 
     # Lazy: Pi-only, and keeps this file importable off-Pi.
     from gpiozero import Button
@@ -80,8 +85,8 @@ def main() -> int:
     button = Button(a.trigger_pin, pull_up=False, bounce_time=None)
     button.when_pressed = trigger.set
 
-    shot = len(glob.glob(os.path.join(a.outdir, "clap_*.l3dump")))
-    print(f"\nARMED on BCM{a.trigger_pin} — clap to test, then hit. Ctrl-C to stop.\n")
+    shot = len(glob.glob(os.path.join(a.outdir, prefix + "_*.l3dump")))
+    print(f"\nARMED on BCM{a.trigger_pin} [{prefix}] — clap to test, then hit. Ctrl-C to stop.\n")
     try:
         while True:
             if not trigger.wait(timeout=1.0):
@@ -91,12 +96,12 @@ def main() -> int:
             data.reset_input_buffer()
             cli.write(b"l3dump\n")
             shot += 1
-            print(f"[clap {shot}] TRIGGER (delay {a.delay_ms:.0f} ms) — dumping ~8 s...")
+            print(f"[{prefix} {shot}] TRIGGER (delay {a.delay_ms:.0f} ms) — dumping ~8 s...")
             raw = l3host.read_dump_besteffort(data)
-            fn = os.path.join(a.outdir, f"clap_{shot:03d}.l3dump")
+            fn = os.path.join(a.outdir, f"{prefix}_{shot:03d}.l3dump")
             with open(fn, "wb") as fh:
                 fh.write(raw)
-            print(f"[clap {shot}] {len(raw)}/{l3host.expected_len(raw)} B -> {fn}")
+            print(f"[{prefix} {shot}] {len(raw)}/{l3host.expected_len(raw)} B -> {fn}")
             l3host.analyse(raw)
             st = l3host.cmd(cli, "stats", 2.0)   # drain CLI + firmware health
             for ln in st.splitlines():
