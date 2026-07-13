@@ -53,9 +53,11 @@
 /* One chirp in ADCBUF (non-interleaved): N_RX x N_SAMPLES x 4 bytes. */
 #define CHIRP_BYTES       (N_RX * N_SAMPLES * 2 * (uint32_t)sizeof(int16_t))  /* 2048 */
 
-/* --- rolling buffer (default L3 = 6 banks x 128 KB = 768 KB) ---------------- */
-#define RING_FRAMES  5
-#define RING_CHIRPS  (RING_FRAMES * CHIRPS_PER_FRAME)           /* 320 */
+/* --- rolling buffer (default L3 = 6 banks x 128 KB = 768 KB) ----------------
+ * 6 frames x 128 KB fills L3 EXACTLY (zero slack): .l3ring must stay the only
+ * section in L3_RAM or the link fails — which is the desired failure mode. */
+#define RING_FRAMES  6
+#define RING_CHIRPS  (RING_FRAMES * CHIRPS_PER_FRAME)           /* 384 */
 
 #pragma DATA_SECTION(g_ring, ".l3ring")
 #pragma DATA_ALIGN(g_ring, 8)
@@ -78,6 +80,11 @@ static uint32_t      gCpuClock = 200U * 1000000U;
 /* --- capture state / diagnostics ------------------------------------------- */
 static volatile uint8_t  gCaptureActive;
 static volatile uint32_t gNumFrame;     /* frame-start ISR count (liveness) */
+static volatile uint32_t gRingFrame;    /* frames since last EDMA arm — the ring
+                                         * realigns to slot 0 on every arm, so
+                                         * slot(frame k) = k % RING_FRAMES and
+                                         * the OLDEST slot at freeze is
+                                         * gRingFrame % RING_FRAMES (once wrapped) */
 static volatile uint32_t gNumWrap;      /* EDMA ring-wrap count */
 static volatile uint32_t gCalibStatus;  /* RL_RF_AE_INITCALIBSTATUS payload */
 static volatile uint32_t gRfFaults;     /* CPU/ESM/analog fault events */
@@ -117,11 +124,13 @@ static void l3_edmaCB(uintptr_t arg, uint8_t tcCode)
     gNumWrap++;
 }
 
-/* Frame-start ISR: liveness counter only (the EDMA fills the ring autonomously). */
+/* Frame-start ISR: liveness + ring-alignment counters (the EDMA fills the
+ * ring autonomously). */
 static void l3_frameStartISR(uintptr_t arg)
 {
     (void)arg;
     gNumFrame++;
+    gRingFrame++;
 }
 
 /* Start the RF front-end (config must already be applied). Shared by
@@ -160,19 +169,26 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
     Task_sleep(10);
     EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
 
-    l3_fill_header(&h, RING_FRAMES, 0);
+    /* Oldest slot = time-order start (best-effort: a frame-start ISR racing
+     * the stop can skew this by one; the host cross-checks with its own
+     * rotation solve). Before the first wrap the oldest data is slot 0. */
+    l3_fill_header(&h, RING_FRAMES,
+                   (gRingFrame >= RING_FRAMES)
+                       ? (uint16_t)(gRingFrame % RING_FRAMES) : 0U);
     UART_writePolling(gDataUart, (uint8_t *)&h, sizeof(h));
     for (i = 0; i < RING_FRAMES; i++) {
         UART_writePolling(gDataUart, (uint8_t *)g_ring[i], sizeof(g_ring[i]));
     }
 
     /* Re-arm with no chirp events possible, then restart the front-end. The
-     * ring realigns to slot 0 == first chirp of the first post-restart frame. */
+     * ring realigns to slot 0 == first chirp of the first post-restart frame,
+     * so the ring-alignment counter restarts with it. */
     if (l3_armCapture() < 0) {
         CLI_write("Error: EDMA re-arm failed\n");
         gCaptureActive = 0U;
         return -1;
     }
+    gRingFrame = 0U;
     if (l3_startFrontEnd() < 0) {
         CLI_write("Error: RF restart failed\n");
         gCaptureActive = 0U;
@@ -388,8 +404,9 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
         CLI_write("Error: ADCBUF config failed\n");
         return -1;
     }
-    gNumFrame = 0U;
-    gNumWrap  = 0U;
+    gNumFrame  = 0U;
+    gRingFrame = 0U;
+    gNumWrap   = 0U;
     if (l3_armCapture() < 0) {
         CLI_write("Error: EDMA arm failed\n");
         return -1;
