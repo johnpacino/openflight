@@ -64,7 +64,13 @@ def main() -> int:
         print("sensor running.")
 
     trigger = threading.Event()
-    button = Button(a.trigger_pin, pull_up=False, bounce_time=0.05)
+    # bounce_time=None is load-bearing: gpiozero's lgpio backend implements
+    # debounce as "level must be stable for bounce_time before the edge is
+    # reported", which DELAYS the trigger by the full bounce_time (50 ms cost
+    # us the ball flight on the 2026-07-12 7i session). Re-arm suppression is
+    # handled in software below (trigger.clear() after the dump), so contact
+    # bounce can't double-fire anyway.
+    button = Button(a.trigger_pin, pull_up=False, bounce_time=None)
     button.when_pressed = trigger.set
 
     shot = len(glob.glob(os.path.join(a.outdir, "clap_*.l3dump")))
@@ -83,9 +89,16 @@ def main() -> int:
             fn = os.path.join(a.outdir, f"clap_{shot:03d}.l3dump")
             with open(fn, "wb") as fh:
                 fh.write(raw)
-            print(f"[clap {shot}] {len(raw)}/{l3host.FULL_DUMP} B -> {fn}")
+            print(f"[clap {shot}] {len(raw)}/{l3host.expected_len(raw)} B -> {fn}")
             l3host.analyse(raw)
-            l3host.cmd(cli, "stats", 2.0)   # drain CLI; sensor auto-restarts
+            st = l3host.cmd(cli, "stats", 2.0)   # drain CLI + firmware health
+            for ln in st.splitlines():
+                if "=" in ln or "Error" in ln:
+                    print(f"  [fw] {ln.strip()}")
+            if not raw:
+                print("  !! zero-byte dump = firmware refused l3dump (capture "
+                      "inactive; RF restart failed on an earlier shot). "
+                      "Power-cycle the radar USB and restart this script.")
             time.sleep(0.5)
             trigger.clear()                 # re-arm (ignore edges during dump)
             print("\nARMED — next clap/shot when ready.\n")
