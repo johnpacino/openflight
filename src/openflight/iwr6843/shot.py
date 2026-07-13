@@ -124,10 +124,13 @@ def process_dump(raw: bytes, cal: Calibration, *,
         if fit is not None:
             result.fits[fit.method] = fit
     if two_ray:
-        series = doa.snapshot_series(mti, track, geo, cal,
-                                     coherent_loops=coherent_loops)
+        # 2026-07-13 sweep (21 real B shots): K=1 + explained>=0.70 gives
+        # 100% coverage at the same consistency as the strict K=4 setting
+        # (which only spoke on 1/3 of shots). Mean shifts ~+3 deg with the
+        # looser selection — TrackMan arbitrates that bias.
+        series = doa.snapshot_series(mti, track, geo, cal, coherent_loops=1)
         snaps = [(t, r, s) for t, r, s, _snr in series]
-        fit = trajectory.fit_two_ray(snaps, cal)
+        fit = trajectory.fit_two_ray(snaps, cal, min_explained=0.70)
         if fit is not None:
             result.fits[fit.method] = fit
     return result
