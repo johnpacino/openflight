@@ -106,7 +106,12 @@ def snapshot_series(mti: np.ndarray, track: BallTrack, geo: Geometry,
                 acc += snap * np.exp(-1j * loop_phase * off)
             else:
                 snr = float((np.abs(acc) ** 2).mean() / (noise * k))
-                if snr < snr_min * k:      # coherent gain raises the bar too
+                # STRICT full-gain gate, kept deliberately: on 2026-07-13
+                # real shots the two-ray solver worked best on few
+                # ultra-clean snapshots (7/8 fits at +/-2.1 deg); relaxing
+                # to sqrt(k) admitted clutter that failed the two-source
+                # model and starved the fits instead of feeding them
+                if snr < snr_min * k:
                     continue
                 rng_m = cal.true_range(
                     track.range_at(t_mid, geo.range_res_m))
