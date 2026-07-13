@@ -97,12 +97,17 @@ def main() -> int:
             cli.write(b"l3dump\n")
             shot += 1
             print(f"[{prefix} {shot}] TRIGGER (delay {a.delay_ms:.0f} ms) — dumping ~8 s...")
+            t0 = time.time()
             raw = l3host.read_dump_besteffort(data)
+            t_dump = time.time() - t0
             fn = os.path.join(a.outdir, f"{prefix}_{shot:03d}.l3dump")
             with open(fn, "wb") as fh:
                 fh.write(raw)
-            print(f"[{prefix} {shot}] {len(raw)}/{l3host.expected_len(raw)} B -> {fn}")
+            print(f"[{prefix} {shot}] {len(raw)}/{l3host.expected_len(raw)} B "
+                  f"in {t_dump:.2f} s -> {fn}")
+            t0 = time.time()
             l3host.analyse(raw)
+            print(f"  (analysis {time.time() - t0:.2f} s)")
             st = l3host.cmd(cli, "stats", 2.0)   # drain CLI + firmware health
             for ln in st.splitlines():
                 if "=" in ln or "Error" in ln:
