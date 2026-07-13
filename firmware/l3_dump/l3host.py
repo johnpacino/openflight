@@ -103,7 +103,9 @@ def read_dump_besteffort(data: serial.Serial, timeout_s: float = 40.0) -> bytes:
         if c:
             buf += c
             last = time.time()
-        elif buf and time.time() - last > 1.5:
+        elif buf and time.time() - last > 4.0:
+            # generous: the CP2105 has been seen to stall the stream for
+            # >1.5 s mid-dump (cp210x -110 control timeouts) and then resume
             break
         if expected is None and len(buf) >= HEADER.size:
             try:

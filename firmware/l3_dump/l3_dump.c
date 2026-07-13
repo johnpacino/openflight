@@ -458,7 +458,16 @@ static void l3_initTask(UArg arg0, UArg arg1)
 
     UART_Params_init(&uartParams);
     uartParams.clockFrequency = gCpuClock;
-    uartParams.baudRate       = 115200;
+    /* v3 UART-SPEED TEST: single-port operation. UARTA routes to the CP2105
+     * ENHANCED interface (2 Mbps capable; the Standard iface that carried the
+     * dump in v1/v2 is capped at 921600 AND threw sporadic -110 control
+     * timeouts on the Pi). 1,041,667 divides EXACTLY on our side
+     * (200 MHz/16/12) and to +0.17% in the CP2105 (24 MHz/23). CLI commands
+     * and the dump share this port; the host syncs on the "ILD1" magic.
+     * BINARY write mode is ESSENTIAL for the dump path (TEXT inserts \r
+     * before 0x0A bytes); read mode stays TEXT for CLI line handling. */
+    uartParams.writeDataMode  = UART_DATA_BINARY;
+    uartParams.baudRate       = 1041667;
     uartParams.isPinMuxDone    = 1;
     gCliUart = UART_open(0, &uartParams);
 
@@ -475,6 +484,9 @@ static void l3_initTask(UArg arg0, UArg arg1)
     uartParams.baudRate       = 460800;
     uartParams.isPinMuxDone    = 1;
     gDataUart = UART_open(1, &uartParams);
+    /* v3: dump goes out the CLI port (Enhanced iface) at 1.04 M. UARTB stays
+     * open as a debug spare; flip this assignment back for v2 behavior. */
+    gDataUart = gCliUart;
 
     /* EDMA + ADCBUF drivers. */
     EDMA_init(0);
