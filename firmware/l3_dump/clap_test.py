@@ -34,9 +34,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--trigger-pin", type=int, required=True,
                     help="BCM pin wired to SEN-14262 GATE")
-    ap.add_argument("--delay-ms", type=float, default=25.0,
+    ap.add_argument("--delay-ms", type=float, default=50.0,
                     help="wait after the edge before freezing the ring "
-                         "(fills the 40 ms buffer with post-impact flight)")
+                         "(fills the 72 ms buffer with post-impact flight; "
+                         "~10 ms of pre-impact club lands at the front)")
     ap.add_argument("--cli", help="CLI UART (default: auto-detect)")
     ap.add_argument("--data", help="data UART (default: auto-detect)")
     ap.add_argument("--outdir", default=os.path.expanduser("~/openflight_shots"))
