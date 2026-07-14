@@ -47,6 +47,9 @@ def main() -> int:
     ap.add_argument("--tee-m", type=float, default=None,
                     help="tape-measured radar-face-to-ball distance (m); "
                          "enables the tee-constrained LA fit")
+    ap.add_argument("--net-m", type=float, default=None,
+                    help="radar-face-to-net distance (m); excludes "
+                         "ball-riding-the-net motion from all fits")
     ap.add_argument("--coherent-loops", type=int, default=4)
     ap.add_argument("--outdir", default=os.path.expanduser("~/openflight_shots"))
     ap.add_argument("--port", help="serial port (default: auto-detect)")
@@ -95,7 +98,8 @@ def main() -> int:
 
     log({"type": "session_start", "cfg": a.cfg, "cal": cal.source,
          "tee_m": cal.tee_range_m, "prefix": prefix,
-         "coherent_loops": a.coherent_loops, "delay_ms": a.delay_ms})
+         "coherent_loops": a.coherent_loops, "delay_ms": a.delay_ms,
+         "net_m": a.net_m})
     print(f"session log: {log_path}")
     shot_no = len(glob.glob(os.path.join(a.outdir, prefix + "_*.l3dump")))
     print(f"\nARMED on BCM{a.trigger_pin} [{prefix}] — clap to test, "
@@ -120,7 +124,8 @@ def main() -> int:
             t_0 = time.time()
             try:
                 shot = process_dump(raw, cal,
-                                    coherent_loops=a.coherent_loops)
+                                    coherent_loops=a.coherent_loops,
+                                    net_range_m=a.net_m)
                 print(f"  >>> {shot.summary()}   "
                       f"(analysis {time.time() - t_0:.2f} s, "
                       f"{shot.n_angle_points} angle pts)")

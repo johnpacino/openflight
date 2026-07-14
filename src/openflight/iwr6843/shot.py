@@ -93,7 +93,8 @@ def geometry_from_header(meta: dict) -> Geometry:
 
 def process_dump(raw: bytes, cal: Calibration, *,
                  coherent_loops: int = 4,
-                 two_ray: bool = True) -> ShotMeasurement:
+                 two_ray: bool = True,
+                 net_range_m: float | None = None) -> ShotMeasurement:
     """Full pipeline on one dump's bytes.
 
     ``coherent_loops`` trades point count for per-point SNR (see doa);
@@ -108,7 +109,11 @@ def process_dump(raw: bytes, cal: Calibration, *,
         geo.n_frames = got_frames
         cube = cube[:got_frames]
     mti = tracking.mti_filter(cube)
-    track = tracking.find_ball(mti, geo)
+    # keep everything 25 cm short of the net: a ball riding up the net is
+    # an upward mover that tilts every angle fit high (user setup: net
+    # ~3 m past the tee)
+    max_r = (net_range_m - 0.25) if net_range_m else None
+    track = tracking.find_ball(mti, geo, max_range_m=max_r)
     result = ShotMeasurement(geometry=geo, ball_found=track is not None,
                              track=track)
     if track is None:

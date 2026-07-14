@@ -98,13 +98,23 @@ def loop_power(mti: np.ndarray) -> np.ndarray:
 
 
 def _detections(power: np.ndarray, geo: Geometry,
-                snr_min: float = 4.0) -> tuple[np.ndarray, np.ndarray]:
-    """Per-loop sub-bin peaks inside the ball gates, SNR-gated."""
+                snr_min: float = 4.0,
+                max_range_m: float | None = None
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """Per-loop sub-bin peaks inside the ball gates, SNR-gated.
+
+    ``max_range_m`` clamps the gates — set it just short of the NET so
+    ball-riding-up-the-net motion never enters the track or angle fits.
+    """
     n_samples = power.shape[1]
     res = geo.range_res_m
     loops_idx: list[int] = []
     bins: list[float] = []
     for lo_m, hi_m in BALL_GATES_M:
+        if max_range_m is not None:
+            hi_m = min(hi_m, max_range_m)
+        if hi_m <= lo_m:
+            continue
         g_lo, g_hi = int(lo_m / res), min(int(hi_m / res), n_samples - 2)
         if g_hi - g_lo < 3:
             continue
@@ -126,10 +136,11 @@ def _detections(power: np.ndarray, geo: Geometry,
 
 
 def find_ball(mti: np.ndarray, geo: Geometry, *,
-              iterations: int = 2500, seed: int = 1) -> BallTrack | None:
+              iterations: int = 2500, seed: int = 1,
+              max_range_m: float | None = None) -> BallTrack | None:
     """RANSAC the ball's range walk; None when no plausible streak exists."""
     power = loop_power(mti)
-    loops_idx, bins = _detections(power, geo)
+    loops_idx, bins = _detections(power, geo, max_range_m=max_range_m)
     if loops_idx.size < 8:
         return None
     res = geo.range_res_m
