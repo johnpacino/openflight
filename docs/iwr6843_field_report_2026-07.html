@@ -365,7 +365,7 @@
       <rect x="371.6" y="29" width="18.0" height="16" rx="1.5" fill="var(--accent)"></rect>
       <rect x="446.0" y="29" width="18.0" height="16" rx="1.5" fill="var(--accent)"></rect>
       <text x="530" y="36" class="dg-lab">72 MS · 6 FRAMES</text>
-      <text x="530" y="49" class="dg-body">LA ±22.5° · dump 7.6 s</text>
+      <text x="530" y="49" class="dg-body">angle fits: unstable — too few looks · dump 7.6 s</text>
       <text x="8" y="85" class="dg-lab2">B</text>
       <rect x="74" y="70" width="446" height="22" rx="3" fill="none" stroke="var(--line)"></rect>
       <rect x="74.0" y="73" width="8.9" height="16" rx="1.5" fill="var(--accent)"></rect>
@@ -381,7 +381,7 @@
       <rect x="446.0" y="73" width="8.9" height="16" rx="1.5" fill="var(--accent)"></rect>
       <rect x="483.2" y="73" width="8.9" height="16" rx="1.5" fill="var(--accent)"></rect>
       <text x="530" y="80" class="dg-lab">72 MS · 12 FRAMES</text>
-      <text x="530" y="93" class="dg-body">LA ±6.5° · dump 7.6 s</text>
+      <text x="530" y="93" class="dg-body">angle fits: best, zero failures · dump 7.6 s</text>
       <text x="8" y="129" class="dg-lab2">C</text>
       <rect x="74" y="114" width="446" height="22" rx="3" fill="none" stroke="var(--line)"></rect>
       <rect x="74.0" y="117" width="18.0" height="16" rx="1.5" fill="var(--muted)"></rect>
@@ -397,7 +397,7 @@
       <rect x="446.0" y="117" width="18.0" height="16" rx="1.5" fill="var(--muted)"></rect>
       <rect x="483.2" y="117" width="18.0" height="16" rx="1.5" fill="var(--muted)"></rect>
       <text x="530" y="124" class="dg-lab">72 MS · 12 FRAMES</text>
-      <text x="530" y="137" class="dg-body">LA ±9.1° · dump 7.6 s</text>
+      <text x="530" y="137" class="dg-body">angle fits: mid — blurred pixels · dump 7.6 s</text>
       <text x="8" y="173" class="dg-lab2">D1</text>
       <rect x="74" y="158" width="446" height="22" rx="3" fill="none" stroke="var(--line)"></rect>
       <rect x="74.0" y="161" width="8.9" height="16" rx="1.5" fill="var(--muted)"></rect>
@@ -413,7 +413,7 @@
       <rect x="446.0" y="161" width="8.9" height="16" rx="1.5" fill="var(--muted)"></rect>
       <rect x="483.2" y="161" width="8.9" height="16" rx="1.5" fill="var(--muted)"></rect>
       <text x="530" y="168" class="dg-lab">72 MS · 12 FRAMES</text>
-      <text x="530" y="181" class="dg-body">LA ±7.8° · dump 3.7 s</text>
+      <text x="530" y="181" class="dg-body">angle fits: near-B · dump 3.7 s</text>
       <text x="8" y="217" class="dg-lab2">D2</text>
       <rect x="74" y="202" width="595" height="22" rx="3" fill="none" stroke="var(--line)"></rect>
       <rect x="74.0" y="205" width="8.9" height="16" rx="1.5" fill="var(--muted)"></rect>
@@ -441,9 +441,9 @@
       <rect x="619.6" y="205" width="8.9" height="16" rx="1.5" fill="var(--muted)"></rect>
       <rect x="644.4" y="205" width="8.9" height="16" rx="1.5" fill="var(--muted)"></rect>
       <text x="679" y="212" class="dg-lab">96 MS · 24 FRAMES</text>
-      <text x="679" y="225" class="dg-body">LA ±10.3° · dump 7.6 s</text>
+      <text x="679" y="225" class="dg-body">angle fits: no gain past 12 · dump 7.6 s</text>
     </svg>
-    <figcaption><b>Same 768 KB, five ways.</b> Block width = burst length (16 or 32 chirp pairs); shade = range-bin size; row length = the time window each firmware can freeze. A spent big bursts sparsely; B spent thin bursts densely; C kept fat bursts by coarsening bins; D1 is B's rhythm at half the bytes; D2 pushed to 24 frames. Launch-angle consistency over 8 swings each (same 9-iron) picked the winner.</figcaption>
+    <figcaption><b>Same 768 KB, five ways.</b> Block width = burst length (16 or 32 chirp pairs); shade = range-bin size; row length = the time window each firmware can freeze. A spent big bursts sparsely; B spent thin bursts densely; C kept fat bursts by coarsening bins; D1 is B's rhythm at half the bytes; D2 pushed to 24 frames. Per-shot fit quality across 8 swings each picked the winner — deliberately NOT the swing-to-swing launch spread, which mixes instrument error with a real golfer's real variation.</figcaption>
   </figure>
 </div>
 
@@ -452,28 +452,29 @@
     <p class="sec-label">Experiment</p>
     <h2>Five firmwares, forty swings, one memory budget</h2>
     <p>The chip's capture memory is a hard 768&nbsp;KB, and everything trades inside it: <em>window length &times; frame count &times; bytes per frame</em>. Rather than argue theory, we built five allocations and hit eight 9-irons against each in a single day, every dump self-labeling its variant.</p>
-    <p>Three lessons. <strong>Frames are the currency of launch-angle quality</strong> — going from 6 looks at the flight to 12 (A&rarr;B) tightened angle consistency 3&times;, even though each look got thinner. <strong>But only clean frames count</strong> — D2's 24 coarse-binned frames lost to B's 12 fine ones; past a dozen frames, per-snapshot signal quality dominates. And <strong>fine range bins matter beyond speed</strong>: they separate ball from body and club from hands, and they feed the floor-bounce model that coarse bins starve.</p>
+    <p>Three lessons. <strong>Frames are the currency of launch-angle quality</strong> — going from 6 looks at the flight to 12 (A&rarr;B) made the angle fits sharply more dependable — the most usable measurements per shot, the cleanest per-shot fits, zero failed swings — even though each look got thinner. <strong>But only clean frames count</strong> — D2's 24 coarse-binned frames produced noisier fits than B's 12 fine ones; past a dozen frames, per-snapshot signal quality dominates. And <strong>fine range bins matter beyond speed</strong>: they separate ball from body and club from hands, and they feed the floor-bounce model that coarse bins starve.</p>
     <div class="compare"><table>
       <tr><th>Variant</th><th>Recipe</th><th>Why we built it</th><th>Outcome</th></tr>
-      <tr><td><b>A</b> (v3)</td><td>32 loops &times; 6 frames &times; 12&nbsp;ms · fine bins</td><td>first production build; proved the transport and set the baseline</td><td>ball on every swing, but ~5 looks at the flight made angles inconsistent (±22.5°) — retired as a capture recipe, its transport lives on</td></tr>
-      <tr><td><b>B</b></td><td>16 &times; 12 &times; 6&nbsp;ms · fine</td><td>test &ldquo;frames are the currency&rdquo;: double the looks by thinning each burst</td><td><b>winner</b> — ±6.5°, zero failed shots; now production</td></tr>
-      <tr><td><b>C</b></td><td>32 &times; 12 &times; 6&nbsp;ms · coarse</td><td>isolate the cost of coarse bins while keeping deep bursts</td><td>frames helped, but coarse bins cost signal and separation (±9.1°) — ruled out for the primary recipe</td></tr>
-      <tr><td><b>D1</b></td><td>16 &times; 12 &times; 6&nbsp;ms · coarse</td><td>B's rhythm at half the data: does quality survive a 3.7&nbsp;s dump?</td><td>nearly B (±7.8°) at twice the shot cadence — kept as the fast &ldquo;range mode&rdquo;</td></tr>
-      <tr><td><b>D2</b></td><td>16 &times; 24 &times; 4&nbsp;ms · coarse</td><td>probe the ceiling: do frames keep paying past 12?</td><td>no (±10.3°) — past ~a dozen looks, per-look quality dominates; bonus: proved the 4&nbsp;ms frame floor and the longest club-data windows</td></tr>
+      <tr><td><b>A</b> (v3)</td><td>32 loops &times; 6 frames &times; 12&nbsp;ms · fine bins</td><td>first production build; proved the transport and set the baseline</td><td>ball on every swing, but ~5 looks at the flight left angle fits balancing on too little — retired as a capture recipe, its transport lives on</td></tr>
+      <tr><td><b>B</b></td><td>16 &times; 12 &times; 6&nbsp;ms · fine</td><td>test &ldquo;frames are the currency&rdquo;: double the looks by thinning each burst</td><td><b>winner</b> — cleanest fits, most usable points, zero failed shots; now production</td></tr>
+      <tr><td><b>C</b></td><td>32 &times; 12 &times; 6&nbsp;ms · coarse</td><td>isolate the cost of coarse bins while keeping deep bursts</td><td>frames helped, but coarse bins cost signal and separation — ruled out for the primary recipe</td></tr>
+      <tr><td><b>D1</b></td><td>16 &times; 12 &times; 6&nbsp;ms · coarse</td><td>B's rhythm at half the data: does quality survive a 3.7&nbsp;s dump?</td><td>nearly B's fit quality at twice the shot cadence — kept as the fast &ldquo;range mode&rdquo;</td></tr>
+      <tr><td><b>D2</b></td><td>16 &times; 24 &times; 4&nbsp;ms · coarse</td><td>probe the ceiling: do frames keep paying past 12?</td><td>no — fits got noisier, not better: past ~a dozen looks, per-look quality dominates; bonus: proved the 4&nbsp;ms frame floor and the longest club-data windows</td></tr>
     </table></div>
     <p><strong>Variant B is now production</strong> (16 chirp pairs &times; 12 frames &times; 6&nbsp;ms, full-resolution bins). D1 stays in the quiver for fast-cadence range sessions — same rhythm, coarser bins, dumps in 3.7&nbsp;s instead of 7.6 for ~1&deg; of consistency. And the path forward is drawn: on-chip pre-processing that keeps only the range bins that matter would fit 24 full-resolution frames in half the memory — B's quality, twice the frames, ~3-second dumps.</p>
   </section>
 
   <section>
-    <p class="sec-label">Blind spots</p>
-    <h2>Where this radar can't see — and what we do about it</h2>
+    <p class="sec-label">Failure modes</p>
+    <h2>Where it can fail — and the engineering around it</h2>
     <ul class="findings">
       <li><span class="tag">solved</span><b>Doppler lies about fast balls.</b> The textbook radar speed trick aliases above ~30&nbsp;mph with our chirp timing — a 110&nbsp;mph ball reports as walking pace. We simply don't use it: with 4.7&nbsp;cm range pixels, speed comes from the ball's <em>position change</em> across the window — unambiguous at any speed, and repeatable to ~1&nbsp;cm on real shots. This is a solved problem, not a compromise: it's the speed source that makes single-chip ball speed viable.</li>
+      <li><span class="tag">checked</span><b>Angles have no speed blind spot.</b> A fair worry given the old rig: the K-LD7 had true blind zones — ball speeds whose aliased Doppler folded onto clutter and erased the detection entirely, angle and all. Here, angle comes from phase differences <em>across the antennas at a single instant</em>, which doesn't care how fast the ball moves, and the motion correction it uses runs on the never-aliasing range-walk speed. A 112&nbsp;mph ball yields exactly as much angle data as a 90&nbsp;mph one. One soft spot we know to watch: at radial speeds near ~60 and ~120&nbsp;mph, the clutter filter can partially dim the ball within a burst (its chirp-to-chirp phase momentarily mimics a static object). The ball's own march across range pixels keeps it from vanishing — but since long clubs brush 120&nbsp;mph, it's flagged for explicit checking in the ground-truth session.</li>
       <li><span class="tag">by design</span><b>The radar blinks.</b> It chirps ~1.4&nbsp;ms out of every 6, so a shot is sampled in 12 bursts rather than continuously. With ~80–100 usable measurements per shot, the blinks haven't cost a single ball this weekend.</li>
       <li><span class="tag">config</span><b>Near field and the net.</b> Below ~0.35&nbsp;m the transmitter's own leakage masks returns, and past the net everything is fabric physics. Both edges are now measured configuration — tape the tee, tape the net, and the pipeline fits only the clean flight between them (a ball riding up the net is an upward mover that would otherwise tilt angles high).</li>
       <li><span class="tag">physics</span><b>The floor bounce is still the enemy</b> — the same one that beat the K-LD7. The difference is the arsenal: at 60&nbsp;GHz the bounce is often <em>separable in range</em> (impossible at 24&nbsp;GHz), the 8-element array can tell two arrival angles apart, per-point quality gates reject corrupted snapshots, and the two-ray estimator models the reflection as a second, geometry-locked signal — using it instead of suffering it. Residual bias is measurable and correctable against ground truth.</li>
       <li><span class="tag">throughput</span><b>~8 s blind after each shot</b> while the ring drains (down from 17). Roadmap: on-chip pre-processing keeps only the range pixels that matter — ~3&nbsp;s dumps and twice the frames, no new hardware.</li>
-      <li><span class="tag">unproven</span><b>Absolute accuracy awaits ground truth.</b> Precision is measured (~±2° per-shot fit; estimators consistent across sessions); the systematic offsets between estimators (3–4°) are exactly what a TrackMan side-by-side turns into correction constants — the same play that calibrated the K-LD7, with far better raw material.</li>
+      <li><span class="tag">unproven</span><b>Absolute accuracy awaits ground truth.</b> Within a single shot the trajectory fits to a couple of degrees, and the estimators agree with themselves across sessions; the systematic offsets between estimators (a few degrees) are exactly what a TrackMan side-by-side turns into correction constants — the same play that calibrated the K-LD7, with far better raw material.</li>
     </ul></section>
 
   <section>
