@@ -45,3 +45,16 @@ cosine correction. Baseline before this work: ~4.6 deg at 80%.
 
 Run any script with `uv run python <script>` from this directory (matplotlib
 needed for the plotting ones: `uv run --with matplotlib ...`).
+
+## Two-ray v2: joint whole-shot fit (2026-07-15 — NEGATIVE result, informative)
+
+`tworay_v2.py` — parameterizes one trajectory (LA through the known tee,
+gravity from measured speed) and fits ALL snapshots jointly (per-snapshot
+amplitudes closed-form). Six variants scored; ALL lose to v1's
+per-snapshot-heights + weighted line (best v2 = 3.21 vs v1 2.58 pooled,
+even on identical snapshot pools). Interpretation: the binding constraint
+is FORWARD-MODEL fidelity, not estimator efficiency — v1's per-snapshot
+height freedom absorbs the systematic two-source model error (corrupted
+zone, low-flight suppression) that the joint ML fit faithfully converts
+into launch-angle error. RE-TRY v2 after the wide-angle calibration /
+corruption root-cause lands: with a correct model the ordering should flip.
