@@ -24,23 +24,32 @@ DEFAULT_FRAME_PERIOD_S = 0.012   # header field is 0 on pre-v3 firmware dumps
 # 2026-07-14 session (holdout MAE in comments). PROVISIONAL: one session of
 # evidence; revalidate at the next truth session before trusting further.
 TH_GATE_RAD = -0.0436            # -2.5 deg: late-track corrupted zone starts
-CLUB_POLICY: dict[str, dict] = {
-    # wedges never climb out of the clean zone; the exact floor-referenced
-    # tee anchor fixes their short lever arm                    (SW 1.31 deg)
-    "wedge": {"anchor_tee": True},
-    # mid irons climb past boresight mid-track: gate the corrupted zone and
-    # restore the lever arm with the anchor              (9i 2.50 / 7i 3.17)
-    "mid_iron": {"anchor_tee": True, "th_gate_rad": TH_GATE_RAD},
-    # long irons sit near the MTI notch; keep every clean snapshot,
-    # downweight mid-mix ones, skip the anchor (track starts can be
-    # notch-damaged)                                            (5i 2.43 deg)
-    "long_iron": {"dominance": True, "x_max_m": 3.8},
-    "driver": {"dominance": True, "x_max_m": 3.8},          # (Dr 0.92 deg)
-    "default": {"dominance": True, "x_max_m": 3.8},         # (pooled 2.96)
-}
+
+# Estimator policy keys off PER-SHOT OBSERVABLES, not the golfer's club
+# distribution (club labels only prime the tracker's speed floor below):
+# - "far": near an MTI notch (or very fast) the track start is suspect and
+#   bursts are degraded -> no tee anchor, dominance-weighted, near points
+#   only. TrackMan-scored: 5i 2.43 / driver 0.92 deg holdout.
+# - "anchored": everything else -> exact floor-referenced tee anchor +
+#   corrupted-zone angle gate (a no-op for flights that stay low), with an
+#   ungated retry when the gate starves the fit.
+#   TrackMan-scored: SW 1.31 / 9i 2.50 / 7i 3.17 deg holdout.
+POLICY_FAR = {"dominance": True, "x_max_m": 3.8}
+POLICY_ANCHORED = {"anchor_tee": True, "th_gate_rad": TH_GATE_RAD}
+NOTCH_SPACING_MS = 26.93         # MTI notch comb: loop phase ~ 0 mod 2pi
+# Dirichlet attenuation width: suppression is >50% only within ~2 m/s of a
+# notch center. n=1 (26.93) is EXCLUDED: wedge balls there are close-range/
+# strong enough to survive, and treating them as notched costs the anchor
+# (SW 2.1 -> 7 deg regression when tried).
+NOTCH_HALF_WIDTH_MS = 2.5
+FAST_BALL_MS = 55.0
+
 # slowest RADIAL speed a real ball can read, per class: must sit ABOVE the
 # class's post-impact club (~0.7x ball) and the flying tee (~25 m/s), or
-# they steal the RANSAC track (the 2026-07-14 driver/SW live bug)
+# they steal the RANSAC track (the 2026-07-14 driver/SW live bug).
+# NOTE these floors assume adult full-swing speeds; a junior's driver ball
+# (~35 m/s radial) would need the class floors scaled or a max-range-reached
+# candidate rule in the tracker (next-session item).
 CLUB_MIN_BALL_MS: dict[str, float] = {
     "wedge": 26.5,        # slowest real SW ball ~27.5 radial
     "mid_iron": 34.0,     # 9i ball >=39; 9i club ~31
@@ -48,6 +57,13 @@ CLUB_MIN_BALL_MS: dict[str, float] = {
     "driver": 50.0,       # ball >=58; club ~45
     "default": 30.0,
 }
+
+
+def near_mti_notch(speed_ms: float,
+                   half_width_ms: float = NOTCH_HALF_WIDTH_MS) -> bool:
+    """True when a radial speed sits inside the burst-MTI notch comb."""
+    n = round(speed_ms / NOTCH_SPACING_MS)
+    return n >= 2 and abs(speed_ms - n * NOTCH_SPACING_MS) < half_width_ms
 
 # no-measurement gate: junk captures (ring overwritten, notch-broken tracks)
 # produce thin ragged tracks whose angles AND speed are wrong; a product
@@ -58,7 +74,11 @@ REJECT_MIN_SPAN_S = 0.018
 
 
 def club_class(club: str | None) -> str:
-    """Free-text club name -> policy class (best effort, default on miss)."""
+    """Free-text club name -> tracker speed-floor class (default on miss).
+
+    Only primes the tracker's minimum credible ball speed; the ESTIMATOR
+    policy is chosen from per-shot observables, never the club label.
+    """
     if not club:
         return "default"
     text = club.strip().lower()
@@ -90,6 +110,8 @@ class ShotMeasurement:
     quality: str = "ok"                    # ok | low | reject
     ball_speed_corrected_mph: float | None = None
     club: str | None = None
+    policy: str = ""                       # far | anchored | anchored_ungated
+    notch_recovered: bool = False          # window-scope MTI retry used
 
     @property
     def ball_speed_mph(self) -> float | None:
@@ -123,6 +145,8 @@ class ShotMeasurement:
             "n_angle_points": self.n_angle_points,
             "quality": self.quality,
             "club": self.club,
+            "policy": self.policy,
+            "notch_recovered": self.notch_recovered,
         }
 
     def summary(self) -> str:
@@ -187,15 +211,36 @@ def process_dump(raw: bytes, cal: Calibration, *,
     # ~3 m past the tee)
     max_r = (net_range_m - 0.25) if net_range_m else None
     klass = club_class(club)
+    min_ms = CLUB_MIN_BALL_MS[klass]
     track = tracking.find_ball(mti, geo, max_range_m=max_r,
-                               min_ball_ms=CLUB_MIN_BALL_MS[klass])
+                               min_ball_ms=min_ms)
+
+    def track_broken(trk: BallTrack | None) -> bool:
+        return (trk is None
+                or trk.rms_bins >= REJECT_RMS_BINS
+                or trk.n_inliers < REJECT_MIN_INLIERS
+                or (trk.t_last - trk.t_first) < REJECT_MIN_SPAN_S)
+
+    notch_used = False
+    if track_broken(track) or (track is not None
+                               and near_mti_notch(track.speed_ms)):
+        # burst-MTI notches balls near n x 26.93 m/s and shatters their
+        # range walk; the window-scope filter keeps them (statics still
+        # cancel over the full window)
+        mti_w = tracking.mti_filter(cube, scope="window")
+        track_w = tracking.find_ball(mti_w, geo, max_range_m=max_r,
+                                     min_ball_ms=min_ms)
+        if not track_broken(track_w) and (
+                track_broken(track)
+                or track_w.rms_bins < track.rms_bins
+                or track_w.n_inliers >= track.n_inliers):
+            mti, track, notch_used = mti_w, track_w, True
     result = ShotMeasurement(geometry=geo, ball_found=track is not None,
-                             track=track, club=club)
+                             track=track, club=club,
+                             notch_recovered=notch_used)
     if track is None:
         return result
-    if (track.rms_bins >= REJECT_RMS_BINS
-            or track.n_inliers < REJECT_MIN_INLIERS
-            or (track.t_last - track.t_first) < REJECT_MIN_SPAN_S):
+    if track_broken(track):
         result.quality = "reject"
         return result
     if track.low_confidence:
@@ -213,8 +258,19 @@ def process_dump(raw: bytes, cal: Calibration, *,
     if two_ray:
         series = doa.snapshot_series(mti, track, geo, cal, coherent_loops=1)
         snaps = [(t, r, s) for t, r, s, _snr in series]
-        fit = trajectory.fit_two_ray(snaps, cal, min_explained=0.70,
-                                     weighted=True, **CLUB_POLICY[klass])
+        # policy from PER-SHOT observables (see POLICY_* above)
+        if near_mti_notch(track.speed_ms) or track.speed_ms >= FAST_BALL_MS:
+            result.policy = "far"
+            fit = trajectory.fit_two_ray(snaps, cal, min_explained=0.70,
+                                         weighted=True, **POLICY_FAR)
+        else:
+            result.policy = "anchored"
+            fit = trajectory.fit_two_ray(snaps, cal, min_explained=0.70,
+                                         weighted=True, **POLICY_ANCHORED)
+            if fit is None:                # gate starved the fit: retry open
+                result.policy = "anchored_ungated"
+                fit = trajectory.fit_two_ray(snaps, cal, min_explained=0.70,
+                                             weighted=True, anchor_tee=True)
         if fit is not None:
             result.fits[fit.method] = fit
     angle = result.launch_angle_deg

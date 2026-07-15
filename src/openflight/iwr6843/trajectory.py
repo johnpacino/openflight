@@ -169,6 +169,10 @@ def fit_two_ray(snap_points: list[tuple[float, float, np.ndarray]],
         x_m = float(rng_m)                 # slant ~ horizontal at these angles
         if x_max_m is not None and x_m > x_max_m:
             continue
+        # Bartlett-peak gate for the corrupted zone. Tested alternative
+        # (gating on the solved height's implied angle) scored WORSE on
+        # truth (9i 2.5 -> 4.6 deg): corrupted snapshots solve to plausible
+        # heights, while their Bartlett peak drifts high and betrays them.
         if th_gate_rad is not None and est_bartlett(snap) > th_gate_rad:
             continue
         height, explained, imfrac = _two_ray_solve(

@@ -99,15 +99,24 @@ class BallTrack:
         return (2.0 * q2 * t_s + q1) * range_res_m
 
 
-def mti_filter(cube: np.ndarray) -> np.ndarray:
+def mti_filter(cube: np.ndarray, scope: str = "burst") -> np.ndarray:
     """Raw cube [nf, cpf, nrx, ns] -> complex MTI [nf, 2(tx), loops, nrx, ns].
 
-    Range FFT then per-burst mean removal over loops: statics cancel.
+    Range FFT then static removal. ``scope="burst"`` subtracts each bin's
+    mean over the loops of one burst — the standard filter, but it NOTCHES
+    balls whose loop-to-loop phase is ~0 mod 2pi (radial speed near
+    n x 26.93 m/s): the ball looks static within a burst and is removed,
+    shattering the range walk (the 2026-07-14 5-iron failures).
+    ``scope="window"`` subtracts the mean over ALL bursts: statics are
+    constant across the full 72 ms window and still cancel, while a
+    notch-speed ball moves range bins across the window and survives.
     """
     n_frames, cpf, n_rx, n_samples = cube.shape
     tdm = cube.reshape(n_frames, cpf // 2, 2, n_rx, n_samples)
     tdm = tdm.transpose(0, 2, 1, 3, 4)
     rfft = np.fft.fft(tdm, axis=-1)
+    if scope == "window":
+        return rfft - rfft.mean(axis=(0, 2), keepdims=True)
     return rfft - rfft.mean(axis=2, keepdims=True)
 
 

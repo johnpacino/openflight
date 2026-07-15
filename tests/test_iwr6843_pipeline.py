@@ -271,6 +271,34 @@ def test_thin_capture_rejected(cal):
     assert "rejected" in shot.summary()
 
 
+def test_notch_speed_ball_recovered(cal):
+    """A ball at 2 x 26.93 m/s is invisible to burst-MTI (loop phase ~ 0
+    mod 2pi); the window-scope retry must recover track AND angle."""
+    from openflight.iwr6843.tracking import find_ball, mti_filter
+    from openflight.iwr6843.dump import parse_dump
+    notch_v = 2 * 26.93
+    raw = synth_shot(speed_ms=notch_v, noise=4.0)
+    meta, cube = parse_dump(raw)
+    geo = geometry_from_header(meta)
+    burst_track = find_ball(mti_filter(cube), geo)
+    shot = process_dump(raw, cal)
+    assert shot.ball_found and shot.quality != "reject"
+    assert shot.notch_recovered
+    if burst_track is not None:           # burst track is visibly degraded
+        assert shot.track.rms_bins < burst_track.rms_bins
+    assert shot.track.speed_ms == pytest.approx(notch_v, rel=0.03)
+    assert shot.policy == "far"           # notch-near -> no-anchor config
+    assert shot.launch_angle_deg == pytest.approx(18.0, abs=2.5)
+
+
+def test_policy_is_observable_keyed(cal):
+    """Same club label, different speeds -> different policy."""
+    slow = process_dump(synth_shot(speed_ms=45.0), cal, club="7Iron")
+    fast = process_dump(synth_shot(speed_ms=60.0), cal, club="7Iron")
+    assert slow.policy.startswith("anchored")
+    assert fast.policy == "far"
+
+
 def test_club_class_mapping():
     from openflight.iwr6843.shot import club_class
     assert club_class("SandWedge") == "wedge"
