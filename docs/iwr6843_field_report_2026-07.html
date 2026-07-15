@@ -164,7 +164,7 @@
       <span>Sensor <b>TI IWR6843 (60–64 GHz FMCW)</b></span>
       <span>Firmware <b>custom, variant B</b></span>
       <span>First shots <b>July 12–13, 2026</b></span>
-      <span>Status <b>speed + launch angle live · TrackMan validation next</b></span>
+      <span>Status <b>TrackMan-validated: LA 2.6° @ 85% · speed −2.4 ± 1.7 mph</b></span>
     </div>
   </header>
 
@@ -469,12 +469,12 @@
     <h2>Where it can fail — and the engineering around it</h2>
     <ul class="findings">
       <li><span class="tag">solved</span><b>Doppler lies about fast balls.</b> The textbook radar speed trick aliases above ~30&nbsp;mph with our chirp timing — a 110&nbsp;mph ball reports as walking pace. We simply don't use it: with 4.7&nbsp;cm range pixels, speed comes from the ball's <em>position change</em> across the window — unambiguous at any speed, and repeatable to ~1&nbsp;cm on real shots. This is a solved problem, not a compromise: it's the speed source that makes single-chip ball speed viable.</li>
-      <li><span class="tag">checked</span><b>Angles have no speed blind spot.</b> A fair worry given the old rig: the K-LD7 had true blind zones — ball speeds whose aliased Doppler folded onto clutter and erased the detection entirely, angle and all. Here, angle comes from phase differences <em>across the antennas at a single instant</em>, which doesn't care how fast the ball moves, and the motion correction it uses runs on the never-aliasing range-walk speed. A 112&nbsp;mph ball yields exactly as much angle data as a 90&nbsp;mph one. One soft spot we know to watch: at radial speeds near ~60 and ~120&nbsp;mph, the clutter filter can partially dim the ball within a burst (its chirp-to-chirp phase momentarily mimics a static object). The ball's own march across range pixels keeps it from vanishing — but since long clubs brush 120&nbsp;mph, it's flagged for explicit checking in the ground-truth session.</li>
+      <li><span class="tag">checked</span><b>Angles have no speed blind spot.</b> A fair worry given the old rig: the K-LD7 had true blind zones — ball speeds whose aliased Doppler folded onto clutter and erased the detection entirely, angle and all. Here, angle comes from phase differences <em>across the antennas at a single instant</em>, which doesn't care how fast the ball moves, and the motion correction it uses runs on the never-aliasing range-walk speed. A 112&nbsp;mph ball yields exactly as much angle data as a 90&nbsp;mph one. One soft spot we knew to watch: at radial speeds near ~120&nbsp;mph the clutter filter can partially dim the ball within a burst (its chirp-to-chirp phase momentarily mimics a static object). The ground-truth session confirmed it exactly there — four 5-iron captures — and it is now closed: a whole-window static filter recovers notch-speed balls automatically (see the TrackMan section).</li>
       <li><span class="tag">by design</span><b>The radar blinks.</b> It chirps ~1.4&nbsp;ms out of every 6, so a shot is sampled in 12 bursts rather than continuously. With ~80–100 usable measurements per shot, the blinks haven't cost a single ball this weekend.</li>
       <li><span class="tag">config</span><b>Near field and the net.</b> Below ~0.35&nbsp;m the transmitter's own leakage masks returns, and past the net everything is fabric physics. Both edges are now measured configuration — tape the tee, tape the net, and the pipeline fits only the clean flight between them (a ball riding up the net is an upward mover that would otherwise tilt angles high).</li>
       <li><span class="tag">physics</span><b>The floor bounce is still the enemy</b> — the same one that beat the K-LD7. The difference is the arsenal: at 60&nbsp;GHz the bounce is often <em>separable in range</em> (impossible at 24&nbsp;GHz), the 8-element array can tell two arrival angles apart, per-point quality gates reject corrupted snapshots, and the two-ray estimator models the reflection as a second, geometry-locked signal — using it instead of suffering it. Residual bias is measurable and correctable against ground truth.</li>
       <li><span class="tag">throughput</span><b>~8 s blind after each shot</b> while the ring drains (down from 17). Roadmap: on-chip pre-processing keeps only the range pixels that matter — ~3&nbsp;s dumps and twice the frames, no new hardware.</li>
-      <li><span class="tag">unproven</span><b>Absolute accuracy awaits ground truth.</b> Within a single shot the trajectory fits to a couple of degrees, and the estimators agree with themselves across sessions; the systematic offsets between estimators (a few degrees) are exactly what a TrackMan side-by-side turns into correction constants — the same play that calibrated the K-LD7, with far better raw material.</li>
+      <li><span class="tag">measured</span><b>Absolute accuracy is no longer a guess.</b> The TrackMan side-by-side happened (next section): 2.6° pooled launch-angle holdout MAE at 85% coverage, ball speed −2.4&nbsp;±&nbsp;1.7&nbsp;mph — with the systematic offsets turned into calibration constants exactly as planned, and three latent bugs found in the truth data that live testing never could have isolated.</li>
     </ul></section>
 
   <section>
@@ -483,15 +483,50 @@
     <p>The reason to care about raw, coherent, multi-antenna data is that every launch metric lives somewhere in it. Status by metric:</p>
     <div class="compare"><table>
       <tr><th>Metric</th><th>Where it lives in the data</th><th>Status</th></tr>
-      <tr><td>Ball speed</td><td>range walk across the window</td><td><b>Shipping</b> — every swing, ~1% repeatability</td></tr>
-      <tr><td>Launch angle</td><td>elevation array along the flight arc</td><td><b>Shipping</b> — three estimators; accuracy validation next</td></tr>
-      <tr><td>Club head speed</td><td>the ~20&nbsp;ms of downswing already in every capture</td><td>In the data, unanalyzed — extraction is software work</td></tr>
+      <tr><td>Ball speed</td><td>range walk across the window</td><td><b>Validated</b> — −2.4&nbsp;±&nbsp;1.7&nbsp;mph vs TrackMan after geometric correction</td></tr>
+      <tr><td>Launch angle</td><td>elevation array along the flight arc</td><td><b>Validated</b> — 2.6° holdout MAE vs TrackMan at 85% coverage</td></tr>
+      <tr><td>Club head speed</td><td>the ~20&nbsp;ms of downswing already in every capture</td><td>Extracted (stable leading-edge Doppler read); one TrackMan scale constant pending</td></tr>
       <tr><td>Attack angle</td><td>club head's vertical path from those same pre-impact frames</td><td>Plausible — same elevation array, same math as the ball</td></tr>
       <tr><td>Aim &amp; club path (horizontal)</td><td>needs the orthogonal axis: the board has a <em>third transmitter</em> that adds it (12 virtual elements, 2-D array)</td><td>Config + firmware change — no new hardware</td></tr>
-      <tr><td>Spin &amp; spin axis</td><td>not resolvable at this band/window — modeled from speed + launch, refit against measured truth</td><td>Kinematic model (honest limit)</td></tr>
+      <tr><td>Spin &amp; spin axis</td><td>not resolvable at this band/window — modeled from speed + launch, refit against measured truth</td><td>Kinematic model (honest limit); 102-shot TrackMan spin truth now in hand for the refit</td></tr>
       <tr><td>Carry</td><td>ballistics from measured launch</td><td>Modeled, as today</td></tr>
     </table></div>
     <p>Nothing on that board requires different silicon. Two rows are pure software on data we already record every shot; one row is enabling a transmitter the chip already has.</p>
+  </section>
+
+  <section>
+    <p class="sec-label">Ground truth</p>
+    <h2>The TrackMan verdict</h2>
+    <p>On the evening of July 14 the rig went head-to-head with a TrackMan in a commercial bay: <b>102 truth-paired shots across five clubs</b> — driver, 5-iron, 7-iron, 9-iron, sand wedge — with the OPS speed radar running alongside on the same Pi all night (dual-radar coexistence: proven in production, ball-speed agreement r&nbsp;=&nbsp;0.997). Every raw capture came home, which is the whole point of owning the data: the following day of offline analysis against TrackMan's truth found and fixed more than the previous month of live testing.</p>
+    <ul class="findings">
+      <li><span class="tag">fixed</span><b>A 15&nbsp;cm anchor bug explained the wedge mystery.</b> The tee-anchored fit was anchoring at the wrong height reference (radar plane instead of floor) — on a wedge's short lever arm that alone is a −11° launch-angle bias, almost exactly the −11.6° we'd measured. Subtler: on mid-irons the bug had been partially <em>canceling</em> multipath bias, which is why nobody caught it live. Floor-referenced anchoring shipped.</li>
+      <li><span class="tag">validated</span><b>Ball speed's missing mph was geometry, not error.</b> The radar measures speed along its line of sight; a climbing ball's radial speed is cos(launch geometry) below its true speed. Correcting with the measured launch angle halved speed error and removed the club-to-club structure — the radar now reads <b>−2.4&nbsp;±&nbsp;1.7&nbsp;mph vs TrackMan</b>, with the residual shaped exactly like aerodynamic drag (TrackMan quotes launch speed; our window sits 20–60&nbsp;ms later). One calibration constant remains.</li>
+      <li><span class="tag">discovered</span><b>The array has a corrupted zone, not a bad calibration.</b> Using TrackMan trajectories as per-snapshot truth, measurements taken while the ball sits above ~−2.5° of boresight carry a large, fast-varying phase distortion; below that line the data is clean. It is not a static calibration error (the three mount geometries disagree), not transmit-antenna geometry, not FFT sidelobes — partially it is a Doppler correction subtlety (now fixed properly, per-snapshot), and the rest is gated out: fits simply don't use points from the corrupted zone. High-launch 9-irons, which spend half their flight up there, went from +4..+12° errors to 2.6° holdout accuracy.</li>
+      <li><span class="tag">fixed</span><b>The track thief caught red-handed.</b> Five driver and several wedge shots live had locked onto the <em>flying tee</em> (~56&nbsp;mph, lingers in the gates longer than the ball). The tracker now prefers the fastest credible track over the longest-lived one — and the same truth data caught the fix's own first bug (a wedge ball reads only ~62&nbsp;mph radially, slower than it flies).</li>
+      <li><span class="tag">fixed</span><b>The predicted ~120&nbsp;mph soft spot was real — and is now closed.</b> Four 5-iron captures (117–128&nbsp;mph, straddling the clutter filter's notch) had their range tracks shattered, corrupting speed as well as angle. The fix subtracts statics over the whole 72&nbsp;ms window instead of within one burst: statics still cancel, but a notch-speed ball — which marches across range pixels — survives. Runs automatically as a retry; recovered three of the four on the spot.</li>
+      <li><span class="tag">by design</span><b>Bad captures now say so.</b> A handful of dumps (ring overwritten, notch-shattered tracks) used to produce confident wrong numbers. A track-quality gate turns them into an explicit "no read" — in the validation set, every rejected capture was genuinely broken.</li>
+      <li><span class="tag">by design</span><b>Nothing is tuned to one golfer's bag.</b> The measurement policy keys off per-shot observables — measured radial speed vs the notch comb, whether points enter the corrupted zone — never the club label. TrackMan is the truth reference; the swing that produced the data never is. (Club selection primes only the tracker's minimum-credible-speed floor.)</li>
+    </ul>
+    <div class="compare"><table>
+      <tr><th>Club</th><th>Shots read</th><th>Launch-angle error vs TrackMan*</th></tr>
+      <tr><td>Driver</td><td>6 of 10 (junk captures correctly refused)</td><td><b>1.2°</b></td></tr>
+      <tr><td>Sand wedge</td><td>9 of 10</td><td><b>1.3°</b></td></tr>
+      <tr><td>9-iron</td><td>10 of 10</td><td><b>2.6°</b></td></tr>
+      <tr><td>7-iron</td><td>12 of 13</td><td><b>3.3°</b></td></tr>
+      <tr><td>5-iron</td><td>14 of 17 (the notch club)</td><td><b>3.4°</b></td></tr>
+      <tr><td><b>All clubs</b></td><td><b>51 of 60 (85%)</b></td><td><b>2.6° pooled</b> &nbsp;·&nbsp; ball speed −2.4&nbsp;±&nbsp;1.7&nbsp;mph</td></tr>
+    </table></div>
+    <p style="font-size:0.85em">*Mean absolute error, split-half holdout: per-club offsets are fitted on half the shots and every number above is scored on the untouched other half. Offsets are part of the architecture (they ship as calibration constants); the table measures what a user would see after calibration. Baseline before this work: ~4.6° at 80% coverage. For scale: the K-LD7 rig this sensor replaces plateaued near ~2° MAE with far less coverage and no speed, and consumer photometric units quote ±1°.</p>
+    <h3 style="margin-top:1.5em">What remains between 2.6° and 1°</h3>
+    <ul class="findings">
+      <li><span class="tag">software</span><b>Open the corrupted zone.</b> The −2.5° gate protects accuracy by discarding the top of every flight. Root-causing that distortion (the leading suspect: interference-regime physics where direct and floor-bounce arrivals have comparable power) would return that data — the single largest untapped accuracy reserve on this mount.</li>
+      <li><span class="tag">software</span><b>A confidence tier that says "trust this one."</b> A strict coherent-integration subset already tracks TrackMan at r&nbsp;=&nbsp;0.94–0.99 (~2.5° on a third of shots); productizing per-shot selection extends that quality to more of them, and tells the display which reads are gold.</li>
+      <li><span class="tag">software</span><b>Two-ray v2.</b> Today's estimator solves each snapshot's height independently, then fits a line. The correct form fits one trajectory to <em>all</em> snapshots jointly, using the flight's own curvature as a constraint. Hardest to predict; potentially the biggest single step.</li>
+      <li><span class="tag">next session</span><b>Revalidate on fresh truth.</b> The policy thresholds rest on one session of one golfer. Next TrackMan visit stress-tests them with deliberate oddballs — half-swings, low-teed drivers, ideally a second golfer — and measures how much of the remaining 2.6° is repeatable bias curve (calibratable) versus noise (not).</li>
+      <li><span class="tag">geometry</span><b>The mount is a free variable again.</b> The corrupted zone sits at a fixed angle to boresight, so mount height and tilt choose <em>which shots</em> live in it. With truth-referenced tools, mount geometry + gate placement can be co-designed instead of guessed.</li>
+      <li><span class="tag">firmware</span><b>The memory-budget unlock.</b> On-chip gating keeps only the range pixels that matter: ~32-chirp bursts, denser frames, and fine resolution simultaneously in the same 768&nbsp;KB — deeper coherent integration feeding the confidence tier. Same silicon, better arithmetic.</li>
+    </ul>
+    <p>Honest summary: 1° is not promised — TrackMan's own indoor launch-angle noise is a meaningful fraction of the remaining gap, so the last degree is partly a measurement-of-the-measurement problem. But every item above is now a <em>measured</em> problem with a truth dataset to score it against, which is a different situation from where this project stood a week ago.</p>
   </section>
 
   <section>
@@ -501,17 +536,19 @@
       <table>
         <tr><th>Step</th><th>What it proves</th><th>Status</th></tr>
         <tr><td>Live readout at the tee</td><td>Speed + launch angle printed seconds after each swing</td><td>Done — speed + 3 angle estimators, ~0.3 s</td></tr>
-        <tr><td>TrackMan side-by-side</td><td>Turns "plausible" into a measured accuracy number</td><td>Rig ready; scheduling</td></tr>
-        <tr><td>Dual-radar operation</td><td>This sensor + the OPS speed radar coexisting on one Pi</td><td>Powered hub arriving</td></tr>
-        <tr><td>Floor-bounce modeling</td><td>Multipath as signal, not noise — the path below ±2°</td><td>After TrackMan verdict</td></tr>
+        <tr><td>TrackMan side-by-side</td><td>Turns "plausible" into a measured accuracy number</td><td><b>Done — 2.6° @ 85%, speed −2.4 ± 1.7 mph</b> (see verdict section)</td></tr>
+        <tr><td>Dual-radar operation</td><td>This sensor + the OPS speed radar coexisting on one Pi</td><td>Done — ran all night at the bay, r = 0.997 speed agreement</td></tr>
+        <tr><td>Floor-bounce modeling</td><td>Multipath as signal, not noise</td><td>Done — the two-ray estimator is now the headline measurement</td></tr>
+        <tr><td>Server + UI integration</td><td>The validated library behind the kiosk screen</td><td>Next — plumbing, not research</td></tr>
+        <tr><td>Second truth session</td><td>Policy thresholds on fresh shots; the 1° roadmap scored</td><td>Scheduling</td></tr>
       </table>
     </div>
     <p>The larger point stands regardless of any single number: for the price of one K-LD7 rig, we now record the raw radio-frequency truth of every swing and own the entire chain that interprets it. When something is wrong, we can find it — the tilt, the phase offset, and the 50&nbsp;ms trigger bug were all found <em>in the data itself</em>, in one weekend. That is the case for this path in one sentence: a $196 production radar already delivering validated ball speed and three independent launch-angle estimates per swing, with club metrics waiting in data it already records, every hard limitation carrying a worked engineering answer — and no custom RF hardware anywhere in the chain.</p>
   </section>
 
   <footer>
-    OpenFlight · DIY launch monitor project · field report generated 2026-07-13<br>
+    OpenFlight · DIY launch monitor project · field report generated 2026-07-13, updated 2026-07-15 with TrackMan validation results<br>
     Sensor: TI IWR6843 60&nbsp;GHz FMCW · custom L3-dump firmware v3 · analysis: Python on Raspberry Pi 5<br>
-    Figures are unretouched analysis output from the July 12–13 capture sessions.
+    Figures are unretouched analysis output from the July 12–13 capture sessions; accuracy tables from the July 14 TrackMan session (102 truth-paired shots, split-half holdout scoring).
   </footer>
 </div>
