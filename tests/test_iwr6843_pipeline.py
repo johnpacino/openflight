@@ -24,12 +24,14 @@ RADAR_HEIGHT_M = 0.152
 def synth_shot(*, speed_ms=45.0, launch_deg=18.0, tee_m=1.5, tilt_deg=10.4,
                n_frames=12, n_loops=16, n_samples=128, frame_period_us=6000,
                trigger_frame=3, amp=400.0, noise=6.0, image_gain=0.0,
-               seed=0):
+               accel_ms2=0.0, seed=0):
     """Raw dump bytes for one synthetic ball flight (+ optional floor image).
 
     The cube is built in CHIP conventions (the reverse of physical element
     order; TX1 block carries the +Doppler TDM phase) so the pipeline's
-    decode path is what's under test.
+    decode path is what's under test. ``accel_ms2`` makes the radial speed
+    time-varying (Doppler phase follows the true displacement; the TDM
+    phase follows the INSTANTANEOUS velocity).
     """
     rng = np.random.default_rng(seed)
     res = RANGE_SPAN_M / n_samples
@@ -41,7 +43,9 @@ def synth_shot(*, speed_ms=45.0, launch_deg=18.0, tee_m=1.5, tilt_deg=10.4,
         t_slot = ((slot - trigger_frame) % n_frames) * frame_period_us / 1e6
         for loop in range(n_loops):
             t_s = t_slot + loop * LOOP_PRI_S
-            x_m = tee_m + speed_ms * t_s
+            disp = speed_ms * t_s + 0.5 * accel_ms2 * t_s * t_s
+            v_inst = speed_ms + accel_ms2 * t_s
+            x_m = tee_m + disp
             h_m = tan_la * (x_m - tee_m)          # height above radar plane
             theta = np.arctan2(h_m, x_m) - np.radians(tilt_deg)
             rbin = x_m / res
@@ -54,8 +58,8 @@ def synth_shot(*, speed_ms=45.0, launch_deg=18.0, tee_m=1.5, tilt_deg=10.4,
                              - np.radians(tilt_deg))
                 phys = phys + image_gain * steer(theta_img, 8)
             chip = phys[::-1].copy()              # physical -> chip order
-            doppler = np.exp(1j * 4 * np.pi * speed_ms * t_s / LAM)
-            chip[4:] *= np.exp(1j * 4 * np.pi * speed_ms * TAU_S / LAM)
+            doppler = np.exp(1j * 4 * np.pi * disp / LAM)
+            chip[4:] *= np.exp(1j * 4 * np.pi * v_inst * TAU_S / LAM)
             for rx in range(4):
                 cube[slot, 2 * loop, rx] = amp * doppler * chip[rx] * tone
                 cube[slot, 2 * loop + 1, rx] = (amp * doppler * chip[4 + rx]
@@ -71,7 +75,9 @@ def _cal():
     cal = Calibration.identity()
     cal.tilt_rad = np.radians(10.4)
     cal.tee_range_m = 1.5
-    cal.tee_height_m = 0.0
+    # synthetic flights launch AT the radar plane -> ball height above the
+    # floor equals the radar height (anchor h = 0 in radar-plane coords)
+    cal.tee_ball_height_m = RADAR_HEIGHT_M
     cal.meta["radar_height_m"] = RADAR_HEIGHT_M
     return cal
 
@@ -135,3 +141,144 @@ def test_no_ball_in_empty_scene(cal):
     shot = process_dump(raw, Calibration.identity())
     assert not shot.ball_found
     assert shot.summary() == "no ball detected"
+
+
+def _two_streak_cube(*, slow_ms=24.0, fast_ms=60.0, n_frames=12, n_loops=16,
+                     n_samples=128, seed=3):
+    """A lingering slow object (whole window) plus a faster, shorter ball."""
+    rng = np.random.default_rng(seed)
+    res = RANGE_SPAN_M / n_samples
+    cube = np.zeros((n_frames, 2 * n_loops, 4, n_samples), dtype=complex)
+    samples = np.arange(n_samples)
+    for slot in range(n_frames):
+        for loop in range(n_loops):
+            t_s = slot * 0.006 + loop * LOOP_PRI_S
+            movers = [(1.00 + fast_ms * t_s, 400.0)]
+            if t_s < 0.045:                # the flying tee lands mid-window
+                movers.append((2.30 + slow_ms * t_s, 500.0))
+            for x_m, amp in movers:
+                rbin = x_m / res
+                if rbin >= n_samples - 2:
+                    continue
+                tone = amp * np.exp(2j * np.pi * rbin * samples / n_samples)
+                dopp = np.exp(1j * 4 * np.pi * (x_m - 1.0) / LAM)
+                cube[slot, 2 * loop] += dopp * tone
+                cube[slot, 2 * loop + 1] += dopp * tone
+    cube += (rng.standard_normal(cube.shape)
+             + 1j * rng.standard_normal(cube.shape)) * 6.0
+    return pack_dump(cube, n_tx=2, version=3, frame_period_us=6000)
+
+
+def test_fastest_credible_track_beats_slow_theft():
+    """A slow lingering object must not steal the track from the ball.
+
+    2026-07-14 live bug: the flying tee (~25 m/s) outlasted the ball in the
+    gates and won most-inliers RANSAC on 5 driver + several SW shots.
+    """
+    from openflight.iwr6843.shot import geometry_from_header as gfh
+    from openflight.iwr6843.dump import parse_header
+    from openflight.iwr6843.tracking import find_ball, mti_filter
+    from openflight.iwr6843.dump import parse_dump
+    raw = _two_streak_cube()
+    meta, cube = parse_dump(raw)
+    geo = gfh(parse_header(raw))
+    track = find_ball(mti_filter(cube), geo)
+    assert track is not None
+    assert track.speed_ms == pytest.approx(60.0, abs=3.0)
+
+
+def test_local_velocity_on_accelerating_ball(cal):
+    """Quadratic refit exposes the instantaneous radial speed."""
+    raw = synth_shot(speed_ms=40.0, accel_ms2=60.0, noise=4.0)
+    shot = process_dump(raw, cal, two_ray=False)
+    assert shot.ball_found and shot.track is not None
+    trk = shot.track
+    assert trk.quad_bins is not None
+    res = RANGE_SPAN_M / 128
+    v_first = trk.speed_ms_at(trk.t_first, res)
+    v_last = trk.speed_ms_at(trk.t_last, res)
+    assert v_first == pytest.approx(40.0 + 60.0 * trk.t_first, abs=2.0)
+    assert v_last == pytest.approx(40.0 + 60.0 * trk.t_last, abs=2.0)
+    assert v_last - v_first > 2.0
+
+
+def test_tee_anchor_is_floor_referenced():
+    """fit_tee anchors at ball-above-floor minus radar height.
+
+    The old radar-plane anchor sat ~0.15 m high; on a short-lever wedge
+    that was a ~-11 deg launch-angle bias.
+    """
+    from openflight.iwr6843.doa import AnglePoint
+    from openflight.iwr6843.trajectory import fit_tee
+    cal = Calibration.identity()
+    cal.tee_range_m = 1.5
+    cal.tee_ball_height_m = 0.04
+    cal.meta["radar_height_m"] = 0.152
+    truth = np.radians(15.0)
+    h_anchor = 0.04 - 0.152
+    points = []
+    for x in np.linspace(2.4, 4.4, 12):
+        h = h_anchor + np.tan(truth) * (x - 1.5)
+        points.append(AnglePoint(t_s=0.0, range_m=float(np.hypot(x, h)),
+                                 theta_rad=float(np.arctan2(h, x)),
+                                 snr=30.0, n_summed=1))
+    fit = fit_tee(points, cal)
+    assert fit is not None
+    assert fit.launch_angle_deg == pytest.approx(15.0, abs=0.1)
+    # anchoring at the radar plane instead must visibly rotate the fit
+    cal.tee_ball_height_m = 0.04 + 0.152
+    fit_old = fit_tee(points, cal)
+    assert fit_old.launch_angle_deg < fit.launch_angle_deg - 2.0
+
+
+def test_two_ray_policy_anchored_gated_multipath(cal):
+    """Mid-iron policy (tee anchor + angle gate) under a strong floor image."""
+    raw = synth_shot(image_gain=0.6, noise=4.0)
+    shot = process_dump(raw, cal, two_ray=True, club="9i")
+    assert shot.ball_found
+    assert "two_ray" in shot.fits
+    assert shot.fits["two_ray"].launch_angle_deg == pytest.approx(18.0,
+                                                                  abs=2.0)
+
+
+def test_cosine_speed_factor_matches_kinematics():
+    """Factor must equal (r2-r1)/path from direct kinematics."""
+    from openflight.iwr6843.trajectory import cosine_speed_factor
+    cal = Calibration.identity()
+    cal.tee_range_m = 1.5
+    cal.tee_ball_height_m = 0.152          # dz=0: x_tee == slant
+    cal.meta["radar_height_m"] = 0.152
+    la = np.radians(20.0)
+    xs = np.linspace(1.5, 5.0, 400)
+    zs = 0.152 + np.tan(la) * (xs - 1.5)
+    rs = np.hypot(xs, zs - 0.152)
+    r1, r2 = 2.0, 4.0
+    i1, i2 = np.searchsorted(rs, r1), np.searchsorted(rs, r2)
+    path = (xs[i2] - xs[i1]) / np.cos(la)
+    expect = (rs[i2] - rs[i1]) / path
+    got = cosine_speed_factor(20.0, r1, r2, cal)
+    assert got == pytest.approx(expect, abs=0.005)
+    assert got < 0.985                     # meaningfully below 1 at LA 20
+
+
+def test_thin_capture_rejected(cal):
+    """Junk captures (few frames of ball) must be a no-read, not a number."""
+    raw = synth_shot(n_frames=3, trigger_frame=0, tee_m=2.3)
+    shot = process_dump(raw, cal)
+    assert shot.ball_found
+    assert shot.quality == "reject"
+    assert shot.launch_angle_deg is None
+    assert "rejected" in shot.summary()
+
+
+def test_club_class_mapping():
+    from openflight.iwr6843.shot import club_class
+    assert club_class("SandWedge") == "wedge"
+    assert club_class("PW") == "wedge"
+    assert club_class("9i") == "mid_iron"
+    assert club_class("7Iron") == "mid_iron"
+    assert club_class("5Iron") == "long_iron"
+    assert club_class("3 hybrid") == "long_iron"
+    assert club_class("Driver") == "driver"
+    assert club_class(None) == "default"
+    assert club_class("putter") == "default"

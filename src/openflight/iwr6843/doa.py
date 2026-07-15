@@ -85,8 +85,6 @@ def snapshot_series(mti: np.ndarray, track: BallTrack, geo: Geometry,
     (~10*log10(K) dB gain); K=1 is the raw per-loop series.
     """
     sign = measure_tdm_sign(mti, track, geo)
-    tdm_phase = sign * 4 * np.pi * track.speed_ms * TDM_TAU_S / LAM
-    loop_phase = sign * 4 * np.pi * track.speed_ms * LOOP_PRI_S / LAM
     noise = float(np.median(np.abs(mti) ** 2))
     k = max(1, int(coherent_loops))
     out: list[tuple[float, float, np.ndarray, float]] = []
@@ -95,6 +93,13 @@ def snapshot_series(mti: np.ndarray, track: BallTrack, geo: Geometry,
             t_mid = geo.loop_time(frame, start + (k - 1) / 2.0)
             if not track.t_first - 2e-3 <= t_mid <= track.t_last + 2e-3:
                 continue
+            # LOCAL radial speed (quadratic track): the ball's radial speed
+            # changes along the flight; using the track-average leaves a
+            # TX-block phase residual that grows toward the track ends
+            # (TrackMan-truth finding, 2026-07-15)
+            v_r = track.speed_ms_at(t_mid, geo.range_res_m)
+            tdm_phase = sign * 4 * np.pi * v_r * TDM_TAU_S / LAM
+            loop_phase = sign * 4 * np.pi * v_r * LOOP_PRI_S / LAM
             acc = np.zeros(8, dtype=complex)
             for off in range(k):
                 loop = start + off

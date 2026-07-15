@@ -21,6 +21,14 @@ LOOP_PRI_S = 90e-6            # per-TX chirp repeat; constant across variants
 RANGE_SPAN_M = 6.0            # every cfg keeps a 6 m span: bin = 6.0/n_samples
 BALL_GATES_M = ((2.25, 3.75), (3.75, 5.5))
 SPEED_BOUNDS_MS = (20.0, 90.0)
+# fastest-credible selection: slow objects (flying tee ~25 m/s, post-impact
+# clubhead ~0.7x ball) outlast the ball in the gates and win most-inliers
+# RANSAC. 2026-07-14 TrackMan session: 5 driver + several SW live tracks
+# stolen this way. A fast track wins if it has enough support of its own.
+FAST_TRACK_MS = 26.5          # RADIAL m/s: slowest real SW ball reads ~27.5
+#                               (66 mph x cos projection); flying tee ~25
+FAST_SUPPORT_FRAC = 0.55      # of the most-inliers candidate
+MAX_RADIAL_ACCEL = 200.0      # m/s^2 sanity for the quadratic refit
 
 
 @dataclass
@@ -62,6 +70,7 @@ class BallTrack:
     t_first: float
     t_last: float
     low_confidence: bool
+    quad_bins: tuple[float, float, float] | None = None
 
     @property
     def speed_mph(self) -> float:
@@ -75,6 +84,19 @@ class BallTrack:
     def range_at(self, t_s: float, range_res_m: float) -> float:
         """Predicted range in meters at time t."""
         return self.bin_at(t_s) * range_res_m
+
+    def speed_ms_at(self, t_s: float, range_res_m: float) -> float:
+        """LOCAL radial speed from the quadratic refit (line slope if none).
+
+        The straight-line slope is the track-average; the ball's radial
+        speed actually changes along the flight as the geometry projection
+        changes. This local value is what the per-snapshot TDM Doppler
+        correction needs (2026-07-15 truth-referenced finding).
+        """
+        if self.quad_bins is None:
+            return self.speed_ms
+        q2, q1, _q0 = self.quad_bins
+        return (2.0 * q2 * t_s + q1) * range_res_m
 
 
 def mti_filter(cube: np.ndarray) -> np.ndarray:
@@ -137,8 +159,17 @@ def _detections(power: np.ndarray, geo: Geometry,
 
 def find_ball(mti: np.ndarray, geo: Geometry, *,
               iterations: int = 2500, seed: int = 1,
-              max_range_m: float | None = None) -> BallTrack | None:
-    """RANSAC the ball's range walk; None when no plausible streak exists."""
+              max_range_m: float | None = None,
+              min_ball_ms: float = FAST_TRACK_MS) -> BallTrack | None:
+    """RANSAC the ball's range walk; None when no plausible streak exists.
+
+    Selection is FASTEST-CREDIBLE, not most-inliers: the best fast
+    (>= ``min_ball_ms``) candidate wins whenever it has at least
+    FAST_SUPPORT_FRAC of the overall best candidate's inliers.
+    ``min_ball_ms`` is the slowest RADIAL speed a real ball can read for
+    the club in play (see shot.CLUB_POLICY) — it must sit above the
+    class's post-impact club/tee speeds or they steal the track.
+    """
     power = loop_power(mti)
     loops_idx, bins = _detections(power, geo, max_range_m=max_range_m)
     if loops_idx.size < 8:
@@ -149,7 +180,8 @@ def find_ball(mti: np.ndarray, geo: Geometry, *,
                       for i in loops_idx])
     tol = 1.2 if geo.n_samples >= 128 else 0.8
     rng = np.random.default_rng(seed)
-    best = None   # (n_inliers, slope, intercept, rms, t_first, t_last)
+    best = None       # most inliers at any speed
+    best_fast = None  # most inliers among fast candidates
     for _ in range(iterations):
         i, j = rng.choice(times.size, 2, replace=False)
         d_t = times[i] - times[j]
@@ -160,22 +192,45 @@ def find_ball(mti: np.ndarray, geo: Geometry, *,
             continue
         icpt = bins[i] - slope * times[i]
         inliers = np.abs(bins - (slope * times + icpt)) < tol
-        if inliers.sum() < 8 or (best is not None
-                                 and inliers.sum() <= best[0]):
+        n_new = int(inliers.sum())
+        if n_new < 8:
             continue
-        design = np.vstack([times[inliers], np.ones(inliers.sum())]).T
+        beats_best = best is None or n_new > best[0]
+        beats_fast = (slope * res >= min_ball_ms
+                      and (best_fast is None or n_new > best_fast[0]))
+        if not (beats_best or beats_fast):
+            continue
+        design = np.vstack([times[inliers], np.ones(n_new)]).T
         (sl2, ic2), *_ = np.linalg.lstsq(design, bins[inliers], rcond=None)
         if not SPEED_BOUNDS_MS[0] <= sl2 * res <= SPEED_BOUNDS_MS[1]:
             continue
         resid = bins[inliers] - (sl2 * times[inliers] + ic2)
         rms = float(np.sqrt((resid ** 2).mean()))
-        best = (int(inliers.sum()), sl2, ic2, rms,
+        cand = (n_new, sl2, ic2, rms,
                 float(times[inliers].min()), float(times[inliers].max()))
+        if beats_best:
+            best = cand
+        if sl2 * res >= min_ball_ms and (best_fast is None
+                                         or n_new > best_fast[0]):
+            best_fast = cand
     if best is None:
         return None
-    n_inl, slope, icpt, rms, t_first, t_last = best
+    pick = best
+    if (best_fast is not None
+            and best[1] * res < min_ball_ms
+            and best_fast[0] >= FAST_SUPPORT_FRAC * best[0]):
+        pick = best_fast
+    n_inl, slope, icpt, rms, t_first, t_last = pick
+    # quadratic refit of the picked track's inliers: local radial speed
+    inl = np.abs(bins - (slope * times + icpt)) < tol
+    quad = None
+    if inl.sum() >= 10:
+        q2, q1, q0 = np.polyfit(times[inl], bins[inl], 2)
+        if abs(2.0 * q2 * res) < MAX_RADIAL_ACCEL:
+            quad = (float(q2), float(q1), float(q0))
     span_s = t_last - t_first
     return BallTrack(speed_ms=slope * res, slope_bins=slope,
                      intercept_bins=icpt, rms_bins=rms, n_inliers=n_inl,
                      t_first=t_first, t_last=t_last,
-                     low_confidence=bool(rms >= 0.45 or span_s < 0.012))
+                     low_confidence=bool(rms >= 0.45 or span_s < 0.012),
+                     quad_bins=quad)

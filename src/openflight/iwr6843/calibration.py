@@ -30,8 +30,22 @@ class Calibration:
     range_bias_m: float
     source: str = "unset"
     tee_range_m: float | None = None     # tape-measured launch point (slant)
-    tee_height_m: float = 0.04           # ball-on-mat height above radar plane
+    # Ball height at launch ABOVE THE FLOOR (ball on mat ~0.04 m). The old
+    # field meant "above the radar plane" and silently anchored every tee
+    # fit ~0.15 m high on a 0.152 m mount: -0.15/lever-arm of slope bias
+    # (SW read -12 deg). Floor-referenced + radar height fixes the anchor.
+    tee_ball_height_m: float = 0.04
     meta: dict = field(default_factory=dict)
+
+    @property
+    def radar_height_m(self) -> float:
+        """Antenna center height above the floor (from the cal solve)."""
+        return float(self.meta.get("radar_height_m", 0.152))
+
+    @property
+    def tee_anchor_h_m(self) -> float:
+        """Tee anchor height in radar-plane coordinates (h=0 at radar)."""
+        return self.tee_ball_height_m - self.radar_height_m
 
     @classmethod
     def load(cls, path: str = DEFAULT_CAL_PATH) -> "Calibration":
