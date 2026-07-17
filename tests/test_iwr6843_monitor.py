@@ -20,11 +20,13 @@ class FakeRadar:
         self.error = error
         self.configs = []
         self.closed = False
+        self.read_started_at = None
 
     def send_config(self, path: str):
         self.configs.append(path)
 
     def read_dump(self):
+        self.read_started_at = time.monotonic()
         if self.error is not None:
             raise self.error
         return self.raw
@@ -76,6 +78,30 @@ def test_capture_monitor_matches_gpio_edge_to_ops_impact(tmp_path):
 
     monitor.stop()
     assert radar.closed
+
+
+def test_capture_monitor_waits_for_late_flight_before_freezing_ring(tmp_path):
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+    radar = FakeRadar(_raw_dump())
+    monitor = IWR6843CaptureMonitor(
+        config_path=config,
+        output_dir=tmp_path / "dumps",
+        radar=radar,
+        button_factory=FakeButton,
+        freeze_delay_s=0.05,
+    )
+    monitor.start()
+
+    notified_at = time.monotonic()
+    edge = time.time()
+    assert monitor.notify_trigger(edge)
+    capture = monitor.capture_for_shot(edge, timeout_s=1.0)
+
+    assert capture is not None and capture.valid
+    assert radar.read_started_at is not None
+    assert radar.read_started_at - notified_at >= 0.045
+    monitor.stop()
 
 
 def test_capture_monitor_discards_stale_false_trigger(tmp_path):

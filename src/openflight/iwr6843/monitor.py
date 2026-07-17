@@ -17,6 +17,8 @@ from openflight.iwr6843.dump import HEADER, parse_header, payload_nbytes
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_FREEZE_DELAY_S = 0.05
+
 
 def tx_order_from_config(config_path: str | Path) -> str:
     """Infer the physical TX order from the two chirp masks in a cfg."""
@@ -69,11 +71,15 @@ class IWR6843CaptureMonitor:
         radar: IWR6843Radar | None = None,
         button_factory: Callable | None = None,
         match_tolerance_s: float = 0.75,
+        freeze_delay_s: float = DEFAULT_FREEZE_DELAY_S,
     ):
+        if freeze_delay_s < 0:
+            raise ValueError("freeze_delay_s must be nonnegative")
         self.config_path = Path(config_path)
         self.output_dir = Path(output_dir).expanduser()
         self.gpio_pin = gpio_pin
         self.match_tolerance_s = match_tolerance_s
+        self.freeze_delay_s = freeze_delay_s
         self.radar = radar or IWR6843Radar(port=port)
         self._button_factory = button_factory
         self._button = None
@@ -177,6 +183,13 @@ class IWR6843CaptureMonitor:
             path = None
             error = None
             try:
+                logger.info(
+                    "[IWR6843] Trigger #%d: waiting %.0f ms for late flight",
+                    sequence,
+                    1000.0 * self.freeze_delay_s,
+                )
+                if self.freeze_delay_s:
+                    time.sleep(self.freeze_delay_s)
                 logger.info("[IWR6843] Trigger #%d: dumping L3 ring", sequence)
                 raw = self.radar.read_dump()
                 self._validate_dump(raw)
@@ -282,4 +295,9 @@ class IWR6843CaptureMonitor:
         logger.info("[IWR6843] Capture monitor stopped")
 
 
-__all__ = ["IWR6843Capture", "IWR6843CaptureMonitor", "tx_order_from_config"]
+__all__ = [
+    "DEFAULT_FREEZE_DELAY_S",
+    "IWR6843Capture",
+    "IWR6843CaptureMonitor",
+    "tx_order_from_config",
+]

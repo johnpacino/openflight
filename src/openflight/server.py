@@ -1048,12 +1048,15 @@ def init_iwr6843(
             "radar_height_m": calibration.radar_height_m,
             "ball_height_m": calibration.tee_ball_height_m,
             "capture_timeout_s": capture_timeout_s,
+            "freeze_delay_ms": round(1000.0 * capture_monitor.freeze_delay_s, 3),
             "output_dir": str(Path(output_dir).expanduser()),
         }
         logger.info(
-            "[SERVER] IWR6843 initialized (port=%s, BCM%d, estimator=LCMF-v1)",
+            "[SERVER] IWR6843 initialized "
+            "(port=%s, BCM%d, estimator=LCMF-v1, freeze delay=%.0f ms)",
             capture_monitor.port,
             trigger_pin,
+            1000.0 * capture_monitor.freeze_delay_s,
         )
         return True
     except Exception as error:  # pylint: disable=broad-exception-caught
