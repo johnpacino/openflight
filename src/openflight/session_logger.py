@@ -512,6 +512,43 @@ class SessionLogger:
             },
         )
 
+    def log_iwr6843_capture(
+        self,
+        *,
+        shot_number: int,
+        shot_timestamp: Optional[float],
+        trigger_timestamp: Optional[float],
+        capture_path: Optional[str],
+        capture_bytes: int,
+        dump_duration_s: Optional[float],
+        capture_error: Optional[str],
+        ball_speed_mph: float,
+        measurement: Optional[Dict] = None,
+    ):
+        """Log the TI raw-dump reference and complete LCMF evidence."""
+        if not self.enabled:
+            return
+        self._write_entry(
+            "iwr6843_capture",
+            {
+                "shot_number": shot_number,
+                "shot_timestamp": shot_timestamp,
+                "trigger_timestamp": trigger_timestamp,
+                "trigger_delta_ms": (
+                    round((trigger_timestamp - shot_timestamp) * 1000.0, 3)
+                    if trigger_timestamp is not None and shot_timestamp is not None
+                    else None
+                ),
+                "capture_path": capture_path,
+                "capture_bytes": capture_bytes,
+                "dump_duration_s": dump_duration_s,
+                "capture_error": capture_error,
+                "ball_speed_source": "ops243",
+                "ball_speed_mph": ball_speed_mph,
+                "measurement": measurement,
+            },
+        )
+
     def log_config_change(self, config: Dict[str, Any], source: str = "user"):
         """Log a radar configuration change."""
         if not self.enabled:

@@ -1,0 +1,160 @@
+"""Tests for GPIO-triggered TI capture and OPS shot correlation."""
+
+from __future__ import annotations
+
+import time
+
+import numpy as np
+
+from openflight.iwr6843.dump import pack_dump
+from openflight.iwr6843.monitor import IWR6843CaptureMonitor
+
+
+class FakeRadar:
+    """Small transport double with a complete L3 dump."""
+
+    port = "/dev/fake-iwr6843"
+
+    def __init__(self, raw: bytes, error: Exception | None = None):
+        self.raw = raw
+        self.error = error
+        self.configs = []
+        self.closed = False
+
+    def send_config(self, path: str):
+        self.configs.append(path)
+
+    def read_dump(self):
+        if self.error is not None:
+            raise self.error
+        return self.raw
+
+    def close(self):
+        self.closed = True
+
+
+class FakeButton:
+    """gpiozero-compatible button double."""
+
+    def __init__(self, pin, pull_up, bounce_time):
+        self.pin = pin
+        self.pull_up = pull_up
+        self.bounce_time = bounce_time
+        self.when_pressed = None
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def _raw_dump() -> bytes:
+    cube = np.zeros((2, 4, 4, 8), dtype=complex)
+    return pack_dump(cube, n_tx=2, version=3, frame_period_us=6000)
+
+
+def test_capture_monitor_matches_gpio_edge_to_ops_impact(tmp_path):
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+    radar = FakeRadar(_raw_dump())
+    monitor = IWR6843CaptureMonitor(
+        config_path=config,
+        output_dir=tmp_path / "dumps",
+        radar=radar,
+        button_factory=FakeButton,
+    )
+    monitor.start()
+
+    edge = time.time()
+    assert monitor.notify_trigger(edge)
+    capture = monitor.capture_for_shot(edge + 0.012, timeout_s=1.0)
+
+    assert capture is not None and capture.valid
+    assert capture.trigger_timestamp == edge
+    assert capture.path is not None and capture.path.read_bytes() == _raw_dump()
+    assert radar.configs == [str(config)]
+    assert monitor._button.bounce_time is None  # pylint: disable=protected-access
+
+    monitor.stop()
+    assert radar.closed
+
+
+def test_capture_monitor_discards_stale_false_trigger(tmp_path):
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+    monitor = IWR6843CaptureMonitor(
+        config_path=config,
+        output_dir=tmp_path / "dumps",
+        radar=FakeRadar(_raw_dump()),
+        button_factory=FakeButton,
+        match_tolerance_s=0.1,
+    )
+    monitor.start()
+    assert monitor.notify_trigger(100.0)
+
+    assert monitor.capture_for_shot(101.0, timeout_s=0.1) is None
+    monitor.stop()
+
+
+def test_capture_monitor_returns_quickly_when_matching_trigger_is_absent(tmp_path):
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+    monitor = IWR6843CaptureMonitor(
+        config_path=config,
+        output_dir=tmp_path / "dumps",
+        radar=FakeRadar(_raw_dump()),
+        button_factory=FakeButton,
+        match_tolerance_s=0.1,
+    )
+    monitor.start()
+
+    start = time.monotonic()
+    capture = monitor.capture_for_shot(time.time() - 1.0, timeout_s=1.0)
+
+    assert capture is None
+    assert time.monotonic() - start < 0.2
+    monitor.stop()
+
+
+def test_capture_monitor_surfaces_dump_failure_without_hanging(tmp_path):
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+    monitor = IWR6843CaptureMonitor(
+        config_path=config,
+        output_dir=tmp_path / "dumps",
+        radar=FakeRadar(b"", error=OSError("serial disconnected")),
+        button_factory=FakeButton,
+    )
+    monitor.start()
+    edge = time.time()
+    assert monitor.notify_trigger(edge)
+
+    capture = monitor.capture_for_shot(edge, timeout_s=1.0)
+
+    assert capture is not None
+    assert not capture.valid
+    assert capture.error == "serial disconnected"
+    monitor.stop()
+
+
+def test_capture_monitor_closes_serial_when_gpio_setup_fails(tmp_path):
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+    radar = FakeRadar(_raw_dump())
+
+    def failing_button(*_args, **_kwargs):
+        raise RuntimeError("GPIO unavailable")
+
+    monitor = IWR6843CaptureMonitor(
+        config_path=config,
+        output_dir=tmp_path / "dumps",
+        radar=radar,
+        button_factory=failing_button,
+    )
+
+    try:
+        monitor.start()
+    except RuntimeError as error:
+        assert str(error) == "GPIO unavailable"
+    else:
+        raise AssertionError("expected GPIO setup to fail")
+    assert radar.closed

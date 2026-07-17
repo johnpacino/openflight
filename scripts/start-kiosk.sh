@@ -21,6 +21,19 @@ DRY_RUN=false
 TRIGGER="sound"  # Default: hardware sound trigger (SEN-14262 → HOST_INT)
 SOUND_PRE_TRIGGER=""
 BUFFER_SPLIT=""
+IWR6843=false
+IWR6843_PORT=""
+IWR6843_CONFIG=""
+IWR6843_CAL=""
+IWR6843_TRIGGER_PIN=""
+IWR6843_TEE_M=""
+IWR6843_NET_M=""
+IWR6843_TILT_DEG=""
+IWR6843_RADAR_HEIGHT_M=""
+IWR6843_BALL_HEIGHT_M=""
+IWR6843_TX_ORDER=""
+IWR6843_CAPTURE_TIMEOUT=""
+IWR6843_OUTPUT_DIR=""
 KLD7=false
 KLD7_PORT=""
 KLD7_ANGLE_OFFSET=""
@@ -111,6 +124,58 @@ while [[ $# -gt 0 ]]; do
             ;;
         --sample-rate)
             SAMPLE_RATE="$2"
+            shift 2
+            ;;
+        --iwr6843)
+            IWR6843=true
+            shift
+            ;;
+        --iwr6843-port)
+            IWR6843_PORT="$2"
+            shift 2
+            ;;
+        --iwr6843-config)
+            IWR6843_CONFIG="$2"
+            shift 2
+            ;;
+        --iwr6843-cal)
+            IWR6843_CAL="$2"
+            shift 2
+            ;;
+        --iwr6843-trigger-pin)
+            IWR6843_TRIGGER_PIN="$2"
+            shift 2
+            ;;
+        --iwr6843-tee-m)
+            IWR6843_TEE_M="$2"
+            shift 2
+            ;;
+        --iwr6843-net-m)
+            IWR6843_NET_M="$2"
+            shift 2
+            ;;
+        --iwr6843-tilt-deg)
+            IWR6843_TILT_DEG="$2"
+            shift 2
+            ;;
+        --iwr6843-radar-height-m)
+            IWR6843_RADAR_HEIGHT_M="$2"
+            shift 2
+            ;;
+        --iwr6843-ball-height-m)
+            IWR6843_BALL_HEIGHT_M="$2"
+            shift 2
+            ;;
+        --iwr6843-tx-order)
+            IWR6843_TX_ORDER="$2"
+            shift 2
+            ;;
+        --iwr6843-capture-timeout)
+            IWR6843_CAPTURE_TIMEOUT="$2"
+            shift 2
+            ;;
+        --iwr6843-output-dir)
+            IWR6843_OUTPUT_DIR="$2"
             shift 2
             ;;
         --kld7)
@@ -364,6 +429,22 @@ fi
 
 if [ -n "$SESSION_LOCATION" ]; then
     SERVER_CMD="$SERVER_CMD --session-location $SESSION_LOCATION"
+fi
+
+if [ "$IWR6843" = true ]; then
+    SERVER_CMD="$SERVER_CMD --iwr6843"
+    [ -n "$IWR6843_PORT" ] && SERVER_CMD="$SERVER_CMD --iwr6843-port $IWR6843_PORT"
+    [ -n "$IWR6843_CONFIG" ] && SERVER_CMD="$SERVER_CMD --iwr6843-config $IWR6843_CONFIG"
+    [ -n "$IWR6843_CAL" ] && SERVER_CMD="$SERVER_CMD --iwr6843-cal $IWR6843_CAL"
+    [ -n "$IWR6843_TRIGGER_PIN" ] && SERVER_CMD="$SERVER_CMD --iwr6843-trigger-pin $IWR6843_TRIGGER_PIN"
+    [ -n "$IWR6843_TEE_M" ] && SERVER_CMD="$SERVER_CMD --iwr6843-tee-m $IWR6843_TEE_M"
+    [ -n "$IWR6843_NET_M" ] && SERVER_CMD="$SERVER_CMD --iwr6843-net-m $IWR6843_NET_M"
+    [ -n "$IWR6843_TILT_DEG" ] && SERVER_CMD="$SERVER_CMD --iwr6843-tilt-deg $IWR6843_TILT_DEG"
+    [ -n "$IWR6843_RADAR_HEIGHT_M" ] && SERVER_CMD="$SERVER_CMD --iwr6843-radar-height-m $IWR6843_RADAR_HEIGHT_M"
+    [ -n "$IWR6843_BALL_HEIGHT_M" ] && SERVER_CMD="$SERVER_CMD --iwr6843-ball-height-m $IWR6843_BALL_HEIGHT_M"
+    [ -n "$IWR6843_TX_ORDER" ] && SERVER_CMD="$SERVER_CMD --iwr6843-tx-order $IWR6843_TX_ORDER"
+    [ -n "$IWR6843_CAPTURE_TIMEOUT" ] && SERVER_CMD="$SERVER_CMD --iwr6843-capture-timeout $IWR6843_CAPTURE_TIMEOUT"
+    [ -n "$IWR6843_OUTPUT_DIR" ] && SERVER_CMD="$SERVER_CMD --iwr6843-output-dir $IWR6843_OUTPUT_DIR"
 fi
 
 if [ "$EXPERIMENTAL_KLD7_RAW_RADC_LOGGING" = true ]; then

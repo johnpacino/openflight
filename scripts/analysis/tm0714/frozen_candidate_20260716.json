@@ -1,0 +1,42 @@
+{
+  "name": "lcmf_v1",
+  "display_name": "Late-Flight Complex Multipath Fusion v1",
+  "status": "exploratory_frozen_for_independent_validation",
+  "source_session": "2026-07-14",
+  "refit_on_next_session": false,
+  "angle_correction_deg": 2.8387689101987568,
+  "angle_correction_scope": "single device-wide constant; never per club",
+  "component_weight": 0.2,
+  "components": [
+    "channel:two8",
+    "channel:four4_path_tdm",
+    "fast_late:direct1",
+    "fast_late:two2",
+    "fast_late:four4"
+  ],
+  "inputs": {
+    "ball_speed": "OPS243 measured speed",
+    "tdm_radial_velocity": "TI range-walk local velocity",
+    "track_selection_guide": "OPS243 measured speed",
+    "trackman_used_by_estimator": false
+  },
+  "snapshot_policy": {
+    "min_snr_db": 8.0,
+    "max_range_m": 4.7,
+    "max_per_frame": 4,
+    "channel_models": "all balanced snapshots",
+    "fast_time_models": "chronological second half of balanced snapshots",
+    "fast_time_window": "hann",
+    "fast_time_center": "observed local peak",
+    "fast_time_tdm_path_residual": "none"
+  },
+  "development_results_deg": {
+    "block_a_raw_mae": 2.9405186229734794,
+    "block_a_raw_bias": -2.8387689101987568,
+    "block_a_global_crossfit_mae": 1.1895423746481084,
+    "block_a_leave_one_club_out_mae": 1.1922193550211106,
+    "block_b_fixed_block_a_correction_mae": 1.1668450332246267,
+    "block_c_fixed_block_a_correction_mae": 1.2671581191185848
+  },
+  "warning": "Model family and timing policy were explored on this session. These are development results, not an independent performance claim."
+}

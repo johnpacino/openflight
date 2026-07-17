@@ -4,11 +4,13 @@ Builds on the aligned CSV (TM spine) + local dumps. Truth model: TM launch
 params (LA, speed, direction) + gravity over the radar's 1.6-4.9 m window,
 per-block mount geometry. All analyses import from here.
 """
+
 from __future__ import annotations
 
 import csv
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,16 +19,21 @@ import numpy as np
 from openflight.iwr6843 import doa, tracking
 from openflight.iwr6843.calibration import Calibration
 from openflight.iwr6843.dump import parse_dump
-from openflight.iwr6843.shot import geometry_from_header
-from openflight.iwr6843.tracking import BallTrack, Geometry, LOOP_PRI_S
+from openflight.iwr6843.multipath import ballistic_trajectory_from_range
 from openflight.iwr6843.music import LAM
+from openflight.iwr6843.shot import geometry_from_header
+from openflight.iwr6843.tracking import LOOP_PRI_S, BallTrack, Geometry
 
-DATA = Path.home() / "openflight_sessions" / "tm_0714"
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[2]
+DATA = Path(
+    os.environ.get("OPENFLIGHT_TM0714_DATA", Path.home() / "openflight_sessions" / "tm_0714")
+)
 CSV = DATA / "session_aligned_2026-07-14.csv"
-TM_JSON = Path("/Users/john.pacino/Projects/openflight/firmware/l3_dump/"
-               "trackman_session_data_7_14.json")
-CAL_JSON = Path("/Users/john.pacino/Projects/openflight/config/"
-                "iwr6843_cal_20260712.json")
+if not CSV.exists():
+    CSV = HERE / "session_aligned_2026-07-14.csv"
+TM_JSON = REPO_ROOT / "firmware" / "l3_dump" / "trackman_session_data_7_14.json"
+CAL_JSON = REPO_ROOT / "config" / "iwr6843_cal_20260712.json"
 G = 9.81
 MPH = 2.23694
 
@@ -36,7 +43,7 @@ BLOCKS = {
     "B": dict(lo=130, hi=137, tee=1.98, rh=0.5715, tilt=6.6),
     "C": dict(lo=142, hi=174, tee=1.92, rh=0.2667, tilt=3.8),
 }
-Y0_M = 0.064          # ball ~2.5 in off antenna centerline (user, sign +)
+Y0_M = 0.064  # ball ~2.5 in off antenna centerline (user, sign +)
 
 
 def block_for(num: int) -> str | None:
@@ -64,7 +71,7 @@ class TruthShot:
     tm_spin: float
     tm_attack: float
     of_ball_mph: float | None
-    live: dict = field(default_factory=dict)   # live CSV LA columns
+    live: dict = field(default_factory=dict)  # live CSV LA columns
 
     @property
     def z0(self) -> float:
@@ -75,7 +82,7 @@ class TruthShot:
     def x_tee(self) -> float:
         """Horizontal tee distance (slant tape corrected for height)."""
         dz = self.z0 - self.rh
-        return math.sqrt(max(self.tee_slant ** 2 - dz ** 2, 0.25))
+        return math.sqrt(max(self.tee_slant**2 - dz**2, 0.25))
 
     # ---- truth trajectory in world frame (radar at origin, x downrange) ----
     def z_at(self, x: float) -> float:
@@ -86,8 +93,7 @@ class TruthShot:
         return self.z0 + math.tan(la) * d - 0.5 * G * t * t
 
     def y_at(self, x: float) -> float:
-        return Y0_M + (x - self.x_tee) * math.tan(
-            math.radians(self.tm_dir_deg))
+        return Y0_M + (x - self.x_tee) * math.tan(math.radians(self.tm_dir_deg))
 
     def r_at(self, x: float) -> float:
         z, y = self.z_at(x), self.y_at(x)
@@ -95,16 +101,27 @@ class TruthShot:
 
     def vr_at(self, x: float) -> float:
         """True instantaneous radial speed (m/s, receding +) at distance x."""
+        pos = np.array([x, self.y_at(x), self.z_at(x) - self.rh])
+        vel = self.velocity_at(x)
+        return float(pos @ vel / (np.linalg.norm(pos) + 1e-9))
+
+    def image_vr_at(self, x: float) -> float:
+        """Range rate along the floor-image path (m/s, receding +)."""
+        pos = np.array([x, self.y_at(x), self.z_at(x) + self.rh])
+        vel = self.velocity_at(x)
+        return float(pos @ vel / (np.linalg.norm(pos) + 1e-9))
+
+    def velocity_at(self, x: float) -> np.ndarray:
+        """TrackMan-predicted Cartesian velocity at horizontal distance ``x``."""
         la = math.radians(self.tm_la)
         dr = math.radians(self.tm_dir_deg)
         d = x - self.x_tee
         t = d / (self.tm_ball_ms * math.cos(la) + 1e-9)
-        pos = np.array([x, self.y_at(x), self.z_at(x) - self.rh])
         vel = self.tm_ball_ms * np.array(
-            [math.cos(la) * math.cos(dr), math.cos(la) * math.sin(dr),
-             math.sin(la)])
+            [math.cos(la) * math.cos(dr), math.cos(la) * math.sin(dr), math.sin(la)]
+        )
         vel[2] -= G * t
-        return float(pos @ vel / (np.linalg.norm(pos) + 1e-9))
+        return vel
 
     def x_from_r(self, r: float) -> float:
         lo, hi = 0.8, 6.0
@@ -145,27 +162,40 @@ def load_shots() -> list[TruthShot]:
                 continue
             b = BLOCKS[blk]
             m = strokes.get(round(float(row["tm_la_deg"]), 6), {})
-            shots.append(TruthShot(
-                num=num, club=row["club"],
-                file=DATA / Path(row["ti_file"]).name, block=blk,
-                tee_slant=b["tee"], rh=b["rh"], tilt_deg=b["tilt"],
-                tm_la=float(row["tm_la_deg"]),
-                tm_ball_ms=float(row["tm_ball_mph"]) / MPH,
-                tm_dir_deg=float(m.get("LaunchDirection", 0.0)),
-                tm_club_mph=float(row["tm_club_mph"] or 0),
-                tm_spin=float(row["tm_spin_rpm"] or 0),
-                tm_attack=float(m.get("AttackAngle", 0.0)),
-                of_ball_mph=float(row["of_ball_mph"])
-                if row["of_ball_mph"] else None,
-                live={k: row[k] for k in
-                      ("ti_la_free", "ti_la_tee", "ti_la_two_ray",
-                       "ti_ball_mph_fixed", "time_et")},
-            ))
+            shots.append(
+                TruthShot(
+                    num=num,
+                    club=row["club"],
+                    file=DATA / Path(row["ti_file"]).name,
+                    block=blk,
+                    tee_slant=b["tee"],
+                    rh=b["rh"],
+                    tilt_deg=b["tilt"],
+                    tm_la=float(row["tm_la_deg"]),
+                    tm_ball_ms=float(row["tm_ball_mph"]) / MPH,
+                    tm_dir_deg=float(m.get("LaunchDirection", 0.0)),
+                    tm_club_mph=float(row["tm_club_mph"] or 0),
+                    tm_spin=float(row["tm_spin_rpm"] or 0),
+                    tm_attack=float(m.get("AttackAngle", 0.0)),
+                    of_ball_mph=float(row["of_ball_mph"]) if row["of_ball_mph"] else None,
+                    live={
+                        k: row[k]
+                        for k in (
+                            "ti_la_free",
+                            "ti_la_tee",
+                            "ti_la_two_ray",
+                            "ti_ball_mph_fixed",
+                            "time_et",
+                        )
+                    },
+                )
+            )
     return shots
 
 
-def find_guided(mti: np.ndarray, geo: Geometry, tm_ms: float,
-                max_range_m: float = 4.95, seed: int = 1) -> BallTrack | None:
+def find_guided(
+    mti: np.ndarray, geo: Geometry, tm_ms: float, max_range_m: float = 4.95, seed: int = 1
+) -> BallTrack | None:
     """RANSAC track constrained to a speed window around TM truth.
 
     Selection window only — the returned speed stays radar-measured.
@@ -199,16 +229,21 @@ def find_guided(mti: np.ndarray, geo: Geometry, tm_ms: float,
         (s2, c2), *_ = np.linalg.lstsq(dsn, bins[inl], rcond=None)
         if not lo <= s2 * res <= hi:
             continue
-        rms = float(np.sqrt(((bins[inl] - (s2 * times[inl] + c2)) ** 2)
-                            .mean()))
-        best = (int(inl.sum()), s2, c2, rms,
-                float(times[inl].min()), float(times[inl].max()))
+        rms = float(np.sqrt(((bins[inl] - (s2 * times[inl] + c2)) ** 2).mean()))
+        best = (int(inl.sum()), s2, c2, rms, float(times[inl].min()), float(times[inl].max()))
     if best is None:
         return None
     n, s, c, rms, t0, t1 = best
-    trk = BallTrack(speed_ms=s * res, slope_bins=s, intercept_bins=c,
-                    rms_bins=rms, n_inliers=n, t_first=t0, t_last=t1,
-                    low_confidence=bool(rms >= 0.45 or (t1 - t0) < 0.012))
+    trk = BallTrack(
+        speed_ms=s * res,
+        slope_bins=s,
+        intercept_bins=c,
+        rms_bins=rms,
+        n_inliers=n,
+        t_first=t0,
+        t_last=t1,
+        low_confidence=bool(rms >= 0.45 or (t1 - t0) < 0.012),
+    )
     # quadratic refit of the same inliers -> local radial speed v_r(t);
     # captures the real radial acceleration a straight line averages away
     inl = np.abs(bins - (s * times + c)) < 1.2
@@ -216,15 +251,15 @@ def find_guided(mti: np.ndarray, geo: Geometry, tm_ms: float,
     if inl.sum() >= 10:
         q = np.polyfit(times[inl], bins[inl], 2)
         accel = 2 * q[0] * res
-        if abs(accel) < 200.0:            # sanity: |radial accel| m/s^2
+        if abs(accel) < 200.0:  # sanity: |radial accel| m/s^2
             quad = q
-    trk.quad = quad                        # bins(t) = q0*t^2 + q1*t + q2
+    trk.quad = quad  # bins(t) = q0*t^2 + q1*t + q2
     return trk
 
 
-def raw_snapshots(mti: np.ndarray, track: BallTrack, geo: Geometry,
-                  range_bias_m: float, *, local_vr: bool = True
-                  ) -> list[dict]:
+def raw_snapshots(
+    mti: np.ndarray, track: BallTrack, geo: Geometry, range_bias_m: float, *, local_vr: bool = True
+) -> list[dict]:
     """Per-loop (K=1) UNCALIBRATED snapshots along the track, ungated.
 
     Vectors are post-flip, post-TDM-phase, so any element correction can be
@@ -254,20 +289,31 @@ def raw_snapshots(mti: np.ndarray, track: BallTrack, geo: Geometry,
             v_r = vr_at(t_s)
             tdm_phase = sign * 4 * np.pi * v_r * doa.TDM_TAU_S / LAM
             loop_phase = sign * 4 * np.pi * v_r * LOOP_PRI_S / LAM
-            snap = np.concatenate([mti[frame, 0, loop, :, rbin],
-                                   mti[frame, 1, loop, :, rbin]]).copy()
+            snap = np.concatenate(
+                [mti[frame, 0, loop, :, rbin], mti[frame, 1, loop, :, rbin]]
+            ).copy()
             snap[4:] *= np.exp(-1j * tdm_phase)
-            snap = snap[::-1]                       # physical orientation
+            snap = snap[::-1]  # physical orientation
             snr = float((np.abs(snap) ** 2).mean() / noise)
             r_true = track.range_at(t_s, geo.range_res_m) - range_bias_m
-            out.append(dict(t=t_s, frame=frame, loop=loop, rbin=rbin,
-                            r=r_true, snr=snr, vec=snap, v_r=v_r,
-                            loop_phase=loop_phase, sign=sign))
+            out.append(
+                dict(
+                    t=t_s,
+                    frame=frame,
+                    loop=loop,
+                    rbin=rbin,
+                    r=r_true,
+                    snr=snr,
+                    vec=snap,
+                    v_r=v_r,
+                    loop_phase=loop_phase,
+                    sign=sign,
+                )
+            )
     return out
 
 
-def load_mti(path: Path, window: str | None = None
-             ) -> tuple[np.ndarray, Geometry]:
+def load_mti(path: Path, window: str | None = None) -> tuple[np.ndarray, Geometry]:
     raw = path.read_bytes()
     meta, cube = parse_dump(raw)
     geo = geometry_from_header(meta)
@@ -277,12 +323,101 @@ def load_mti(path: Path, window: str | None = None
         geo.n_frames = got
         cube = cube[:got]
     if window:
-        win = getattr(np, window)(cube.shape[-1]).astype(cube.dtype
-                                                         if cube.dtype.kind
-                                                         == "f" else float)
+        win = getattr(np, window)(cube.shape[-1]).astype(
+            cube.dtype if cube.dtype.kind == "f" else float
+        )
         cube = cube * win[None, None, None, :]
     return tracking.mti_filter(cube), geo
 
 
 def load_cal() -> Calibration:
     return Calibration.load(str(CAL_JSON))
+
+
+def fixed_positive_vectors(
+    cache: np.lib.npyio.NpzFile,
+    indices: np.ndarray,
+    table: dict[int, dict],
+    shots: dict[int, TruthShot],
+    element_correction: np.ndarray,
+    *,
+    truth_velocity: bool,
+) -> np.ndarray:
+    """Convert the historical auto-sign cache to fixed-positive convention.
+
+    The saved vectors are post-orientation-flip, so elements 0:4 are the
+    temporally later physical TX.  Replacing the old auto-sign/local-velocity
+    rotation is therefore one blockwise phase update.
+    """
+    vectors = cache["vec"][indices].copy()
+    shot_numbers = cache["shot"][indices]
+    phase_per_ms = 4.0 * np.pi * doa.TDM_TAU_S / LAM
+    for shot_number in np.unique(shot_numbers):
+        number = int(shot_number)
+        selected = shot_numbers == number
+        local_velocity = cache["vr"][indices][selected]
+        desired_velocity = (
+            np.asarray([shots[number].vr_at(x) for x in cache["x"][indices][selected]])
+            if truth_velocity
+            else local_velocity
+        )
+        stored_sign = table[number]["tdm_sign"]
+        delta = phase_per_ms * (desired_velocity - stored_sign * local_velocity)
+        vectors[selected, :4] *= np.exp(-1j * delta)[:, None]
+    return vectors * element_correction[None, :]
+
+
+def balanced_snapshot_indices(
+    cache: np.lib.npyio.NpzFile,
+    shot_number: int,
+    *,
+    max_range_m: float = 4.70,
+    min_snr_db: float = 8.0,
+    max_per_frame: int = 4,
+) -> np.ndarray:
+    """Choose the strongest snapshots while giving every frame equal capacity."""
+    indices = np.nonzero(
+        (cache["shot"] == shot_number) & (cache["snr"] >= min_snr_db) & (cache["r"] <= max_range_m)
+    )[0]
+    selected: list[int] = []
+    for frame in np.unique(cache["frame"][indices]):
+        frame_indices = indices[cache["frame"][indices] == frame]
+        order = np.argsort(cache["snr"][frame_indices])[::-1]
+        selected.extend(frame_indices[order[:max_per_frame]])
+    return np.asarray(selected, dtype=int)
+
+
+def candidate_trajectory_from_range(
+    launch_rad: float,
+    range_m: np.ndarray,
+    rec: dict,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Invert measured slant range under a truth-free launch candidate.
+
+    Returns downrange position, floor-referenced height, direct range rate,
+    and floor-image range rate. The horizontal trajectory uses only the known
+    tee centerline offset because elevation processing cannot observe launch
+    direction by itself.
+    """
+    speed_ms = rec.get("candidate_speed_ms")
+    if speed_ms is None:
+        speed_ms = independent_ball_speed_ms(rec, "ops")
+    return ballistic_trajectory_from_range(
+        launch_rad,
+        range_m,
+        speed_ms=float(speed_ms),
+        tee_x_m=rec["x_tee"],
+        launch_height_m=rec["z0"],
+        radar_height_m=rec["rh"],
+        lateral_offset_m=Y0_M,
+    )
+
+
+def independent_ball_speed_ms(rec: dict, source: str) -> float:
+    """Ball speed available to production without TrackMan geometry."""
+    if source == "ops" and rec.get("of_ball_mph") is not None:
+        return float(rec["of_ball_mph"]) / MPH
+    if source != "radar" and source != "ops":
+        raise ValueError(f"unknown independent speed source: {source}")
+    # Fixed projection is intentionally not fitted to this session.
+    return float(rec["guided_ms"]) / 0.96

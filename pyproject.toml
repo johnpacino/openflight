@@ -34,6 +34,8 @@ dependencies = [
     "flask-cors>=6.0.2",
     "flask-socketio>=5.6.1",
     "kld7>=0.2.1",
+    "gpiozero>=2.0.1; sys_platform == 'linux'",
+    "lgpio>=0.2.2.0; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,290 @@
+{
+  "scope": "9-iron only; radar-velocity TDM correction; no fitted offsets",
+  "confounding": "height, tilt, tee distance, and shot populations changed together",
+  "models": {
+    "two8": {
+      "blocks": {
+        "A": {
+          "n": 10,
+          "mae_deg": 4.115358134838319,
+          "bias_deg": -4.115358134838319,
+          "median_ae_deg": 3.3610179717104103,
+          "radar_height_m": 0.15240000000000004,
+          "tilt_deg": 10.404948650719305,
+          "gg_delay_cm": 4.730660703284535,
+          "angle_separation_deg": 17.847518443056572
+        },
+        "B": {
+          "n": 6,
+          "mae_deg": 2.2348911849863637,
+          "bias_deg": -2.2348911849863637,
+          "median_ae_deg": 2.5160048367225523,
+          "radar_height_m": 0.5715,
+          "tilt_deg": 6.6000000000000005,
+          "gg_delay_cm": 13.85935262653125,
+          "angle_separation_deg": 13.6610359775829
+        },
+        "C": {
+          "n": 7,
+          "mae_deg": 4.075411155643859,
+          "bias_deg": -4.075411155643859,
+          "median_ae_deg": 4.08157866538091,
+          "radar_height_m": 0.2667,
+          "tilt_deg": 3.8000000000000003,
+          "gg_delay_cm": 6.708899721843996,
+          "angle_separation_deg": 14.397667366903676
+        }
+      },
+      "comparisons": {
+        "A_minus_B": {
+          "first_minus_second_mae_deg": 1.880466949851955,
+          "first_minus_second_bias_deg": -1.880466949851955,
+          "mae_difference_bootstrap_95_deg": [
+            0.3584283096339354,
+            3.5108060228030014
+          ],
+          "mae_difference_exact_two_sided_p": 0.06406093906093906,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 6,
+            "first_minus_second_mae_deg": 0.8736767753924859,
+            "first_minus_second_bias_deg": -0.8736767753924859,
+            "mean_standardized_match_distance": 0.5872129475468463
+          }
+        },
+        "A_minus_C": {
+          "first_minus_second_mae_deg": 0.03994697919446022,
+          "first_minus_second_bias_deg": -0.03994697919446022,
+          "mae_difference_bootstrap_95_deg": [
+            -1.8123466413029659,
+            1.8714662137247549
+          ],
+          "mae_difference_exact_two_sided_p": 0.9691484985602633,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 7,
+            "first_minus_second_mae_deg": 0.15071548358797937,
+            "first_minus_second_bias_deg": -0.15071548358797912,
+            "mean_standardized_match_distance": 0.5603228366206764
+          }
+        },
+        "C_minus_B": {
+          "first_minus_second_mae_deg": 1.8405199706574948,
+          "first_minus_second_bias_deg": -1.8405199706574948,
+          "mae_difference_bootstrap_95_deg": [
+            0.10640908121596619,
+            3.6780401000079963
+          ],
+          "mae_difference_exact_two_sided_p": 0.08682983682983683,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 6,
+            "first_minus_second_mae_deg": 1.2152992694709162,
+            "first_minus_second_bias_deg": -1.215299269470916,
+            "mean_standardized_match_distance": 0.8209795158635602
+          }
+        }
+      },
+      "geometry_correlations": {
+        "gg_delay_vs_absolute_error_rho": -0.4654150197628459,
+        "gg_delay_vs_absolute_error_p": 0.025222440280782715,
+        "angle_separation_vs_absolute_error_rho": -0.39624505928853754,
+        "angle_separation_vs_absolute_error_p": 0.061233333061790074
+      }
+    },
+    "four3": {
+      "blocks": {
+        "A": {
+          "n": 10,
+          "mae_deg": 4.175861467911092,
+          "bias_deg": -3.2209515161061533,
+          "median_ae_deg": 3.6743295355452155,
+          "radar_height_m": 0.15240000000000004,
+          "tilt_deg": 10.404948650719305,
+          "gg_delay_cm": 4.730660703284535,
+          "angle_separation_deg": 17.847518443056572
+        },
+        "B": {
+          "n": 6,
+          "mae_deg": 1.967865968757722,
+          "bias_deg": -1.540903913673289,
+          "median_ae_deg": 1.0678819060781137,
+          "radar_height_m": 0.5715,
+          "tilt_deg": 6.6000000000000005,
+          "gg_delay_cm": 13.85935262653125,
+          "angle_separation_deg": 13.6610359775829
+        },
+        "C": {
+          "n": 7,
+          "mae_deg": 4.722973544510759,
+          "bias_deg": -2.81433749087443,
+          "median_ae_deg": 5.531769229251767,
+          "radar_height_m": 0.2667,
+          "tilt_deg": 3.8000000000000003,
+          "gg_delay_cm": 6.708899721843996,
+          "angle_separation_deg": 14.397667366903676
+        }
+      },
+      "comparisons": {
+        "A_minus_B": {
+          "first_minus_second_mae_deg": 2.2079954991533706,
+          "first_minus_second_bias_deg": -1.6800476024328643,
+          "mae_difference_bootstrap_95_deg": [
+            0.1942402986410084,
+            4.0564938762481155
+          ],
+          "mae_difference_exact_two_sided_p": 0.053821178821178824,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 6,
+            "first_minus_second_mae_deg": 1.1623953397644715,
+            "first_minus_second_bias_deg": -1.589357394848905,
+            "mean_standardized_match_distance": 0.5872129475468463
+          }
+        },
+        "A_minus_C": {
+          "first_minus_second_mae_deg": -0.5471120765996664,
+          "first_minus_second_bias_deg": -0.4066140252317232,
+          "mae_difference_bootstrap_95_deg": [
+            -3.423562759613601,
+            2.0966070943754858
+          ],
+          "mae_difference_exact_two_sided_p": 0.7062422871246401,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 7,
+            "first_minus_second_mae_deg": -0.7195657063643779,
+            "first_minus_second_bias_deg": 0.17508672673510364,
+            "mean_standardized_match_distance": 0.5603228366206764
+          }
+        },
+        "C_minus_B": {
+          "first_minus_second_mae_deg": 2.755107575753037,
+          "first_minus_second_bias_deg": -1.2734335772011411,
+          "mae_difference_bootstrap_95_deg": [
+            -0.1233414579383415,
+            5.76039633829186
+          ],
+          "mae_difference_exact_two_sided_p": 0.14160839160839161,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 6,
+            "first_minus_second_mae_deg": 1.637269833171498,
+            "first_minus_second_bias_deg": 0.16251017431978662,
+            "mean_standardized_match_distance": 0.8209795158635602
+          }
+        }
+      },
+      "geometry_correlations": {
+        "gg_delay_vs_absolute_error_rho": -0.5780632411067194,
+        "gg_delay_vs_absolute_error_p": 0.0038638302419369743,
+        "angle_separation_vs_absolute_error_rho": -0.2124505928853755,
+        "angle_separation_vs_absolute_error_p": 0.3304395915527009
+      }
+    },
+    "four4_path_tdm": {
+      "blocks": {
+        "A": {
+          "n": 10,
+          "mae_deg": 2.9924282389526136,
+          "bias_deg": -1.590957930435195,
+          "median_ae_deg": 3.2197280046049777,
+          "radar_height_m": 0.15240000000000004,
+          "tilt_deg": 10.404948650719305,
+          "gg_delay_cm": 4.730660703284535,
+          "angle_separation_deg": 17.847518443056572
+        },
+        "B": {
+          "n": 6,
+          "mae_deg": 1.6435979925465647,
+          "bias_deg": -0.5126395741504822,
+          "median_ae_deg": 1.2385456195074394,
+          "radar_height_m": 0.5715,
+          "tilt_deg": 6.6000000000000005,
+          "gg_delay_cm": 13.85935262653125,
+          "angle_separation_deg": 13.6610359775829
+        },
+        "C": {
+          "n": 7,
+          "mae_deg": 3.504737166266495,
+          "bias_deg": 0.9071358589032502,
+          "median_ae_deg": 2.6656855719000276,
+          "radar_height_m": 0.2667,
+          "tilt_deg": 3.8000000000000003,
+          "gg_delay_cm": 6.708899721843996,
+          "angle_separation_deg": 14.397667366903676
+        }
+      },
+      "comparisons": {
+        "A_minus_B": {
+          "first_minus_second_mae_deg": 1.3488302464060489,
+          "first_minus_second_bias_deg": -1.0783183562847127,
+          "mae_difference_bootstrap_95_deg": [
+            0.14716258068370724,
+            2.3078174865158254
+          ],
+          "mae_difference_exact_two_sided_p": 0.039585414585414584,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 6,
+            "first_minus_second_mae_deg": 1.1026478137416165,
+            "first_minus_second_bias_deg": -2.233606232137699,
+            "mean_standardized_match_distance": 0.5872129475468463
+          }
+        },
+        "A_minus_C": {
+          "first_minus_second_mae_deg": -0.5123089273138812,
+          "first_minus_second_bias_deg": -2.498093789338445,
+          "mae_difference_bootstrap_95_deg": [
+            -2.261104350671302,
+            1.0251499813331468
+          ],
+          "mae_difference_exact_two_sided_p": 0.5538872891814068,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 7,
+            "first_minus_second_mae_deg": -0.6499043706100069,
+            "first_minus_second_bias_deg": -2.5768764561864392,
+            "mean_standardized_match_distance": 0.5603228366206764
+          }
+        },
+        "C_minus_B": {
+          "first_minus_second_mae_deg": 1.86113917371993,
+          "first_minus_second_bias_deg": 1.4197754330537324,
+          "mae_difference_bootstrap_95_deg": [
+            0.10577298350838792,
+            3.669432208389239
+          ],
+          "mae_difference_exact_two_sided_p": 0.087995337995338,
+          "matched_on_tm_launch_and_speed": {
+            "n_pairs": 6,
+            "first_minus_second_mae_deg": 1.1920787416466045,
+            "first_minus_second_bias_deg": 0.3177814497531995,
+            "mean_standardized_match_distance": 0.8209795158635602
+          }
+        }
+      },
+      "geometry_correlations": {
+        "gg_delay_vs_absolute_error_rho": -0.44861660079051385,
+        "gg_delay_vs_absolute_error_p": 0.03178338134331041,
+        "angle_separation_vs_absolute_error_rho": 0.07213438735177866,
+        "angle_separation_vs_absolute_error_p": 0.7436083699952875
+      }
+    }
+  },
+  "range_asymmetry": {
+    "A": {
+      "n": 10,
+      "cross_asym_db": -0.10056624710745013,
+      "gg_asym_db": -0.08886236827502303,
+      "shoulder_asym_db": -0.020684220101045696,
+      "peak_shift_cm": -0.049174526456118306
+    },
+    "B": {
+      "n": 6,
+      "cross_asym_db": -0.7686695102902351,
+      "gg_asym_db": -1.0947168532207778,
+      "shoulder_asym_db": 0.22570643390644296,
+      "peak_shift_cm": -0.2824309426259636
+    },
+    "C": {
+      "n": 7,
+      "cross_asym_db": -2.907522102719665,
+      "gg_asym_db": -3.3071005839417027,
+      "shoulder_asym_db": -3.2917077716967285,
+      "peak_shift_cm": -1.9336766307642963
+    }
+  }
+}

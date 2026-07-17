@@ -6,9 +6,19 @@ custom firmware, all processing host-side. See docs/plans/stage1c_l3_burst_dump.
 
 from openflight.iwr6843.calibration import Calibration
 from openflight.iwr6843.driver import IWR6843Radar
+from openflight.iwr6843.lcmf import LCMFResult, estimate_lcmf_v1
 from openflight.iwr6843.shot import ShotMeasurement, process_dump
 from openflight.iwr6843.tracking import BallTrack, Geometry
 from openflight.iwr6843.trajectory import TrajectoryFit
 
-__all__ = ["BallTrack", "Calibration", "Geometry", "IWR6843Radar",
-           "ShotMeasurement", "TrajectoryFit", "process_dump"]
+__all__ = [
+    "BallTrack",
+    "Calibration",
+    "Geometry",
+    "IWR6843Radar",
+    "LCMFResult",
+    "ShotMeasurement",
+    "TrajectoryFit",
+    "estimate_lcmf_v1",
+    "process_dump",
+]
