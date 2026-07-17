@@ -25,7 +25,10 @@ from openflight.iwr6843.shot import ShotMeasurement, geometry_from_header, proce
 
 NAME = "lcmf_v1"
 DISPLAY_NAME = "Late-Flight Complex Multipath Fusion v1"
-ANGLE_CORRECTION_DEG = 2.8387689101987568
+# The July 14 development session used +2.8387689102 degrees. Independent
+# validation showed that offset did not transfer across physical bay alignment,
+# so production exposes the fused radar estimate without a truth-fitted shift.
+ANGLE_CORRECTION_DEG = 0.0
 CHANNEL_MODELS = ("two8", "four4_path_tdm")
 FAST_MODELS = ("direct1", "two2", "four4")
 COMPONENT_WEIGHT = 0.2

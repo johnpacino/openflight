@@ -449,7 +449,7 @@ def test_club_class_mapping():
 
 
 def test_lcmf_v1_fuses_five_frozen_components(cal):
-    """The production estimator must preserve the frozen, global correction."""
+    """Production LCMF must expose its raw fusion without a global correction."""
     raw = synth_shot(speed_ms=45.0, launch_deg=18.0, image_gain=0.35, noise=4.0)
 
     result = estimate_lcmf_v1(
@@ -468,6 +468,7 @@ def test_lcmf_v1_fuses_five_frozen_components(cal):
         "fast_four4_deg",
     }
     assert result.raw_angle_deg == pytest.approx(np.mean(list(result.components_deg.values())))
+    assert ANGLE_CORRECTION_DEG == 0.0
     assert result.angle_deg == pytest.approx(result.raw_angle_deg + ANGLE_CORRECTION_DEG)
     assert result.n_snapshots <= 4 * result.n_frames
     assert result.n_frames >= 3
