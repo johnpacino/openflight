@@ -462,6 +462,39 @@ class TestLogKld7Buffer:
         assert entry["club_angle"] is None
 
 
+class TestLogIWR6843Capture:
+    """TI logs retain raw-file linkage and all frozen estimator evidence."""
+
+    def test_iwr6843_capture_round_trips_lcmf_measurement(self, tmp_path):
+        logger = SessionLogger(log_dir=tmp_path, enabled=True)
+        logger.start_session(mode="rolling-buffer", trigger_type="sound")
+        measurement = {
+            "estimator": "lcmf_v1",
+            "launch_angle_deg": 17.4,
+            "components_deg": {"channel_two8_deg": 14.1},
+        }
+
+        logger.log_iwr6843_capture(
+            shot_number=2,
+            shot_timestamp=100.0,
+            trigger_timestamp=100.012,
+            capture_path="/tmp/iwr6843_002.l3dump",
+            capture_bytes=786452,
+            dump_duration_s=7.56,
+            capture_error=None,
+            ball_speed_mph=101.2,
+            measurement=measurement,
+        )
+
+        entry = json.loads(logger.session_path.read_text().strip().split("\n")[-1])
+        assert entry["type"] == "iwr6843_capture"
+        assert entry["shot_number"] == 2
+        assert entry["trigger_delta_ms"] == 12.0
+        assert entry["capture_bytes"] == 786452
+        assert entry["ball_speed_source"] == "ops243"
+        assert entry["measurement"] == measurement
+
+
 class TestLogClockSync:
     """Tests for OPS clock-sync logging (H1 timing instrumentation)."""
 

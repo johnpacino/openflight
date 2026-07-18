@@ -1,0 +1,9 @@
+# mmWave SDK build artifacts (produced inside the container, mounted to host)
+mss_configPkg_*/
+obj_*/
+*.oer4f
+*.d
+*.map
+*.xer4f
+*.bin
+*.rov.xs

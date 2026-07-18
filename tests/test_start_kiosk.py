@@ -21,6 +21,50 @@ def test_kld7_requires_mount_tilt():
     assert "mount tilt is unset" in (result.stdout + result.stderr)
 
 
+def test_iwr6843_enables_ti_launch_pipeline_with_production_defaults():
+    result = _dry_run("--iwr6843")
+    command = result.stdout.strip()
+
+    assert "--iwr6843" in command
+    assert "--trigger sound" in command
+    assert "--kld7" not in command
+
+
+def test_iwr6843_overrides_are_forwarded():
+    result = _dry_run(
+        "--iwr6843",
+        "--iwr6843-port",
+        "/dev/ttyUSB9",
+        "--iwr6843-trigger-pin",
+        "22",
+        "--iwr6843-tee-m",
+        "1.6",
+        "--iwr6843-net-m",
+        "4.8",
+        "--iwr6843-tilt-deg",
+        "10.4",
+        "--iwr6843-radar-height-m",
+        "0.1524",
+        "--iwr6843-ball-height-m",
+        "0.065",
+        "--iwr6843-tx-order",
+        "normal",
+        "--iwr6843-capture-timeout",
+        "15",
+    )
+    command = result.stdout.strip()
+
+    assert "--iwr6843-port /dev/ttyUSB9" in command
+    assert "--iwr6843-trigger-pin 22" in command
+    assert "--iwr6843-tee-m 1.6" in command
+    assert "--iwr6843-net-m 4.8" in command
+    assert "--iwr6843-tilt-deg 10.4" in command
+    assert "--iwr6843-radar-height-m 0.1524" in command
+    assert "--iwr6843-ball-height-m 0.065" in command
+    assert "--iwr6843-tx-order normal" in command
+    assert "--iwr6843-capture-timeout 15" in command
+
+
 def test_plain_kld7_enables_two_ray_defaults():
     """--kld7 (with the required tilt) forwards the cleaned-up flag set."""
     result = _dry_run("--kld7", "--kld7-mount-tilt", "10")
