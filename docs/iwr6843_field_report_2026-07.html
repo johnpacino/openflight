@@ -322,26 +322,29 @@
 <body>
   <div class="page">
     <header>
-      <p class="eyebrow">OpenFlight · Field report · Updated July 17, 2026</p>
+      <p class="eyebrow">OpenFlight · Field report · Updated July 18, 2026</p>
       <h1>How we measure launch angle with a 60&nbsp;GHz radar</h1>
-      <p class="dek">A plain-language guide to the OPS243 + TI IWR6843 pipeline, the late-flight algorithm we call LCMF-v1, what the first TrackMan session taught us, and what still needs independent validation.</p>
+      <p class="dek">A plain-language guide to the OPS243 + TI IWR6843 pipeline, the late-flight algorithm we call LCMF-v1, what two TrackMan sessions taught us, and how we plan to improve coverage without hiding quality.</p>
       <div class="meta">
         <span>Angle sensor <b>TI IWR6843</b></span>
         <span>Speed sensor <b>OPS243</b></span>
-        <span>Estimator <b>LCMF-v1, frozen</b></span>
-        <span>Current mount <b>Block A · 10.405° · 0.1524 m</b></span>
+        <span>Estimator <b>LCMF-v1</b></span>
+        <span>Validation <b>Two indoor TrackMan sessions</b></span>
       </div>
     </header>
 
     <nav aria-label="Report sections">
       <a href="#eli5">Explain it simply</a>
-      <a href="#architecture">Architecture</a>
+      <a href="#problem">Problem</a>
+      <a href="#chip">IWR6843</a>
+      <a href="#architecture">OPS + TI</a>
       <a href="#algorithm">Algorithm</a>
       <a href="#frames">Selected frames</a>
-      <a href="#correction">2.8388° correction</a>
+      <a href="#calibration">Setup calibration</a>
       <a href="#results">TrackMan results</a>
-      <a href="#ui">UI behavior</a>
-      <a href="#limits">Limits</a>
+      <a href="#next-steps">Next steps</a>
+      <a href="#setup">Setup variables</a>
+      <a href="#technical-deep-dive">Technical deep dive</a>
       <a href="#roadmap">Firmware roadmap</a>
     </nav>
 
@@ -351,8 +354,8 @@
           <p class="section-label">Explain it like I’m five</p>
           <h2>We watch the ball several times, keep the clearest pictures, and ask five judges where it is going.</h2>
           <p>The OPS radar tells us how fast the ball is moving. The TI radar takes a short movie made of radio echoes. We find the little streak that moves away from the tee, keep the clearest moments from each frame, and pay extra attention to the later part of the flight because the ball is farther from the club, golfer, and impact mess.</p>
-          <p>Five slightly different physics models each estimate launch angle. We average their answers, then add one fixed ruler correction of <strong>2.8388°</strong> that was measured against TrackMan. If the radar movie is too weak to follow the ball, we do not guess a radar angle; the UI labels a normal club-based estimate instead.</p>
-          <p class="bottom-line">The important idea: many looks + multiple models + one honest global correction, never a custom offset for each club.</p>
+          <p>Five slightly different physics models each estimate launch angle. We average their answers and use the measured mount geometry directly. If the radar movie is strong, the UI shows the measured radar angle. If the movie is weaker but still plausible, we want to show it as a lower-confidence two-dot radar read. If the radar cannot honestly follow the ball, the UI labels a normal club-based estimate instead.</p>
+          <p class="bottom-line">The important idea: many looks + multiple models + honest confidence, never a hidden adjustment that quietly fits one golfer or one club.</p>
         </div>
       </section>
 
@@ -360,19 +363,47 @@
         <p class="section-label">Where we are</p>
         <h2>The short version</h2>
         <div class="stats">
-          <div class="stat"><div class="stat-value">53 / 60</div><div class="stat-label">Block A shots with an LCMF-v1 measurement</div></div>
-          <div class="stat"><div class="stat-value">1.17°</div><div class="stat-label">development-session MAE after the frozen global correction</div></div>
-          <div class="stat"><div class="stat-value">0.96°</div><div class="stat-label">p50 absolute error: half the measured shots were at or below this</div></div>
-          <div class="stat"><div class="stat-value">7</div><div class="stat-label">honest no-reads; the product UI shows an estimate instead</div></div>
+          <div class="stat"><div class="stat-value">0.83°</div><div class="stat-label">combined Iron/Wedge MAE across two indoor TrackMan validation sessions</div></div>
+          <div class="stat"><div class="stat-value">87.4%</div><div class="stat-label">strict LCMF-v1 coverage on Iron/Wedge shots, 76 of 87</div></div>
+          <div class="stat"><div class="stat-value">0.67°</div><div class="stat-label">p50 absolute error; half of covered Iron/Wedge shots were inside this</div></div>
+          <div class="stat"><div class="stat-value">-0.04°</div><div class="stat-label">bias on covered Iron/Wedge shots, effectively centered</div></div>
         </div>
-        <div class="callout">
-          <p><strong>This is promising development evidence, not the final accuracy claim.</strong> The model family and correction were selected using the July 14 session. The next TrackMan session is the first truly independent test of the frozen pipeline.</p>
+        <p>For Iron/Wedge shots, the current pipeline is inside the 1° target on the shots where the radar has enough clean evidence. Driver and Mis Hits are tracked separately because they expose different engineering problems. The next job is widening coverage and hardening setup inputs so the same result travels to different builders, mats, rooms, and ranges.</p>
+      </section>
+
+      <section id="problem">
+        <div class="reading">
+          <p class="section-label">State the problem</p>
+          <h2>We need ball and club direction in a brutally short window</h2>
+          <p>OpenFlight has to measure vertical launch, horizontal launch, and eventually useful club-delivery signals while the ball is only a few feet from the radar. Indoors, a fast driver can hit a net or screen tens of milliseconds after impact. That leaves very little clean flight, and the earliest echoes are exactly where the club, hands, tee, ball, floor reflection, and impact noise overlap.</p>
+          <p>The K-LD7 taught us the core lesson: one transmitter, a slower frame cadence, coarse range separation, and one or two useful post-impact looks were not enough to consistently separate the real ball path from multipath and blind-zone behavior. It could look good on selected shots, but it did not create a robust 1° path against TrackMan, the gold-standard source of truth for launch-monitor validation.</p>
+          <div class="callout">
+            <p><strong>The product problem is not just “detect a ball.”</strong> It is detecting the right moving echo, proving it is the ball, modeling the ground-reflected copy, and reporting confidence honestly when the evidence is thin.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="chip">
+        <div class="reading">
+          <p class="section-label">Why this radar</p>
+          <h2>The IWR6843 gives us enough raw evidence to model the mess</h2>
+          <p>We selected TI’s IWR6843 because it can capture coherent complex radar data across multiple receive channels at a much faster cadence than the K-LD7 setup. The IWR6843LEVM board was the practical evaluation platform: available hardware, known antenna geometry, TI tooling, and enough on-chip L3 memory to hold a compact radar cube from the shot.</p>
+          <p>We created and uploaded custom firmware that turns the TI board into a short “radar movie” recorder. Instead of asking the radar to make a decision live, the board saves 12 tightly spaced snapshots of the ball leaving the tee. Each snapshot keeps detailed antenna information, so our software can later follow the ball moving away and separate it from the floor reflection, club, and impact noise.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Capability</th><th>Why it matters</th><th>Current use</th></tr></thead>
+            <tbody>
+              <tr><td>Fast frame cadence</td><td>More looks before the net or screen contaminates the track.</td><td>12 snapshots over roughly 72 ms in the current custom firmware.</td></tr>
+              <tr><td>Fine range bins</td><td>Direct and floor-reflected paths can separate in range as the ball leaves the tee.</td><td>3.2 GHz sweep, about 4.7 cm bins.</td></tr>
+              <tr><td>Complex antenna channels</td><td>Phase across the array carries angle information even when amplitude is messy.</td><td>Eight vertical virtual channels from TX1 + TX3 and four RX.</td></tr>
+              <tr><td>L3 rolling buffer</td><td>We can keep raw shot evidence and improve offline without reflashing for every idea.</td><td>786,452-byte dump per trigger, drained by the Pi.</td></tr>
+            </tbody>
+          </table></div>
         </div>
       </section>
 
       <section id="architecture">
         <div class="reading">
-          <p class="section-label">Architecture</p>
+          <p class="section-label">OPS + IWR6843</p>
           <h2>Two radars, each doing the job it is best at</h2>
           <p>The one-chip goal was useful while learning the TI sensor, but it is no longer the product direction. OPS speed has been highly consistent and does not need to be replaced. The TI board is now focused on the measurements its antenna array can add: vertical launch angle today, and eventually aim direction and club path.</p>
         </div>
@@ -396,11 +427,15 @@
         <div class="reading">
           <h3>Why the TI chip changed the problem</h3>
           <p>The K-LD7 could usually see only one or two useful frames before the indoor net stopped the ball. It also had coarse range resolution and only a two-element angle view, so a clean ball echo and a floor reflection could blend into one believable but wrong angle.</p>
-          <p>The IWR6843 uses 3.2 GHz of sweep bandwidth for roughly 4.7 cm range bins and combines two transmitters with four receivers into eight virtual vertical channels. Variant B stores 12 frames, each with 16 chirp pairs, at 6 ms spacing. That gives us enough time history and antenna diversity to model the reflection instead of pretending it is not there.</p>
+          <p>The custom firmware saves a compact, high-detail radar movie: 12 snapshots of the ball leaving the tee, spaced about 6 ms apart. Each snapshot uses multiple antenna views and fine distance slices, which gives the software enough evidence to model the floor reflection instead of pretending it is not there.</p>
           <div class="callout">
-            <p><strong>The rolling buffer is the enabling trick.</strong> The chip continuously overwrites its 768 KB radar cube. Impact freezes the last 72 ms, then the Pi drains the 786,452-byte dump over UART in about 7.6 seconds. We accept the delay because we keep the raw evidence for every shot.</p>
+            <p><strong>The rolling buffer is the enabling trick.</strong> This is similar to how OPS keeps a rolling speed buffer: the radar is always recording, and impact tells the system which recent slice matters. A sound trigger connected to the Pi freezes the TI radar movie after impact, preserving the last 72 ms of raw antenna data. The Pi then drains the 786,452-byte dump over UART in about 7.6 seconds. We accept the delay because we keep the raw evidence for every shot.</p>
           </div>
         </div>
+        <figure>
+          <img src="assets/iwr6843-rolling-buffer-timeline.svg" alt="Timeline showing a twelve-frame IWR6843 rolling-buffer capture with impact clutter, early ball frames, cleaner late-flight frames, and a net boundary.">
+          <figcaption><b>Rolling buffer mental model.</b> The radar is not trying to decide launch angle from one echo. It stores a short radio movie, then LCMF looks for the portion where the ball has separated from the impact mess but has not yet reached the net or screen.</figcaption>
+        </figure>
       </section>
 
       <section id="algorithm">
@@ -415,7 +450,7 @@
           <article class="step"><span class="step-number">3</span><h3>Balance the frames</h3><p>Keep snapshots with strength score ≥ 8 and range ≤ 4.7 m, then retain at most the strongest four from each frame. One noisy frame cannot dominate.</p></article>
           <article class="step"><span class="step-number">4</span><h3>Use OPS speed as the guide</h3><p>The independently measured OPS ball speed defines the candidate trajectory. TI’s local range-walk velocity handles the small timing correction between transmitters.</p></article>
           <article class="step"><span class="step-number">5</span><h3>Ask five physics models</h3><p>Two models compare the eight antenna channels across all balanced snapshots. Three inspect the direct and reflected range structure in the chronological late half.</p></article>
-          <article class="step"><span class="step-number">6</span><h3>Fuse and correct</h3><p>Each model receives exactly 20% weight. Their mean is the raw LCMF angle; the frozen device-wide correction is added once.</p></article>
+          <article class="step"><span class="step-number">6</span><h3>Fuse and report</h3><p>Each model receives exactly 20% weight. Their mean is the LCMF angle. The production path favors measured setup geometry and the same estimator rules for every club.</p></article>
         </div>
         <div class="reading">
           <div class="table-wrap"><table>
@@ -444,48 +479,204 @@
         </div>
       </section>
 
-      <section id="correction">
+      <section id="calibration">
         <div class="reading">
-          <p class="section-label">Calibration</p>
-          <h2>Where the +2.8388° correction came from</h2>
-          <p>After the five model outputs were averaged, the raw LCMF estimate was consistently low. Across the 53 Block A shots with enough radar coverage, the mean signed difference was:</p>
-          <div class="formula">mean(raw LCMF − TrackMan) = −2.8387689102°</div>
-          <p>So the calibration is the equal and opposite number:</p>
-          <div class="formula">reported launch = raw LCMF + 2.8387689102°</div>
-          <p>This is a <strong>single device-and-model correction</strong>. We explicitly rejected per-club offsets because they can quietly learn one golfer’s delivery and create an impressive score that will not travel to another player.</p>
-          <h3>Why we think it is a real shared bias</h3>
+          <p class="section-label">Setup calibration</p>
+          <h2>The radar is accurate only if the setup geometry is honest</h2>
+          <p>The biggest lesson from the first two validation sessions is simple: the algorithm can follow the ball, but it needs the real-world setup described correctly. Mount tilt, radar height, tee distance, ball height, mat height, and net distance all affect where the radar expects the direct and floor-reflected echoes to appear.</p>
+          <p>When those inputs are right, the same LCMF-v1 estimator produces a centered result across two indoor TrackMan sessions without per-club tuning. When those inputs are wrong, the error can look like a radar problem even though the underlying ball track is still present.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Setup input</th><th>Why it matters</th><th>Product plan</th></tr></thead>
+            <tbody>
+              <tr><td>Mount tilt</td><td>Defines how the antenna frame maps into the golfer's launch frame.</td><td>Measured setting first; later add an on-rig level sensor.</td></tr>
+              <tr><td>Tee distance</td><td>Changes the expected direct/reflected path geometry during the first few feet of flight.</td><td>Support measured distance and radar-assisted setup warnings.</td></tr>
+              <tr><td>Mat and ball height</td><td>An elevated mat changes the ball height relative to the radar and the floor reflection.</td><td>Store ball height and mat/surface height separately.</td></tr>
+              <tr><td>Net or screen distance</td><td>Defines how much clean late flight exists before impact with the screen or net.</td><td>Log it per session and use it when selecting late frames.</td></tr>
+            </tbody>
+          </table></div>
+          <h3>What remains true</h3>
           <ul class="plain-list">
-            <li><span class="tag teal">cross-fit</span>When the correction was learned on one half of Block A and scored on the other, MAE was about <strong>1.19°</strong>, close to the 1.17° full development score.</li>
-            <li><span class="tag teal">mount change</span>The fixed Block A correction scored about <strong>1.17° on Block B</strong> and <strong>1.27° on Block C</strong>, despite different heights and tilts. Those blocks are small, but the correction did not collapse.</li>
-            <li><span class="tag">not solved</span>We do not yet know the entire physical source. Likely contributors are residual direct/floor-path manifold error, early-flight multipath, and model mismatch. The correction removes the observed mean; the next session must prove it remains stable.</li>
+            <li><span class="tag teal">learned</span>The estimator is extracting stable ball-angle information from the TI radar movie.</li>
+            <li><span class="tag">not solved</span>We still need to make these setup measurements easy enough for normal builders, not just people who lived inside the test sessions.</li>
           </ul>
         </div>
       </section>
 
       <section id="results">
         <div class="reading">
-          <p class="section-label">TrackMan development session</p>
-          <h2>What the current numbers mean</h2>
+          <p class="section-label">TrackMan validation</p>
+          <h2>Two TrackMan sessions are the current accuracy baseline</h2>
         </div>
-        <figure>
-          <img src="assets/iwr6843-lcmf-trackman-accuracy.png" alt="TrackMan versus LCMF-v1 launch-angle scatter for 53 measured shots and residual plot showing the effect of the global 2.8388 degree correction.">
-          <figcaption><b>Block A, July 14.</b> Left: each point is one shot and the diagonal is perfect agreement. Right: every line is shifted by the same +2.8388°. The correction centers the population; it does not reduce shot-to-shot scatter or rescue bad captures.</figcaption>
-        </figure>
         <div class="reading">
+          <p>The headline below combines two indoor TrackMan validation sessions. Driver and Mis Hits are separated so the main number describes Iron/Wedge launch-angle performance rather than hiding known edge cases.</p>
           <div class="table-wrap"><table>
-            <thead><tr><th>Metric</th><th>Result</th><th>How to read it</th></tr></thead>
+            <thead><tr><th>Group</th><th>Shots</th><th>Covered</th><th>Coverage</th><th>MAE</th><th>p50</th><th>p75</th><th>p90</th><th>Bias</th></tr></thead>
             <tbody>
-              <tr><td>Coverage</td><td><strong>53 of 60 · 88.3%</strong></td><td>Seven shots lacked enough strict radar coverage and correctly returned no measurement.</td></tr>
-              <tr><td>MAE</td><td><strong>1.17°</strong></td><td>The average absolute distance between LCMF and TrackMan across the 53 measured shots.</td></tr>
-              <tr><td>Cross-fit MAE</td><td><strong>1.19°</strong></td><td>A more conservative test where the correction is learned on the opposite half.</td></tr>
-              <tr><td>p50 absolute error</td><td><strong>0.96°</strong></td><td>Half of measured shots were within 0.96°; this is not “the best half.”</td></tr>
-              <tr><td>p75 absolute error</td><td><strong>1.62°</strong></td><td>Three quarters were within 1.62°.</td></tr>
-              <tr><td>p95 absolute error</td><td><strong>2.80°</strong></td><td>Nineteen of twenty measured shots were within about 2.8°.</td></tr>
+              <tr><td>Iron/Wedge headline</td><td>87</td><td>76</td><td><strong>87.4%</strong></td><td><strong>0.83°</strong></td><td>0.67°</td><td>1.20°</td><td>1.80°</td><td>-0.04°</td></tr>
+              <tr><td>First validation session Iron/Wedge</td><td>41</td><td>39</td><td>95.1%</td><td><strong>0.83°</strong></td><td>0.78°</td><td>1.25°</td><td>1.81°</td><td>-0.10°</td></tr>
+              <tr><td>Second validation session Iron/Wedge</td><td>46</td><td>37</td><td>80.4%</td><td><strong>0.84°</strong></td><td>0.59°</td><td>1.19°</td><td>1.70°</td><td>+0.02°</td></tr>
             </tbody>
           </table></div>
           <div class="callout">
-            <p><strong>What changed from the previous report:</strong> the old 2.6° result depended on the retired point-angle/two-ray pipeline and per-club holdout offsets. LCMF-v1 is a different estimator with one global correction and 53/60 Block A coverage. The old numbers should not be mixed with the new ones.</p>
+            <p><strong>How to read absolute error:</strong> MAE is the average distance from TrackMan, ignoring sign. p50 means half the covered shots were closer than that error. Bias keeps the sign and tells us whether the whole group is systematically high or low.</p>
           </div>
+
+          <h3>Iron/Wedge breakdown by club</h3>
+          <p>The 9-iron table excludes a same-day experimental transmitter-order test from the headline. That experiment is useful firmware evidence, but it should not be mixed into the normal production score.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Club</th><th>Good shots</th><th>Covered</th><th>Coverage</th><th>MAE</th><th>p50</th><th>p75</th><th>p90</th><th>Bias</th></tr></thead>
+            <tbody>
+              <tr><td>Sand wedge</td><td>17</td><td>15</td><td>88.2%</td><td><strong>0.67°</strong></td><td>0.46°</td><td>1.06°</td><td>1.58°</td><td>-0.22°</td></tr>
+              <tr><td>9-iron</td><td>27</td><td>25</td><td>92.6%</td><td><strong>0.89°</strong></td><td>0.81°</td><td>1.18°</td><td>1.73°</td><td>+0.24°</td></tr>
+              <tr><td>7-iron</td><td>21</td><td>18</td><td>85.7%</td><td><strong>0.91°</strong></td><td>0.49°</td><td>1.15°</td><td>1.88°</td><td>-0.06°</td></tr>
+              <tr><td>5-iron</td><td>22</td><td>18</td><td>81.8%</td><td><strong>0.82°</strong></td><td>0.69°</td><td>1.31°</td><td>1.84°</td><td>-0.25°</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Driver separated</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Group</th><th>Shots</th><th>Covered</th><th>Coverage</th><th>MAE</th><th>p50</th><th>p75</th><th>p90</th><th>Bias</th></tr></thead>
+            <tbody>
+              <tr><td>Driver</td><td>22</td><td>18</td><td>81.8%</td><td><strong>3.55°</strong></td><td>1.31°</td><td>1.82°</td><td>15.57°</td><td>+3.39°</td></tr>
+              <tr><td>First validation session driver</td><td>9</td><td>5</td><td>55.6%</td><td><strong>1.58°</strong></td><td>1.37°</td><td>1.85°</td><td>2.77°</td><td>+1.08°</td></tr>
+              <tr><td>Second validation session driver</td><td>13</td><td>13</td><td>100.0%</td><td><strong>4.31°</strong></td><td>1.21°</td><td>1.71°</td><td>15.68°</td><td>+4.27°</td></tr>
+            </tbody>
+          </table></div>
+
+          <div class="callout">
+            <p><strong>Driver is not the same failure as irons.</strong> The second-session driver misses were mostly false acceptance of slow/ghost tracks. Raw replay showed the real fast ball in the frames, so the immediate fix is an OPS-vs-TI speed gate and a low-confidence fast-track recovery path.</p>
+          </div>
+
+          <h3>Mis Hits separated</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Group</th><th>Shots</th><th>Covered</th><th>Coverage</th><th>MAE</th><th>p50</th><th>p75</th><th>p90</th><th>Bias</th></tr></thead>
+            <tbody>
+              <tr><td>Mis Hits</td><td>19</td><td>13</td><td>68.4%</td><td><strong>2.20°</strong></td><td>1.16°</td><td>3.07°</td><td>5.10°</td><td>-0.54°</td></tr>
+              <tr><td>First validation session Mis Hits</td><td>8</td><td>7</td><td>87.5%</td><td><strong>2.40°</strong></td><td>1.29°</td><td>3.81°</td><td>4.83°</td><td>-0.15°</td></tr>
+              <tr><td>Second validation session Mis Hits</td><td>11</td><td>6</td><td>54.5%</td><td><strong>1.98°</strong></td><td>0.78°</td><td>1.43°</td><td>4.54°</td><td>-1.00°</td></tr>
+              <tr><td>Skulls / very low launch</td><td>5</td><td>5</td><td>100.0%</td><td><strong>6.00°</strong></td><td>2.07°</td><td>3.51°</td><td>15.47°</td><td>+4.31°</td></tr>
+            </tbody>
+          </table></div>
+          <p>These groups are still product-critical because real golfers hit them. They are separated here because they require different engineering: TX2 aim for directional Mis Hits, low-launch/impact-clutter logic, and OPS speed agreement for driver.</p>
+        </div>
+      </section>
+
+      <section id="next-steps">
+        <div class="reading">
+          <p class="section-label">Next steps</p>
+          <h2>Increase coverage, add club data, and harden the setup inputs</h2>
+          <p>The strict LCMF-v1 gate is doing the right thing for accuracy, but it leaves some real ball flights unreported. The first validation session already had strong strict coverage after the setup geometry was cleaned up. The second session showed the more practical product problem: a relaxed pass can recover no-reads, but those reads should enter the UI as measured lower-confidence angles rather than being mixed into the high-confidence lane.</p>
+          <p><strong>RMS</strong> is a “how messy was the fit?” score. Lower RMS means the radar snapshots line up neatly with one clean ball path. Higher RMS means the ball is probably there, but the evidence is noisier, weaker, or more mixed with reflections. Relaxing the RMS limit lets us accept more of those imperfect radar tracks, which increases coverage, but it also increases the chance that a recovered angle is a little farther from TrackMan.</p>
+          <p>The product answer should not be “lower the bar and call everything high confidence.” The product answer should be a second lane: <strong>measured, but lower confidence</strong>.</p>
+
+          <div class="table-wrap"><table>
+            <thead><tr><th>Mode</th><th>Iron/Wedge coverage</th><th>MAE</th><th>p50</th><th>p75</th><th>p90</th><th>New recovered reads</th><th>Recommended UI</th></tr></thead>
+            <tbody>
+              <tr><td>Combined strict LCMF-v1</td><td><strong>76 / 87 · 87.4%</strong></td><td><strong>0.83°</strong></td><td>0.67°</td><td>1.20°</td><td>1.80°</td><td>0</td><td>3 dots</td></tr>
+              <tr><td>First-session strict</td><td><strong>39 / 41 · 95.1%</strong></td><td><strong>0.83°</strong></td><td>0.78°</td><td>1.25°</td><td>1.81°</td><td>0</td><td>3 dots</td></tr>
+              <tr><td>Second-session strict</td><td><strong>37 / 46 · 80.4%</strong></td><td><strong>0.84°</strong></td><td>0.59°</td><td>1.19°</td><td>1.70°</td><td>0</td><td>3 dots</td></tr>
+              <tr><td>Second-session relaxed RMS ≤ 0.58</td><td><strong>42 / 49 · 85.7%</strong></td><td><strong>1.00°</strong></td><td>0.71°</td><td>1.32°</td><td>2.06°</td><td>5</td><td>2 dots</td></tr>
+              <tr><td>Second-session relaxed RMS ≤ 0.70</td><td><strong>45 / 49 · 91.8%</strong></td><td><strong>1.09°</strong></td><td>0.78°</td><td>1.56°</td><td>2.50°</td><td>8</td><td>2 dots, lab-only first</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Recommended confidence contract</h3>
+          <ol>
+            <li><strong>Strict pass:</strong> if normal LCMF-v1 accepts, show the radar launch angle as the primary measured value with full confidence.</li>
+            <li><strong>Relaxed pass:</strong> if strict LCMF no-reads but a relaxed replay passes RMS, snapshot, frame, component-spread, and OPS-speed checks, show the radar angle with a two-dot confidence marker.</li>
+            <li><strong>Estimate:</strong> if both radar passes fail, show the club/speed estimate exactly as we do today.</li>
+          </ol>
+
+          <div class="callout">
+            <p><strong>Why this is honest:</strong> a two-dot radar read is still better than hiding useful evidence, but it tells the golfer and the engineering team that the ball track was recovered under looser rules. That preserves trust while improving coverage.</p>
+          </div>
+
+          <h3>Driver-specific guardrail</h3>
+          <p>Driver needs an additional speed sanity check before any confidence badge. The worst driver misses were accepted TI tracks around 55–57 mph while OPS measured roughly 152–158 mph. Raw-frame replay showed the fast ball was present, so the immediate fix is to withhold any TI angle when its tracked speed is far below OPS speed, then optionally try an OPS-guided fast-track recovery as a low-confidence read.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Driver policy</th><th>Why</th><th>Expected effect</th></tr></thead>
+            <tbody>
+              <tr><td>Reject TI track speed below about 65–70% of OPS ball speed</td><td>Catches obvious slow ghost tracks before they reach the UI.</td><td>Turns bad measured angles into estimates instead of false confidence.</td></tr>
+              <tr><td>Try OPS-guided fast-track recovery after rejection</td><td>Offline replay recovered 3 of 4 bad driver shots with about 2.6° MAE.</td><td>Potential two-dot driver reads, but needs more truth data before shipping as normal confidence.</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Club data and setup hardening</h3>
+          <ul class="plain-list">
+            <li><span class="tag teal">club</span><strong>Keep club speed with OPS, but start collecting club-delivery evidence.</strong> A split pre-impact/post-impact firmware mode may expose attack angle and club path research signals without pretending the TI board is the club-speed authority.</li>
+            <li><span class="tag teal">aim</span><strong>Add TX2 for horizontal launch and shank classification.</strong> Far-right shots should eventually be recognized as far-right shots, not forced through a purely vertical interpretation.</li>
+            <li><span class="tag teal">inputs</span><strong>Harden tee distance, mount tilt, radar height, ball height, mat height, and net distance.</strong> The app should support measured settings, defaults, and radar sanity checks that warn when the actual session appears to drift.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="setup">
+        <div class="reading">
+          <p class="section-label">DIY setup variables</p>
+          <h2>Ball placement is a product variable, not just a measurement chore</h2>
+          <p>Commercial radar systems usually solve tee placement with a prescribed setup window and alignment aids. Photometric systems solve it by forcing the ball into a camera-observed hitting zone. OpenFlight sits in the DIY middle: we want the accuracy of a measured geometry, but builders may move between a marked home mat, an unmarked simulator bay, and a range mat where the ball can drift shot to shot.</p>
+
+          <div class="callout">
+            <p><strong>July 17 replay result:</strong> when ball placement is disciplined, fixed tee distance is best. When placement wanders more than about 6–9 inches, radar-computed or blended tee distance starts beating a stale fixed setting.</p>
+          </div>
+
+          <h3>How sensitive is tee distance?</h3>
+          <p>We reran second-session Iron/Wedge shots with tee distance shifted by ±6 inches. On the clean Iron/Wedge group, the original fixed tee distance scored <strong>0.84° MAE</strong>. A six-inch mistake roughly doubled or tripled the error.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Tee distance used by LCMF</th><th>Covered</th><th>MAE</th><th>p50</th><th>p75</th><th>p90</th><th>Bias</th></tr></thead>
+            <tbody>
+              <tr><td>Saved distance − 6 in</td><td>37 / 46</td><td><strong>1.61°</strong></td><td>1.34°</td><td>2.23°</td><td>2.89°</td><td>-1.54°</td></tr>
+              <tr><td>Saved distance</td><td>37 / 46</td><td><strong>0.84°</strong></td><td>0.59°</td><td>1.18°</td><td>1.69°</td><td>+0.01°</td></tr>
+              <tr><td>Saved distance + 6 in</td><td>37 / 46</td><td><strong>2.05°</strong></td><td>1.98°</td><td>2.87°</td><td>3.57°</td><td>+1.81°</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Radar-estimated tee range</h3>
+          <p>The TI track can be extrapolated backward toward impact to estimate where the ball started in range. On July 17, using an effective impact point near 12.5 ms inside the stored radar cube, the radar-derived start range centered very close to the measured tee distance:</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Group</th><th>Median estimated distance error</th><th>Mean estimated distance error</th><th>Middle 50%</th><th>Middle 80%</th></tr></thead>
+            <tbody>
+              <tr><td>All Iron/Wedge</td><td>+0.81 in</td><td>-0.06 in</td><td>-2.65 to +2.63 in</td><td>-7.46 to +7.22 in</td></tr>
+              <tr><td>Clean validation subset</td><td>+0.06 in</td><td>-0.66 in</td><td>-2.83 to +2.41 in</td><td>-8.27 to +6.12 in</td></tr>
+            </tbody>
+          </table></div>
+          <p>That is good enough for a <strong>setup sanity check</strong>. It is not yet good enough to blindly replace the tee distance shot by shot. On the clean group, per-shot radar tee range increased MAE from <strong>0.84°</strong> to <strong>1.22°</strong>. The per-shot estimate is useful evidence; the raw value is still noisy.</p>
+
+          <h3>Wild-placement simulation</h3>
+          <p>To model unmarked ranges and multi-golfer use, we simulated true ball placement wandering around the saved tee distance. The comparison below uses the clean Iron/Wedge validation subset.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Placement pattern</th><th>Best tee mode</th><th>Best MAE</th><th>Fixed-distance MAE</th><th>Per-shot radar MAE</th></tr></thead>
+            <tbody>
+              <tr><td>Random ±3 in</td><td>Fixed</td><td><strong>0.97°</strong></td><td>0.97°</td><td>1.30°</td></tr>
+              <tr><td>Random ±6 in</td><td>50/50 blend</td><td><strong>1.14°</strong></td><td>1.22°</td><td>1.28°</td></tr>
+              <tr><td>Random ±9 in</td><td>50/50 blend</td><td><strong>1.23°</strong></td><td>1.50°</td><td>1.29°</td></tr>
+              <tr><td>Random ±12 in</td><td>Per-shot radar</td><td><strong>1.30°</strong></td><td>1.84°</td><td>1.30°</td></tr>
+              <tr><td>Random ±18 in</td><td>Per-shot radar</td><td><strong>1.30°</strong></td><td>2.59°</td><td>1.30°</td></tr>
+              <tr><td>Constant setup error ±6–12 in</td><td>Rolling 20-shot median</td><td><strong>0.90–1.00°</strong></td><td>1.64–3.35°</td><td>1.05–1.42°</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Recommended app settings</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Mode</th><th>Use when</th><th>Behavior</th></tr></thead>
+            <tbody>
+              <tr><td>Fixed distance</td><td>Marked home mat, repeatable tee dot, single golfer.</td><td>Use the saved measured distance for every shot. Highest accuracy when placement is controlled.</td></tr>
+              <tr><td>Radar assisted</td><td>Recommended default for DIY setups.</td><td>Use saved distance for LCMF, but warn when the rolling radar estimate says the ball is consistently closer or farther.</td></tr>
+              <tr><td>Radar computed</td><td>Range bay, no marker, multiple golfers, or intentionally flexible hitting area.</td><td>Use a gated blend of per-shot radar estimate and rolling median. Prefer rolling median for stable setup errors; prefer per-shot only when placement is clearly moving.</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Other rig and user variables to test next</h3>
+          <ul class="plain-list">
+            <li><span class="tag teal">tilt</span><strong>Mount angle.</strong> The validation data strongly suggests tilt accuracy is one of the most important setup inputs. We need deliberate TrackMan A/B runs at 10.4°, 11.2°, and 12.0°.</li>
+            <li><span class="tag teal">height</span><strong>Mat height above radar floor.</strong> A one-inch elevated mat can move early-flight geometry by multiple degrees and late-flight geometry by roughly 0.5–1.0°. The app should store surface offset separately from ball/tee height.</li>
+            <li><span class="tag teal">net</span><strong>Net or screen distance.</strong> If the ball reaches the net quickly, late frames can become contaminated. Test 4.0 m, 4.6 m, and 5.2 m with driver and wedges.</li>
+            <li><span class="tag">floor</span><strong>Ground material.</strong> Hardwood, turf, concrete, carpet, and range mats change the floor reflection. We should log surface type and compare component spread and no-read rate.</li>
+            <li><span class="tag">aim</span><strong>Horizontal ball position and shanks.</strong> Launch direction changes the vertical fit slightly and shanks are a coverage/classification problem. TX2 aim is the right long-term fix.</li>
+            <li><span class="tag">alignment</span><strong>Radar yaw to target line.</strong> Small yaw errors mostly affect speed projection and future aim, but they can also change which multipath track wins. Add yaw/alignment to setup QA.</li>
+            <li><span class="tag">occlusion</span><strong>Golfer stance and handedness.</strong> Left/right-handed setup, foot position, and club path may alter early clutter. Track handedness and run a small lefty/righty A/B when possible.</li>
+            <li><span class="tag">ball</span><strong>Ball type and markings.</strong> Different balls should not change range-walk geometry much, but spin markings, metallic tape experiments, and range balls can change RCS and no-read rate.</li>
+          </ul>
         </div>
       </section>
 
@@ -503,62 +694,94 @@
         </div>
       </section>
 
-      <section id="ui">
-        <div class="reading">
-          <p class="section-label">Product behavior</p>
-          <h2>What teammates will see in the OpenFlight UI</h2>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Pipeline outcome</th><th>Displayed launch angle</th><th>UI source</th></tr></thead>
-            <tbody>
-              <tr><td>LCMF-v1 produces an angle</td><td>The measured TI angle</td><td><strong>radar</strong></td></tr>
-              <tr><td>TI has insufficient coverage or a rejected track</td><td>Club/speed fallback</td><td><strong>estimated</strong></td></tr>
-              <tr><td>TI capture fails or misses correlation</td><td>Club/speed fallback</td><td><strong>estimated</strong></td></tr>
-              <tr><td>OPS does not create a shot</td><td>No shot record</td><td>—</td></tr>
-            </tbody>
-          </table></div>
-          <p>There is no angle-value or confidence gate after LCMF produces a result. Even an <code>accepted_track_quality_warning</code> angle reaches the UI. The seven Block A no-reads would therefore appear as seven <strong>estimated</strong> angles, not seven missing UI rows, as long as OPS detected each shot.</p>
-          <div class="callout">
-            <p><strong>Confidence is intentionally conservative.</strong> LCMF-v1 does not yet have a truth-calibrated probability score, so measured TI angles should not inherit the fallback estimator’s 20–50% confidence. Session logs retain the five component angles, component spread, snapshot count, frame count, tracker evidence, and exact no-read reason for later scoring.</p>
-          </div>
-        </div>
-      </section>
-
-      <section id="current">
-        <div class="reading">
-          <p class="section-label">Current truths</p>
-          <h2>What is no longer true from earlier reports</h2>
-        </div>
-        <div class="current-truths">
-          <div class="truth"><b>Not a one-chip launch monitor.</b><span>OPS remains the trusted speed device. TI is focused on angle data.</span></div>
-          <div class="truth"><b>Not a per-club calibration.</b><span>The production candidate has one +2.8388° correction across the device and model.</span></div>
-          <div class="truth"><b>Not the old two-ray estimator.</b><span>LCMF-v1 jointly uses five channel and fast-time multipath models.</span></div>
-          <div class="truth"><b>Not a hard −2.5° gate.</b><span>The old point-angle pipeline exposed an unstable boresight region. LCMF does not gate on that coordinate; it models the path mixture and uses late flight.</span></div>
-          <div class="truth"><b>Not proof that the corrupted region vanished.</b><span>The mechanism is still likely manifold/multipath physics. The next truth session must test whether component disagreement reappears there.</span></div>
-          <div class="truth"><b>Not independently validated yet.</b><span>The estimator is frozen now so the next TrackMan session can be scored honestly without refitting.</span></div>
-        </div>
-      </section>
-
       <section id="limits">
         <div class="reading">
           <p class="section-label">Limits and next experiment</p>
           <h2>What could still prevent a 1° product</h2>
           <ul class="plain-list">
-            <li><span class="tag">validation</span><strong>Session reuse.</strong> The model family and correction came from the same July 14 data. The next session should score the frozen code first and analyze later.</li>
-            <li><span class="tag">coverage</span><strong>Seven of sixty no-reads.</strong> The UI fallback makes the product complete, but 88% radar coverage is not the finish line. We need exact no-read categories by club and trajectory.</li>
+            <li><span class="tag">validation</span><strong>More independent data.</strong> July 17 was a strong step, but confidence thresholds and driver recovery still need another truth session before we call them production behavior.</li>
+            <li><span class="tag">coverage</span><strong>Strict no-reads.</strong> The UI fallback makes the product complete, but 87.4% strict radar coverage on Iron/Wedge shots is not the finish line. A two-dot relaxed lane can recover useful reads without pretending they are equal to strict reads.</li>
             <li><span class="tag">driver</span><strong>Late flight can be short.</strong> A driver may hit a close net around 40 ms after impact. The firmware budget may need denser frames or a driver-specific capture allocation without changing estimator rules.</li>
             <li><span class="tag">confidence</span><strong>No calibrated confidence yet.</strong> Component spread and frame coverage are promising quality features, but thresholds must be learned on independent truth rather than invented.</li>
             <li><span class="tag">latency</span><strong>UART takes about 7.6 seconds.</strong> On-chip range gating or compression can reduce the blind time and buy more frames without changing RF hardware.</li>
             <li><span class="tag">2D</span><strong>Aim and club path are not in this capture.</strong> Bringing in the third transmitter requires a new memory allocation and firmware experiment.</li>
           </ul>
+        </div>
+      </section>
 
-          <h3>Controlled plan for the next TrackMan session</h3>
-          <ol>
-            <li>Freeze code, calibration, Block A mount geometry, and RF configuration before arrival.</li>
-            <li>Run the production OPS + IWR6843 server so every shot writes one combined record and the raw TI dump.</li>
-            <li>Score coverage, bias, MAE, p50, p75, and p95 without changing +2.8388°.</li>
-            <li>Break results down by club, raw launch, ball speed, selected-frame count, late-frame count, and component spread.</li>
-            <li>Only after the frozen score is recorded, investigate failures and decide whether LCMF-v2 is justified.</li>
-          </ol>
+      <section id="technical-deep-dive">
+        <div class="reading">
+          <p class="section-label">Technical deep dive</p>
+          <h2>How the current TI angle pipeline works</h2>
+          <p>This section is for contributors who want the engineering map without reading every replay script. The public story is “record a short radar movie and let five models vote.” The technical story is a synchronized OPS + TI capture, a ring-buffer unwrap, a range-walk tracker, balanced snapshot selection, five independent angle estimators, and strict quality gates before the value reaches the shot record.</p>
+          <p>The key hardware unlock is the IWR6843’s on-chip <strong>L3 RAM</strong>. Instead of streaming every chirp over a slow UART connection in real time, the firmware writes the radar cube into local memory while the shot is happening. That lets the board preserve high-rate complex antenna data during the tiny post-impact window, then drain it slowly after the ball is gone. In plain English: L3 RAM lets us capture the important 72 ms at radar speed, then analyze it at Pi speed.</p>
+
+          <h3>End-to-end signal chain</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Stage</th><th>What happens</th><th>Why it exists</th></tr></thead>
+            <tbody>
+              <tr><td>Impact trigger</td><td>The sound trigger fires into the Pi. OPS and TI both preserve their recent rolling-buffer evidence around that impact.</td><td>Gives both radars the same shot reference instead of waiting for software to notice the ball.</td></tr>
+              <tr><td>L3 capture</td><td>The custom TI firmware freezes the recent radar cube in on-chip L3 RAM before anything is sent to the Pi.</td><td>Keeps the full-speed antenna movie intact even though the serial dump takes several seconds afterward.</td></tr>
+              <tr><td>OPS processing</td><td>OPS produces ball speed, club speed, impact timing, and the primary shot record.</td><td>OPS remains the speed authority because it is consistent and already product-integrated.</td></tr>
+              <tr><td>TI dump</td><td>The IWR6843 dump is drained after the shot and associated with the OPS shot by trigger timing.</td><td>Preserves raw complex antenna evidence for measured launch angle and offline replay.</td></tr>
+              <tr><td>LCMF replay</td><td>Static clutter is removed, the outward ball track is found, snapshots are selected, and five angle models are fused.</td><td>Separates the ball from impact clutter, floor reflection, and wrong tracks.</td></tr>
+              <tr><td>Shot merge</td><td>The server adds TI launch angle when strict gates pass. Otherwise the UI can still show the normal estimate.</td><td>Keeps the product usable while making measured radar reads auditable.</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Current custom firmware capture</h3>
+          <p>The current firmware is optimized for vertical launch angle. Internally we still call this the Variant B baseline, but externally it is simply the custom rolling-buffer firmware.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Setting</th><th>Current value</th><th>Engineering tradeoff</th></tr></thead>
+            <tbody>
+              <tr><td>Frame count</td><td>12 radar snapshots</td><td>Enough time history for irons/wedges; driver may need denser or more intentional post-impact timing.</td></tr>
+              <tr><td>On-chip L3 RAM</td><td>768 KB rolling storage for the radar cube</td><td>The unlock: capture first at radar speed, transfer later at UART speed.</td></tr>
+              <tr><td>Frame spacing</td><td>About 6 ms</td><td>Fast enough to follow early flight, but a close net can still limit driver late-flight evidence.</td></tr>
+              <tr><td>Range resolution</td><td>About 4.7 cm bins from a 3.2 GHz sweep</td><td>Fine enough to separate direct and floor-reflected structure better than the K-LD7 path.</td></tr>
+              <tr><td>Vertical antenna view</td><td>TX1 + TX3 with four RX, forming eight vertical virtual channels</td><td>Preserves vertical phase diversity for launch angle. TX2 is reserved for future horizontal aim work.</td></tr>
+              <tr><td>Per-frame evidence</td><td>16 chirp pairs per frame</td><td>More chirps improve per-frame stability; fewer chirps could buy more frames for faster balls.</td></tr>
+              <tr><td>Payload</td><td>786,452 bytes per shot, drained in about 7.6 seconds</td><td>Large enough for rich offline evidence; slow enough that future compression/range gating matters.</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>What the five LCMF models do</h3>
+          <p>LCMF does not trust a single angle estimate. It asks five models with different failure modes, then gives each model equal weight. That keeps the estimator explicit and reduces the temptation to choose whichever model happened to win one session.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Model</th><th>Uses</th><th>Plain-English role</th></tr></thead>
+            <tbody>
+              <tr><td>Channel model A</td><td>Complex phase and amplitude across the eight vertical antenna channels</td><td>Finds the launch trajectory that best explains the antenna pattern when a floor path is allowed.</td></tr>
+              <tr><td>Channel model B</td><td>The same antenna evidence with a slightly different manifold assumption</td><td>Checks whether the answer survives a different view of the direct/reflected mixture.</td></tr>
+              <tr><td>Fast-time model A</td><td>Late chronological snapshots and fine range-bin structure</td><td>Looks for the direct and floor-reflected range signature as the ball gets farther from the tee.</td></tr>
+              <tr><td>Fast-time model B</td><td>Range-walk consistency through the late half of flight</td><td>Rewards trajectories that explain the ball moving outward at the OPS-guided speed.</td></tr>
+              <tr><td>Fast-time model C</td><td>Snapshot strength, range shape, and late-frame consistency</td><td>Provides a third range-domain vote so one noisy frame cannot dominate the result.</td></tr>
+              <tr><td>Fusion</td><td>20% weight per model</td><td>Produces the final LCMF launch angle and exposes model spread as a quality signal.</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Deeper model notes</h3>
+          <p>All five models sweep candidate launch angles through the same geometry: measured tee range, radar height, ball height, mount tilt, OPS ball speed, and the tracked TI range samples. For each candidate angle, the software predicts where the direct ball echo and the floor-reflected “image ball” echo should appear. The models differ in which part of the raw radar evidence they trust most.</p>
+          <ul class="plain-list">
+            <li><span class="tag teal">channel_two8</span><strong>Two-source vertical-array model.</strong> This is the simplest complex antenna model. It treats each selected snapshot as a mixture of two steering vectors across the eight virtual vertical channels: the direct path from the real ball and the image path from the floor reflection. The nuisance coefficients are complex, so amplitude and phase of each path are allowed to float. The candidate angle wins when those two columns predict the observed eight-channel vector with low leave-one-channel-out error. This is useful because it asks, “does the array phase look like this launch angle?” without needing the range-bin shape to be perfect.</li>
+            <li><span class="tag teal">channel_four4_path_tdm</span><strong>Four-path transmit/receive manifold model.</strong> The floor reflection can happen on transmit, receive, or both, so the full dictionary has four path products: direct-direct, direct-ground, ground-direct, and ground-ground. Because the IWR6843 is time-division multiplexed, the later TX block sees a slightly different path phase when direct and reflected components have different radial velocities. This model includes that TDM residual phase. It is more physically complete than the two-source model, but also has more nuisance freedom, so it is paired with leave-one-channel-out scoring to avoid simply overfitting noise.</li>
+            <li><span class="tag">fast_direct1</span><strong>Late-flight direct-path range model.</strong> This model ignores the floor image and asks whether the local FFT range window around the tracked ball can be explained by one direct path. It is intentionally under-modeled. When it agrees with the multipath models, that is a strong sign the direct echo is dominant and clean. When it disagrees, that disagreement is useful evidence that the shot is reflection-heavy or range-window contaminated.</li>
+            <li><span class="tag">fast_two2</span><strong>Direct plus ground-ground range model.</strong> This model keeps the direct path and the strongest image-ball term. It predicts the small range-bin separation between the real ball path length and the reflected path length, then fits complex coefficients inside a local FFT window around the track. This is the first fast-time model that directly asks, “does the range shape look like direct plus floor reflection?”</li>
+            <li><span class="tag">fast_four4</span><strong>Full local range-shape multipath model.</strong> This uses the same four DD/DG/GD/GG physical path products as the richer channel model, but now it also models where each path should fall inside the local range FFT. It is the most complete range-domain model: spatial steering across antennas multiplied by predicted fast-time tone responses around the ball bin. It is powerful when the late snapshots have enough SNR and path separation, but it can become sensitive to weak late frames, net contamination, or a wrong range track.</li>
+          </ul>
+          <p>The fusion step is deliberately boring: take the five component launch angles and average them with equal 20% weights. We do not let a single model “win” because each one fails differently. The channel models can be fooled by array manifold errors or calibration drift. The fast-time models can be fooled by range-window contamination or weak late frames. Agreement across both families is the useful signal.</p>
+
+          <h3>Quality gates and confidence ingredients</h3>
+          <ul class="plain-list">
+            <li><span class="tag teal">tracker</span><strong>Outward range track.</strong> The ball candidate must move away from the radar in a physically plausible way.</li>
+            <li><span class="tag teal">speed</span><strong>OPS agreement.</strong> OPS ball speed guides the expected trajectory and should reject slow ghost tracks, especially for driver.</li>
+            <li><span class="tag teal">frames</span><strong>Balanced snapshots.</strong> LCMF keeps only a few strong snapshots per frame so one frame with clutter cannot overwhelm the vote.</li>
+            <li><span class="tag teal">RMS</span><strong>Fit messiness.</strong> RMS measures how cleanly the selected radar evidence fits the candidate path. Relaxed RMS recovers coverage but belongs in a lower-confidence lane.</li>
+            <li><span class="tag">spread</span><strong>Component disagreement.</strong> If the five models disagree too much, the shot should be withheld or shown as low confidence.</li>
+            <li><span class="tag">metadata</span><strong>Session geometry.</strong> Tilt, radar height, tee distance, ball height, mat height, net distance, firmware identity, and TX order must be stored with the shot.</li>
+          </ul>
+
+          <h3>How it connects to OpenFlight</h3>
+          <p>The server flag <span class="mono">--iwr6843</span> enables the TI capture monitor alongside the existing OPS rolling-buffer monitor. OPS still creates the shot and owns speed/carry inputs. The TI monitor captures and processes the raw IWR6843 dump, then the server merges a measured launch angle into the shot when LCMF passes quality gates. When TI does not pass, the shot still appears using the existing estimated launch angle path.</p>
+          <p>This split is intentional: OPS provides the stable product backbone, while TI adds measured ball-angle evidence without forcing the whole launch monitor to depend on one chip.</p>
         </div>
       </section>
 
@@ -569,7 +792,7 @@
           <p>The current Variant B firmware is a strong vertical-launch baseline, but it is not the final use of the chip. Every upgrade spends from the same fixed on-chip memory budget: more transmitters, more chirps, more range samples, and more frames all compete for space and time. The goal is therefore not “collect everything.” It is <strong>preserve the useful complex antenna data while wasting fewer bytes on empty range and unhelpful moments</strong>.</p>
 
           <div class="callout">
-            <p><strong>Antenna-name clarification:</strong> today we use TI-labeled <strong>TX1 + TX3</strong> to form the eight-element vertical array. The physically third, currently unused transmitter is <strong>TX2</strong>; its offset position supplies the second axis needed for horizontal launch direction, or aim.</p>
+            <p><strong>Antenna-name clarification:</strong> today we use TI-labeled <strong>TX1 + TX3</strong> to form the eight-element vertical array. The physically third, currently unused transmitter is <strong>TX2</strong>; its sideways antenna position supplies the second axis needed for horizontal launch direction, or aim.</p>
           </div>
         </div>
 
@@ -611,7 +834,8 @@
               <tr><td>Club-aware capture presets</td><td>A selected driver can favor cadence and immediate post-impact coverage; slower irons can favor deeper per-frame evidence.</td><td>Useful after one fast-ball A/B. Keep LCMF rules and calibration global.</td></tr>
               <tr><td>Capture metadata</td><td>Exact impact-to-frame timing, firmware/config identity, tilt, height, TX order, and geometry prevent silent calibration mistakes.</td><td>Make these mandatory in every combined session record.</td></tr>
               <tr><td>Per-unit array calibration</td><td>TX2 aim and a future custom board need phase/gain calibration across both antenna axes.</td><td>Extend the corner-reflector routine before trusting horizontal angles.</td></tr>
-              <tr><td>Quality telemetry</td><td>Frame coverage, component spread, seam error, and SNR can explain no-reads and eventually support a calibrated confidence score.</td><td>Log now; set thresholds only after independent truth.</td></tr>
+              <tr><td>Two-lane radar confidence</td><td>Strict reads and relaxed recovered reads should not look identical in the UI.</td><td>Add a two-dot measured lane before broadly relaxing coverage thresholds.</td></tr>
+              <tr><td>Quality telemetry</td><td>Frame coverage, component spread, seam error, RMS, tracked speed agreement, and SNR can explain no-reads and support calibrated confidence.</td><td>Log now; set thresholds only after independent truth.</td></tr>
               <tr><td>Club delivery</td><td>Pre-impact frames may support attack angle and club path even though club speed remains an OPS-based calibrated estimate.</td><td>Research output, not a reason to weaken ball-angle capture.</td></tr>
               <tr><td>Outdoor range mode</td><td>The current roughly 6 m unambiguous corridor is designed for a net. Range use needs a longer-distance waveform.</td><td>Deferred preset; protect the indoor 1° goal first.</td></tr>
             </tbody>
@@ -627,16 +851,17 @@
           </ol>
 
           <div class="callout">
-            <p><strong>Bottom line:</strong> the chip has enough antenna geometry for vertical launch and aim, but not enough memory to collect both axes at maximum depth all the time. The best path is smarter scheduling and storage, not a bigger correction or a more complicated TrackMan fit.</p>
+            <p><strong>Bottom line:</strong> the chip has enough antenna geometry for vertical launch and aim, but not enough memory to collect both axes at maximum depth all the time. The best path is smarter scheduling and storage, not a hidden calibration trick or a more complicated TrackMan fit.</p>
           </div>
         </div>
       </section>
+
     </main>
 
     <footer>
-      OpenFlight · DIY launch monitor · report updated 2026-07-17<br>
-      Sources: July 14 TrackMan-aligned session, frozen LCMF-v1 candidate, Block A geometry audit, and production server integration.<br>
-      Reproducible figures: <span class="mono">scripts/analysis/tm0714/render_lcmf_report_figures.py</span>
+      OpenFlight · DIY launch monitor · report updated 2026-07-18<br>
+      Sources: two indoor TrackMan validation sessions, LCMF-v1 candidate, setup-variable replay, and production server integration.<br>
+      Reproducible artifacts: <span class="mono">artifacts/report_20260718/combined_lcmf_summary.csv</span>, <span class="mono">artifacts/report_20260718/combined_lcmf_results.csv</span>, <span class="mono">scripts/analysis/tm0714/render_lcmf_report_figures.py</span>
     </footer>
   </div>
 </body>

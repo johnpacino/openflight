@@ -1,0 +1,152 @@
+session,session_short,tm_system,shot_id,club,tx_order,experimental_tx,shot_type,shot_type_reason,tm_la_deg,tm_ball_mph,ops_ball_mph,lcmf_la_deg,status,error_deg,abs_error_deg
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,62,9Iron,normal,False,good,,16.77799999999999,99.7,96.9,17.95462636205484,accepted,1.1766263620548472,1.1766263620548472
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,63,9Iron,normal,False,shank,launch_direction>=8,11.487999999999987,89.30000000000001,87.6,10.200861937212109,accepted,-1.2871380627878786,1.2871380627878786
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,64,9Iron,normal,False,good,,20.468999999999983,110.2,106.7,19.880554265538002,accepted,-0.5884457344619811,0.5884457344619811
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,65,9Iron,normal,False,good,,17.449000000000005,111.3,108.0,18.268378870812384,accepted,0.819378870812379,0.819378870812379
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,66,9Iron,normal,False,good,,21.533999999999995,111.9,108.5,20.247471969851176,accepted,-1.2865280301488191,1.2865280301488191
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,67,9Iron,normal,False,good,,21.057999999999993,107.9,104.5,21.609753555780014,accepted,0.5517535557800208,0.5517535557800208
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,68,9Iron,normal,False,shank,launch_direction>=8,5.689999999999997,107.9,106.6,2.616510050437393,accepted,-3.073489949562604,3.073489949562604
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,69,9Iron,normal,False,good,,21.013999999999996,116.8,113.2,21.81947468283019,accepted,0.8054746828301944,0.8054746828301944
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,70,9Iron,normal,False,good,,22.12999999999998,109.0,105.3,22.033314182978316,accepted,-0.09668581702166534,0.09668581702166534
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,71,9Iron,normal,False,good,,21.279999999999987,110.60000000000001,107.1,21.3195136451102,accepted,0.039513645110211826,0.039513645110211826
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,72,7Iron,normal,False,shank,launch_direction>=8,1.6789999999999963,76.5,77.1,6.914702077653781,accepted,5.2357020776537855,5.2357020776537855
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,73,7Iron,normal,False,good,,18.677999999999987,112.9,109.8,18.974547956024367,accepted,0.29654795602438,0.29654795602438
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,74,7Iron,normal,False,good,,16.30699999999998,120.60000000000001,117.2,18.116413320235555,accepted,1.8094133202355742,1.8094133202355742
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,75,7Iron,normal,False,good,,17.240999999999993,117.8,114.4,18.26264731874688,accepted,1.0216473187468864,1.0216473187468864
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,76,7Iron,normal,False,shank,face_to_path>=8,12.092000000000013,103.99999999999999,101.8,12.597375541195163,accepted,0.5053755411951499,0.5053755411951499
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,77,7Iron,normal,False,shank,launch_direction>=8,13.927999999999987,103.9,101.4,15.084218973590708,accepted,1.1562189735907218,1.1562189735907218
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,78,7Iron,normal,False,shank,launch_direction>=8,6.121999999999985,69.3,71.0,1.5698858420329689,accepted,-4.552114157967016,4.552114157967016
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,79,7Iron,normal,False,good,,15.657999999999998,111.3,108.2,13.598482110764442,accepted,-2.059517889235556,2.059517889235556
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,80,7Iron,normal,False,good,,14.687999999999988,106.1,103.4,15.47645323743786,accepted,0.7884532374378725,0.7884532374378725
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,81,7Iron,normal,False,good,,9.146999999999982,109.0,106.5,8.632346679369693,accepted,-0.5146533206302895,0.5146533206302895
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,82,7Iron,normal,False,good,,17.27599999999998,108.6,105.6,16.861002977582928,accepted,-0.41499702241705094,0.41499702241705094
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,83,7Iron,normal,False,good,,18.87599999999999,112.0,108.5,18.212277612669965,accepted,-0.6637223873300258,0.6637223873300258
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,84,7Iron,normal,False,good,,16.949999999999992,122.0,118.6,16.80131145731168,accepted,-0.148688542688312,0.148688542688312
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,86,5Iron,normal,False,good,,14.677,111.9,109.3,14.626562377411563,accepted,-0.050437622588436426,0.050437622588436426
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,87,5Iron,normal,False,good,,15.406999999999991,118.2,115.2,15.447933139601592,accepted,0.04093313960160039,0.04093313960160039
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,88,5Iron,normal,False,shank,launch_direction>=8,0.5110000000000001,98.6,87.4,1.4736516128905768,accepted,0.9626516128905767,0.9626516128905767
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,89,5Iron,normal,False,good,,15.646999999999995,123.4,120.2,,no_measurement_insufficient_strict_coverage,,
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,90,5Iron,normal,False,good,,12.959999999999992,120.9,118.3,12.619225333802026,accepted,-0.3407746661979658,0.3407746661979658
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,91,5Iron,normal,False,good,,9.892999999999994,105.6,103.0,11.496870321096221,accepted,1.6038703210962275,1.6038703210962275
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,92,5Iron,normal,False,good,,10.917999999999983,107.6,105.2,8.936751669422454,accepted,-1.9812483305775288,1.9812483305775288
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,93,5Iron,normal,False,skull,launch_angle<8,1.5239999999999743,87.0,89.2,0.8088737654360393,accepted,-0.715126234563935,0.715126234563935
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,94,5Iron,normal,False,good,,13.115999999999982,129.6,126.6,12.276100179859474,accepted,-0.8398998201405075,0.8398998201405075
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,95,5Iron,normal,False,good,,14.271999999999982,114.6,111.7,16.07642143536131,accepted,1.8044214353613288,1.8044214353613288
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,96,5Iron,normal,False,good,,14.196999999999997,129.6,126.4,13.414118036645773,accepted,-0.7828819633542246,0.7828819633542246
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,97,5Iron,normal,False,good,,14.368000000000002,127.40000000000002,124.3,12.44419848141286,accepted,-1.9238015185871422,1.9238015185871422
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,98,5Iron,normal,False,good,,14.74200000000001,132.1,128.7,14.685350467935047,accepted,-0.056649532064962926,0.056649532064962926
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,99,5Iron,normal,False,good,,14.71499999999999,130.8,127.5,14.327780703018504,accepted,-0.3872192969814847,0.3872192969814847
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,100,5Iron,normal,False,good,,16.019999999999992,124.2,121.0,,no_measurement_insufficient_strict_coverage,,
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,101,5Iron,normal,False,good,,14.392000000000003,127.7,124.5,15.520321818435145,accepted,1.1283218184351416,1.1283218184351416
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,102,5Iron,normal,False,shank,face_to_path>=8,15.962999999999989,122.2,119.0,,no_measurement_insufficient_strict_coverage,,
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,103,Driver,normal,False,good,,10.004000000000007,148.1,145.2,11.85551748757013,accepted,1.8515174875701241,1.8515174875701241
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,104,Driver,normal,False,good,,17.990000000000002,137.7,134.2,16.744973173216106,accepted,-1.2450268267838958,1.2450268267838958
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,105,Driver,normal,False,skull,launch_angle<8,5.857999999999973,143.9,139.9,6.126831323279583,accepted,0.2688313232796098,0.2688313232796098
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,106,Driver,normal,False,good,,12.557000000000004,154.3,151.0,,no_measurement_insufficient_strict_coverage,,
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,109,Driver,normal,False,good,,17.058999999999973,144.4,140.6,,no_measurement_insufficient_strict_coverage,,
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,110,Driver,normal,False,good,,14.276000000000021,153.1,149.3,,no_measurement_insufficient_strict_coverage,,
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,111,Driver,normal,False,good,,10.58699999999998,147.3,144.1,,no_measurement_insufficient_strict_coverage,,
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,112,Driver,normal,False,good,,10.008999999999974,153.4,150.6,13.391450171809387,accepted,3.3824501718094133,3.3824501718094133
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,113,Driver,normal,False,good,,13.960999999999997,146.6,143.4,14.020694887542533,accepted,0.059694887542535824,0.059694887542535824
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,114,Driver,normal,False,good,,14.620999999999993,153.8,150.2,15.993752243534887,accepted,1.3727522435348938,1.3727522435348938
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,115,SandWedge,normal,False,good,,31.661999999999985,70.1,66.4,31.793230538736907,accepted,0.13123053873692214,0.13123053873692214
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,116,SandWedge,normal,False,good,,29.217000000000002,66.5,69.4,30.940733642977758,accepted,1.7237336429777557,1.7237336429777557
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,117,SandWedge,normal,False,good,,30.729999999999986,75.6,73.9,28.92711268147753,accepted,-1.8028873185224548,1.8028873185224548
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,118,SandWedge,normal,False,good,,33.168000000000006,72.8,70.2,31.94651416494551,accepted,-1.221485835054498,1.221485835054498
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,119,SandWedge,normal,False,good,,26.353999999999992,74.1,71.9,26.73022620138771,accepted,0.37622620138771623,0.37622620138771623
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,120,SandWedge,normal,False,good,,27.744999999999997,69.6,67.4,26.845189142546573,accepted,-0.8998108574534243,0.8998108574534243
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,121,SandWedge,normal,False,good,,24.805000000000007,69.1,66.2,24.881671974025434,accepted,0.07667197402542669,0.07667197402542669
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,122,SandWedge,normal,False,good,,31.036999999999985,69.5,65.9,30.799009235415465,accepted,-0.23799076458452006,0.23799076458452006
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,123,SandWedge,normal,False,good,,29.30099999999999,81.8,77.9,28.84582252714999,accepted,-0.45517747285,0.45517747285
+2026-07-14 Block A corrected tilt 12.0,Jul14 Block A,TrackMan 4,124,SandWedge,normal,False,good,,28.975,84.19999999999999,80.3,27.61198663483486,accepted,-1.3630133651651413,1.3630133651651413
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,1,9Iron,normal,False,good,,19.072999999999993,113.8,113.1,20.12,accepted,1.0470000000000077,1.0470000000000077
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,2,9Iron,normal,False,good,,19.63100000000001,109.1,108.9,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,3,9Iron,normal,False,good,,19.155999999999995,114.1,113.6,20.95,accepted,1.794000000000004,1.794000000000004
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,4,9Iron,normal,False,good,,20.607999999999993,109.5,109.1,20.55,accepted,-0.057999999999992724,0.057999999999992724
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,5,9Iron,normal,False,good,,20.957999999999984,102.5,102.4,21.64,accepted,0.6820000000000164,0.6820000000000164
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,6,9Iron,normal,False,good,,20.714,114.0,113.9,21.89,accepted,1.176000000000002,1.176000000000002
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,7,9Iron,normal,False,good,,19.871999999999993,108.4,108.1,21.51,accepted,1.6380000000000088,1.6380000000000088
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,8,9Iron,normal,False,good,,19.922999999999977,108.9,109.1,20.2,accepted,0.27700000000002234,0.27700000000002234
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,9,9Iron,normal,False,good,,18.06699999999999,109.3,108.9,18.88,accepted,0.8130000000000095,0.8130000000000095
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,10,9Iron,normal,False,good,,18.641999999999992,98.1,98.4,17.1,accepted,-1.541999999999991,1.541999999999991
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,1,9Iron,reversed,True,good,,21.446999999999985,104.3,104.0,24.45,accepted,3.0030000000000143,3.0030000000000143
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,2,9Iron,reversed,True,good,,20.456,114.3,113.5,,insufficient_channel_snapshots,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,3,9Iron,reversed,True,good,,21.337000000000007,112.0,111.7,23.22,accepted,1.882999999999992,1.882999999999992
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,1,9Iron,reversed,True,good,,19.476999999999993,115.5,115.4,17.96,accepted,-1.5169999999999924,1.5169999999999924
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,2,9Iron,reversed,True,good,,17.945000000000014,105.7,105.5,19.32,accepted,1.3749999999999858,1.3749999999999858
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,3,9Iron,reversed,True,good,,20.174999999999986,113.3,112.6,18.71,accepted,-1.4649999999999856,1.4649999999999856
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,4,9Iron,reversed,True,good,,21.15399999999999,114.5,113.8,22.42,accepted,1.2660000000000124,1.2660000000000124
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,5,9Iron,reversed,True,good,,18.210999999999988,113.9,113.3,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,6,9Iron,reversed,True,good,,20.345,112.6,112.1,21.26,accepted,0.9150000000000027,0.9150000000000027
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,7,9Iron,reversed,True,good,,22.276999999999997,112.0,111.4,22.46,accepted,0.18300000000000338,0.18300000000000338
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,8,9Iron,reversed,True,shank,launch_direction>=8,8.145999999999997,103.1,103.3,6.62,accepted,-1.5259999999999971,1.5259999999999971
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,9,9Iron,reversed,True,good,,21.63999999999999,107.9,107.2,22.13,accepted,0.4900000000000091,0.4900000000000091
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,10,9Iron,reversed,True,good,,20.869999999999987,110.9,110.4,20.66,accepted,-0.20999999999998664,0.20999999999998664
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,11,9Iron,reversed,True,good,,21.05299999999999,109.7,109.2,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,12,9Iron,reversed,True,good,,21.702,111.8,111.2,22.48,accepted,0.7779999999999987,0.7779999999999987
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,13,9Iron,reversed,True,good,,20.416,106.9,106.5,19.31,accepted,-1.1060000000000016,1.1060000000000016
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,14,9Iron,reversed,True,shank,launch_direction>=8,20.733000000000004,105.8,105.7,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,15,9Iron,reversed,True,good,,20.308,113.4,112.9,21.09,accepted,0.782,0.782
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,1,9Iron,normal,False,good,,18.680999999999994,118.0,117.3,18.36,accepted,-0.3209999999999944,0.3209999999999944
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,2,9Iron,normal,False,good,,20.624999999999986,115.5,115.2,19.65,accepted,-0.9749999999999872,0.9749999999999872
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,3,9Iron,normal,False,good,,20.003999999999994,117.5,116.5,19.03,accepted,-0.9739999999999931,0.9739999999999931
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,4,9Iron,normal,False,good,,18.554999999999993,117.7,117.0,20.65,accepted,2.095000000000006,2.095000000000006
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,5,9Iron,normal,False,good,,18.57899999999998,117.4,116.5,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,6,9Iron,normal,False,shank,launch_direction>=8,2.860999999999996,94.9,92.9,3.6,accepted,0.7390000000000039,0.7390000000000039
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,7,9Iron,normal,False,good,,19.787000000000003,113.1,112.7,20.56,accepted,0.7729999999999961,0.7729999999999961
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,8,9Iron,normal,False,good,,19.459999999999997,100.8,100.6,18.95,accepted,-0.509999999999998,0.509999999999998
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,10,9Iron,normal,False,good,,18.555999999999994,110.1,109.8,16.73,accepted,-1.8259999999999934,1.8259999999999934
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,11,9Iron,normal,False,good,,21.69899999999999,107.6,107.1,22.08,accepted,0.38100000000000733,0.38100000000000733
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,1,7Iron,normal,False,good,,14.590999999999983,110.3,110.2,15.78,accepted,1.189000000000016,1.189000000000016
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,2,7Iron,normal,False,shank,launch_direction>=8,9.333000000000002,106.6,107.0,8.51,accepted,-0.8230000000000022,0.8230000000000022
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,3,7Iron,normal,False,good,,13.807999999999995,114.4,114.5,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,4,7Iron,normal,False,good,,14.848999999999997,116.7,116.6,16.28,accepted,1.4310000000000045,1.4310000000000045
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,5,7Iron,normal,False,good,,16.127999999999997,117.8,117.7,16.37,accepted,0.24200000000000443,0.24200000000000443
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,6,7Iron,normal,False,good,,15.296999999999995,121.7,121.2,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,7,7Iron,normal,False,good,,14.154999999999982,115.8,116.2,14.58,accepted,0.4250000000000185,0.4250000000000185
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,8,7Iron,normal,False,good,,17.04999999999997,107.2,106.9,16.58,accepted,-0.46999999999997044,0.46999999999997044
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,9,7Iron,normal,False,good,,13.912999999999993,119.7,119.1,9.46,accepted,-4.452999999999992,4.452999999999992
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,10,7Iron,normal,False,good,,13.188999999999988,118.9,118.5,13.41,accepted,0.22100000000001252,0.22100000000001252
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,11,7Iron,normal,False,good,,11.667999999999969,113.7,114.1,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,12,7Iron,normal,False,shank,launch_direction>=8,6.6529999999999925,107.0,107.6,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,13,7Iron,normal,False,good,,15.07300000000001,110.2,110.0,15.24,accepted,0.16699999999999093,0.16699999999999093
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,14,7Iron,normal,False,good,,15.63299999999998,116.5,116.1,15.65,accepted,0.017000000000020776,0.017000000000020776
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,15,5Iron,normal,False,good,,11.92599999999999,131.4,131.3,12.43,accepted,0.5040000000000102,0.5040000000000102
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,16,5Iron,normal,False,shank,launch_direction>=8,2.6459999999999955,114.9,116.6,3.21,accepted,0.5640000000000045,0.5640000000000045
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,17,5Iron,normal,False,skull,launch_angle<8,4.683000000000001,103.5,103.1,1.17,accepted,-3.513000000000001,3.513000000000001
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,18,5Iron,normal,False,good,,12.43999999999999,122.6,122.2,11.85,accepted,-0.589999999999991,0.589999999999991
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,19,5Iron,normal,False,shank,launch_direction>=8,4.967000000000003,79.8,79.0,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,20,5Iron,normal,False,shank,launch_direction>=8,17.143999999999973,120.4,119.7,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,1,5Iron,normal,False,good,,12.62799999999997,124.9,124.4,11.43,accepted,-1.1979999999999702,1.1979999999999702
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,2,5Iron,normal,False,good,,11.412000000000003,131.7,131.1,11.23,accepted,-0.18200000000000216,0.18200000000000216
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,3,5Iron,normal,False,good,,13.694999999999984,129.7,129.4,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,4,5Iron,normal,False,good,,9.534000000000018,127.9,127.9,9.56,accepted,0.025999999999982037,0.025999999999982037
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,5,5Iron,normal,False,shank,launch_direction>=8,10.544999999999991,96.3,95.9,12.18,accepted,1.6350000000000087,1.6350000000000087
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,6,5Iron,normal,False,good,,11.300999999999949,107.3,108.6,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,7,5Iron,normal,False,shank,launch_direction>=8,17.96899999999999,106.5,105.2,10.53,accepted,-7.438999999999991,7.438999999999991
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,8,5Iron,normal,False,good,,8.87999999999998,131.8,131.9,7.53,accepted,-1.3499999999999792,1.3499999999999792
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,9,SandWedge,normal,False,shank,launch_direction>=8,25.881999999999998,64.6,67.0,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,10,SandWedge,normal,False,good,,29.326999999999998,82.0,82.3,29.39,accepted,0.06300000000000239,0.06300000000000239
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,11,SandWedge,normal,False,shank,launch_direction>=8,1.5149999999999944,79.2,79.0,0.86,accepted,-0.6549999999999944,0.6549999999999944
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,12,SandWedge,normal,False,good,,29.942000000000014,77.3,78.4,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,13,SandWedge,normal,False,good,,30.744999999999997,71.4,74.3,30.01,accepted,-0.7349999999999959,0.7349999999999959
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,14,SandWedge,normal,False,shank,launch_direction>=8,26.976,63.2,76.3,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,15,SandWedge,normal,False,good,,28.018999999999988,76.6,77.1,28.53,accepted,0.5110000000000134,0.5110000000000134
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,16,SandWedge,normal,False,good,,30.037999999999993,73.2,75.4,,rejected_missing_tdm_sign,,
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,17,SandWedge,normal,False,good,,28.917000000000012,77.3,77.9,29.27,accepted,0.3529999999999873,0.3529999999999873
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,18,SandWedge,normal,False,good,,29.544,78.6,79.2,29.68,accepted,0.13599999999999923,0.13599999999999923
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,1,Driver,normal,False,good,,19.501999999999974,140.4,139.6,21.14,accepted,1.6380000000000265,1.6380000000000265
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,2,Driver,normal,False,good,,13.600000000000001,150.4,151.8,30.1,accepted,16.5,16.5
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,3,Driver,normal,False,good,,11.264999999999931,159.9,159.9,12.07,accepted,0.805000000000069,0.805000000000069
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,4,Driver,normal,False,good,,10.865999999999948,160.8,161.2,12.58,accepted,1.714000000000052,1.714000000000052
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,5,Driver,normal,False,skull,launch_angle<8,6.214999999999975,156.2,156.1,8.28,accepted,2.0650000000000244,2.0650000000000244
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,6,Driver,normal,False,good,,9.191999999999986,152.4,154.1,24.91,accepted,15.718000000000014,15.718000000000014
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,7,Driver,normal,False,good,,15.532999999999989,151.8,150.8,15.81,accepted,0.2770000000000117,0.2770000000000117
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,8,Driver,normal,False,good,,13.584999999999974,156.9,158.2,29.09,accepted,15.505000000000026,15.505000000000026
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,9,Driver,normal,False,good,,14.128999999999941,153.3,152.7,14.52,accepted,0.39100000000005863,0.39100000000005863
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,10,Driver,normal,False,good,,11.635999999999974,158.2,158.0,13.08,accepted,1.4440000000000257,1.4440000000000257
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,11,Driver,normal,False,good,,13.045999999999998,156.4,156.2,14.26,accepted,1.2140000000000022,1.2140000000000022
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,12,Driver,normal,False,good,,12.361,160.0,160.1,12.93,accepted,0.5689999999999991,0.5689999999999991
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,13,Driver,normal,False,good,,14.429999999999952,159.7,158.9,14.18,accepted,-0.24999999999995204,0.24999999999995204
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,14,Driver,normal,False,good,,10.788999999999971,162.5,163.0,10.82,accepted,0.031000000000029004,0.031000000000029004
+2026-07-17 OpenFlight server session,Jul17,TrackMan iO,15,Driver,normal,False,skull,launch_angle<8,6.653999999999975,155.9,158.2,30.09,accepted,23.436000000000025,23.436000000000025
