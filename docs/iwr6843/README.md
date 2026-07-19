@@ -10,6 +10,25 @@ production shape is intentionally **OPS + IWR6843**, not TI-only:
 
 ## Hardware Setup
 
+### Power Budget
+
+The OPS243 and TI IWR6843 board are both power-hungry enough that they should
+not be treated like two tiny USB accessories on the same weak hub.
+
+Recommended power layout:
+
+- Power the Raspberry Pi from a strong, reliable supply.
+- Connect the TI IWR6843 board over USB, preferably on a stable/powered USB
+  path.
+- Connect the OPS243 through the Pi UART pins instead of powering it from the
+  same USB hub as the TI board.
+- Keep all signal grounds common: Pi ground, OPS ground, and sound-trigger
+  ground must be tied together.
+
+Power problems often look like software problems. Suspect power first if you
+see intermittent `no IWR6843 CLI found`, OPS trigger timeouts, random serial
+disconnects, or a board that works alone but fails when both radars are active.
+
 ### USB / UART Wiring
 
 Do not run the OPS243 and the TI IWR6843 board from the same USB hub. In the
@@ -122,6 +141,11 @@ scripts/start-kiosk.sh --radar-port /dev/serial0 --iwr6843 ...
 `start-kiosk.sh --port` is the web UI port. Use `--radar-port` or `--ops-port`
 for the OPS243 serial device.
 
+The IWR6843 board is USB-connected and auto-detected by OpenFlight in the common
+single-board setup. If auto-detection fails, confirm the board is powered,
+flashed with the custom firmware, and visible as a USB serial device before
+debugging the estimator.
+
 Important electrical notes:
 
 - Cross TX/RX: OPS `TX` goes to Pi `RX`; OPS `RX` goes to Pi `TX`.
@@ -133,6 +157,55 @@ Important electrical notes:
 - If either radar resets when both are active, assume power first: separate the
   USB power paths or use a powered hub for the TI board.
 
+### IWR6843 Firmware Flashing
+
+The current known-good firmware binary is checked in here:
+
+```text
+firmware/l3_dump/releases/l3_dump_vB-16loops-12frames-20260713.bin
+```
+
+You need TI flashing software and board drivers installed on the computer used
+to flash the board:
+
+- TI UniFlash for loading the `.bin`.
+- TI/mmWave board USB drivers so the flashing and data ports appear.
+
+High-level flashing sequence:
+
+1. Connect the IWR6843 board to the flashing computer over USB.
+2. Put the board into flashing/programming mode using the board's boot-mode
+   switch.
+3. Press the board reset button after changing the switch position.
+4. Open TI UniFlash and select the connected IWR6843/xWR68xx device.
+5. Flash `firmware/l3_dump/releases/l3_dump_vB-16loops-12frames-20260713.bin`.
+6. When flashing completes, move the boot-mode switch back to normal/run mode.
+7. Press the board reset button again.
+8. Reconnect or power-cycle the board before starting OpenFlight.
+
+The exact switch labels vary by carrier/EVM revision, so follow the board's TI
+boot-mode markings for `flash/program` versus `functional/run`. The important
+sequence is: switch to flashing mode, reset, flash, switch back to run mode,
+reset again.
+
+### Mount Orientation
+
+The IWR6843 antenna face should point down the target line toward the hitting
+area and net/screen. The current vertical-launch setup rotates the board so the
+antenna layout gives the widest useful vertical field of view.
+
+Mounting expectations:
+
+- Keep the antenna face aimed downrange, not angled across the ball line.
+- Keep the board rotation consistent with the validated enclosure so the
+  vertical antenna aperture is actually vertical.
+- Measure tilt from the antenna face, not from a random enclosure surface unless
+  that surface is known to be parallel to the board.
+- Re-measure tilt any time the bay floor, mat, enclosure, or stand changes.
+- Avoid loose mounts; small mechanical shifts can look like launch-angle bias.
+
+### Geometry Measurement Guide
+
 Current validated geometry inputs:
 
 - `--iwr6843-tee-m`: radar antenna center to ball slant range.
@@ -140,7 +213,30 @@ Current validated geometry inputs:
 - `--iwr6843-tilt-deg`: antenna-face mount tilt.
 - `--iwr6843-radar-height-m`: antenna-center height above the floor.
 - `--iwr6843-ball-height-m`: ball-center height above the floor.
-- `--iwr6843-tx-order`: `normal`, `reversed`, or `auto`.
+
+OpenFlight can infer the IWR6843 TX order from the selected config in the normal
+setup; treat that as a software/config value, not a field measurement.
+
+How to measure them:
+
+- `tee-m`: measure from the IWR6843 antenna center to the ball position. Use the
+  slant distance, not just floor distance, unless the height difference is
+  already negligible for your setup.
+- `net-m`: measure from the IWR6843 antenna center to the net or screen. If the
+  ball can hit a loose net and ride upward, keep this value honest so LCMF can
+  reject net-contaminated late frames.
+- `tilt-deg`: use a phone inclinometer or digital angle finder against the radar
+  antenna face. A wrong tilt can create a launch-angle offset even when the
+  radar is working correctly.
+- `radar-height-m`: measure from the floor to the antenna center, not the bottom
+  of the enclosure.
+- `ball-height-m`: measure from the floor/mat surface reference to the ball
+  center. A typical iron ball on the ground is around `0.040 m`; a driver tee is
+  higher.
+
+If the hitting mat is raised above the radar's floor reference, include that in
+`ball-height-m`. For example, a ball on a 1 inch elevated mat is about `0.025 m`
+higher than the same ball on the floor.
 
 The IWR6843 board and OPS243 should share the same physical sound-trigger event.
 The OpenFlight server uses the OPS shot timestamp to select the matching TI L3
