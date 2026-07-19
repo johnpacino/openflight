@@ -195,6 +195,12 @@ def test_capture_wrapper_infers_reversed_config():
         resolve_tx_order("config/iwr6843_l3dump_vBR.cfg", "normal")
 
 
+def test_server_accepts_tx2_config_as_normal_vertical_order():
+    from openflight.iwr6843.monitor import tx_order_from_config
+
+    assert tx_order_from_config("config/iwr6843_l3dump_vTX2.cfg") == "normal"
+
+
 def test_invalid_tx_order_is_rejected_before_processing(cal):
     with pytest.raises(ValueError, match="tx_order"):
         process_dump(synth_shot(), cal, tx_order="unknown")

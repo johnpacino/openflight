@@ -15,7 +15,7 @@ import numpy as np
 
 from openflight.iwr6843 import doa, tracking, trajectory
 from openflight.iwr6843.calibration import Calibration
-from openflight.iwr6843.dump import parse_dump
+from openflight.iwr6843.dump import parse_dump, project_tx_pair
 from openflight.iwr6843.tracking import BallTrack, Geometry
 from openflight.iwr6843.trajectory import TrajectoryFit
 
@@ -215,6 +215,7 @@ def process_dump(
     """
     tx_order = doa.validate_tx_order(tx_order)
     tdm_sign_policy = doa.validate_tdm_sign_policy(tdm_sign_policy)
+    raw = project_tx_pair(raw, (0, 2)) if parse_dump(raw)[0]["n_tx"] == 3 else raw
     meta, cube = parse_dump(raw)
     # header n_frames may exceed what actually arrived on a stalled transfer
     geo = geometry_from_header(meta)

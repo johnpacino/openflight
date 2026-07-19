@@ -89,6 +89,42 @@ def parse_dump(raw: bytes):
     return meta, cube
 
 
+def project_tx_pair(raw: bytes, tx_indices: tuple[int, int] = (0, 1)) -> bytes:
+    """Return a dump containing only the selected TX chirps from each TDM loop.
+
+    The current vertical LCMF estimator consumes a 2TX virtual array. Experimental
+    capture builds may store an extra TX for horizontal/aim work; this helper
+    keeps the full raw dump on disk while letting the existing vertical pipeline
+    operate on a deterministic TX pair.
+    """
+    meta, cube = parse_dump(raw)
+    n_tx = meta["n_tx"]
+    if n_tx == len(tx_indices) and tuple(tx_indices) == tuple(range(n_tx)):
+        return raw
+    if any(tx < 0 or tx >= n_tx for tx in tx_indices):
+        raise ValueError(f"TX projection {tx_indices} invalid for {n_tx} TX dump")
+    if meta["chirps_per_frame"] % n_tx:
+        raise ValueError(
+            f"chirps_per_frame {meta['chirps_per_frame']} is not divisible by n_tx {n_tx}"
+        )
+    n_frames, _cpf, n_rx, n_samples = cube.shape
+    loops = meta["chirps_per_frame"] // n_tx
+    tdm = cube.reshape(n_frames, loops, n_tx, n_rx, n_samples)
+    projected = tdm[:, :, list(tx_indices), :, :].reshape(
+        n_frames,
+        loops * len(tx_indices),
+        n_rx,
+        n_samples,
+    )
+    return pack_dump(
+        projected,
+        n_tx=len(tx_indices),
+        trigger_frame=meta["trigger_frame"],
+        version=meta["version"],
+        frame_period_us=meta.get("frame_period_us", 0),
+    )
+
+
 def range_fft(cube: np.ndarray, n_fft: int | None = None) -> np.ndarray:
     """FFT over the ADC-sample axis -> [n_frames, cpf, n_rx, n_range]."""
     n_fft = n_fft or cube.shape[-1]

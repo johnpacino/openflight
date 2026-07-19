@@ -21,7 +21,7 @@ DEFAULT_FREEZE_DELAY_S = 0.05
 
 
 def tx_order_from_config(config_path: str | Path) -> str:
-    """Infer the physical TX order from the two chirp masks in a cfg."""
+    """Infer the vertical physical TX order from chirp masks in a cfg."""
     masks = []
     with Path(config_path).open(encoding="utf-8") as handle:
         for raw_line in handle:
@@ -32,7 +32,12 @@ def tx_order_from_config(config_path: str | Path) -> str:
         return "normal"
     if masks == ["4", "1"]:
         return "reversed"
-    raise ValueError(f"IWR6843 config must contain chirp TX masks 1/4 or 4/1, got {masks}")
+    if masks == ["1", "2", "4"]:
+        return "normal"
+    raise ValueError(
+        "IWR6843 config must contain chirp TX masks 1/4, 4/1, or 1/2/4, "
+        f"got {masks}"
+    )
 
 
 @dataclass(frozen=True)

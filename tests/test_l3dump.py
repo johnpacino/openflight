@@ -35,6 +35,25 @@ class TestDumpFormat:
         with pytest.raises(ValueError):
             l3.parse_dump(raw[: l3.HEADER.size + 8])  # header + a few samples
 
+    def test_project_tx_pair_keeps_selected_chirps(self):
+        cube = np.zeros((2, 6, 4, 8), dtype=complex)
+        for chirp in range(6):
+            cube[:, chirp, :, :] = chirp + 1
+        raw = l3.pack_dump(cube, n_tx=3, trigger_frame=1, version=3, frame_period_us=6000)
+
+        projected = l3.project_tx_pair(raw, (0, 2))
+        meta, parsed = l3.parse_dump(projected)
+
+        assert meta["n_tx"] == 2
+        assert meta["chirps_per_frame"] == 4
+        assert meta["trigger_frame"] == 1
+        assert meta["frame_period_us"] == 6000
+        # Two TDM loops per frame: keep TX0/TX2, drop the middle TX1 chirp.
+        np.testing.assert_allclose(parsed[:, 0, :, :], 1)
+        np.testing.assert_allclose(parsed[:, 1, :, :], 3)
+        np.testing.assert_allclose(parsed[:, 2, :, :], 4)
+        np.testing.assert_allclose(parsed[:, 3, :, :], 6)
+
 
 class TestPipeline:
     def test_range_fft_peaks_at_injected_bin(self):
