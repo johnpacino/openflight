@@ -467,18 +467,29 @@ def _weighted_circular_mean(phases: list[float], weights: list[float]) -> tuple[
     return float(np.angle(z)), float(abs(z) / weight_sum)
 
 
+def _circular_median(phases: list[float]) -> float:
+    """Small-sample circular median: observed phase with least median distance."""
+    values = np.asarray(phases)
+    distances = [
+        np.median(np.abs(np.angle(np.exp(1j * (values - candidate)))))
+        for candidate in values
+    ]
+    return float(values[int(np.argmin(distances))])
+
+
 def _tx2_horizontal_proxy(
     raw: bytes,
     shot: ShotMeasurement,
     *,
     tdm_sign: int,
 ) -> tuple[float | None, float | None, str | None]:
-    """Experimental TX2 horizontal proxy for UI visibility.
+    """HLCMF-v0: experimental TX2 horizontal launch proxy.
 
-    This is intentionally not the final aim estimator. It compares the
-    one-chirp-delayed TX2 response against the TX1/TX3 vertical reference at
-    the fitted ball range bins. Positive is treated as right for this field
-    experiment until a marked-net calibration solves sign and scale.
+    Horizontal Late Complex Median Fusion mirrors the vertical-launch lesson:
+    use fewer, cleaner snapshots, follow the fitted ball range track, correct
+    TDM motion, robustly median TX2 phase per RX channel, then fuse the tail
+    frame slots that separated the pushed-shot experiment. Positive is treated
+    as right until a marked-net calibration solves sign, zero, and scale.
     """
     meta, cube = parse_dump(raw)
     if meta["n_tx"] != 3 or shot.track is None:
@@ -489,8 +500,7 @@ def _tx2_horizontal_proxy(
     tdm = cube.reshape(n_frames, loops, meta["n_tx"], n_rx, n_samples)
     rfft = np.fft.fft(tdm, axis=-1)
     mti = rfft - rfft.mean(axis=1, keepdims=True)
-    phases: list[float] = []
-    weights: list[float] = []
+    snapshots: list[tuple[float, float, float]] = []
     for frame in range(geometry.n_frames):
         for loop in range(geometry.n_loops):
             time_s = geometry.loop_time(frame, loop)
@@ -511,13 +521,22 @@ def _tx2_horizontal_proxy(
             weight = float(np.mean(np.abs(reference) ** 2 + np.abs(tx2) ** 2))
             if weight <= 0:
                 continue
-            phases.append(float(np.angle(np.vdot(reference, tx2))))
-            weights.append(weight)
-    if len(phases) < 6:
-        return None, None, "insufficient_horizontal_snapshots"
+            rx_phases = [
+                float(np.angle(np.conj(reference[rx]) * tx2[rx]))
+                for rx in range(n_rx)
+                if abs(reference[rx]) * abs(tx2[rx]) > 0
+            ]
+            if rx_phases:
+                snapshots.append((float(frame), _circular_median(rx_phases), weight))
+    tail_frames = set(range(max(0, geometry.n_frames - 3), geometry.n_frames))
+    snapshots = [snapshot for snapshot in snapshots if snapshot[0] in tail_frames]
+    if len(snapshots) < 6:
+        return None, None, "hlcmf_v0_insufficient_tail_snapshots"
+    phases = [phase for _frame, phase, _weight in snapshots]
+    weights = [weight for _frame, _phase, weight in snapshots]
     phase_rad, coherence = _weighted_circular_mean(phases, weights)
     angle_deg = _phase_to_angle_deg(phase_rad)
-    status = "accepted" if coherence >= 0.25 else "low_coherence"
+    status = "hlcmf_v0_accepted" if coherence >= 0.25 else "hlcmf_v0_low_coherence"
     return angle_deg, coherence, status
 
 
