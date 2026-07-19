@@ -6,7 +6,7 @@ The chain that found the ball on every swing this weekend:
    burst) — static clutter cancels; the static argmax NEVER sees the ball.
 2. Per-loop peak detections inside meter-gates that exclude the golfer blob.
 3. RANSAC line fit of range vs time = the unambiguous ball speed. Doppler is
-   useless here: at 90 us loop PRI a ~50 m/s ball aliases to walking pace.
+   useless here: at ~90 us loop PRI a ~50 m/s ball aliases to walking pace.
 
 Ring slots stream in memory order; the header's ``trigger_frame`` (fw v2+)
 gives the true time order and is treated as authoritative.
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-LOOP_PRI_S = 90e-6            # per-TX chirp repeat; constant across variants
+LOOP_PRI_S = 90e-6            # TX1-to-next-TX1 loop period for the 2TX config
 RANGE_SPAN_M = 6.0            # every cfg keeps a 6 m span: bin = 6.0/n_samples
 BALL_GATES_M = ((2.25, 3.75), (3.75, 5.5))
 SPEED_BOUNDS_MS = (20.0, 90.0)
@@ -37,15 +37,17 @@ class Geometry:
 
     n_frames: int
     chirps_per_frame: int
+    n_tx: int
     n_rx: int
     n_samples: int
     frame_period_s: float
     trigger_frame: int
+    loop_period_s: float = LOOP_PRI_S
 
     @property
     def n_loops(self) -> int:
-        """TDM chirp pairs per frame."""
-        return self.chirps_per_frame // 2
+        """TDM loops per frame."""
+        return self.chirps_per_frame // self.n_tx
 
     @property
     def range_res_m(self) -> float:
@@ -55,7 +57,7 @@ class Geometry:
     def loop_time(self, frame: int, loop: int) -> float:
         """Seconds from window start for (ring-slot frame, loop)."""
         slot_order = (frame - self.trigger_frame) % self.n_frames
-        return slot_order * self.frame_period_s + loop * LOOP_PRI_S
+        return slot_order * self.frame_period_s + loop * self.loop_period_s
 
 
 @dataclass

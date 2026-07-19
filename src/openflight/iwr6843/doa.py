@@ -26,7 +26,7 @@ import numpy as np
 
 from openflight.iwr6843.calibration import Calibration
 from openflight.iwr6843.music import LAM, est_bartlett, est_music_fbss_high
-from openflight.iwr6843.tracking import LOOP_PRI_S, BallTrack, Geometry
+from openflight.iwr6843.tracking import BallTrack, Geometry
 
 TDM_TAU_S = 45e-6  # first -> second chirp offset inside one loop
 TX_ORDERS = frozenset({"normal", "reversed"})
@@ -68,12 +68,12 @@ def measure_tdm_sign(mti: np.ndarray, track: BallTrack, geo: Geometry) -> int:
         for loop in range(geo.n_loops - 1):
             t_s = geo.loop_time(frame, loop)
             b_0 = int(round(track.bin_at(t_s)))
-            b_1 = int(round(track.bin_at(t_s + LOOP_PRI_S)))
+            b_1 = int(round(track.bin_at(t_s + geo.loop_period_s)))
             if 2 <= b_0 < geo.n_samples and 2 <= b_1 < geo.n_samples:
                 acc += np.vdot(mti[frame, 0, loop, :, b_0], mti[frame, 0, loop + 1, :, b_1])
     if abs(acc) == 0:
         return +1
-    psi_pred = 4 * np.pi * track.speed_ms * LOOP_PRI_S / LAM
+    psi_pred = 4 * np.pi * track.speed_ms * geo.loop_period_s / LAM
 
     def circ_dist(a: float, b: float) -> float:
         return abs(np.angle(np.exp(1j * (a - b))))
@@ -142,6 +142,7 @@ def snapshot_series(
     snr_min: float = 8.0,
     tx_order: str = "normal",
     tdm_sign: int | None = None,
+    tdm_tau_s: float = TDM_TAU_S,
 ) -> list[tuple[float, float, np.ndarray, float]]:
     """Calibrated snapshots along the fitted track.
 
@@ -167,8 +168,8 @@ def snapshot_series(
             # TX-block phase residual that grows toward the track ends
             # (TrackMan-truth finding, 2026-07-15)
             v_r = track.speed_ms_at(t_mid, geo.range_res_m)
-            tdm_phase = tdm_sign * 4 * np.pi * v_r * TDM_TAU_S / LAM
-            loop_phase = tdm_sign * 4 * np.pi * v_r * LOOP_PRI_S / LAM
+            tdm_phase = tdm_sign * 4 * np.pi * v_r * tdm_tau_s / LAM
+            loop_phase = tdm_sign * 4 * np.pi * v_r * geo.loop_period_s / LAM
             acc = np.zeros(8, dtype=complex)
             for off in range(k):
                 loop = start + off
@@ -202,6 +203,7 @@ def angle_points(
     snr_min: float = 8.0,
     tx_order: str = "normal",
     tdm_sign: int | None = None,
+    tdm_tau_s: float = TDM_TAU_S,
     agreement_max_rad: float = np.radians(8.0),
 ) -> list[AnglePoint]:
     """Per-point elevation estimates along the fitted ball track.
@@ -218,6 +220,7 @@ def angle_points(
         snr_min=snr_min,
         tx_order=tx_order,
         tdm_sign=tdm_sign,
+        tdm_tau_s=tdm_tau_s,
     )
     noise = float(np.median(np.abs(mti) ** 2))
     k = max(1, int(coherent_loops))
