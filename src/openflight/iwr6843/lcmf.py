@@ -15,7 +15,7 @@ import numpy as np
 
 from openflight.iwr6843 import doa, tracking
 from openflight.iwr6843.calibration import Calibration
-from openflight.iwr6843.dump import parse_dump
+from openflight.iwr6843.dump import parse_dump, project_tx_pair
 from openflight.iwr6843.multipath import (
     ballistic_trajectory_from_range,
     leave_one_channel_out_error,
@@ -439,6 +439,9 @@ def estimate_lcmf_v1(
         raise ValueError("ball_speed_mph must be positive")
     if cal.tee_range_m is None:
         raise ValueError("LCMF-v1 requires the measured tee slant range")
+    meta, _cube = parse_dump(raw)
+    if meta["n_tx"] == 3:
+        raw = project_tx_pair(raw, (0, 2))
 
     shot = process_dump(
         raw,
