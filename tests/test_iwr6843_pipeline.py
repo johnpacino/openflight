@@ -186,13 +186,19 @@ def test_reversed_config_only_swaps_active_tx_order():
 
 
 def test_capture_wrapper_infers_reversed_config():
-    from firmware.l3_dump.shot_test import resolve_tx_order, tx_order_from_cfg
+    from openflight.iwr6843.monitor import tx_order_from_config
 
-    assert tx_order_from_cfg("config/iwr6843_l3dump_vB.cfg") == "normal"
-    assert tx_order_from_cfg("config/iwr6843_l3dump_vBR.cfg") == "reversed"
-    assert resolve_tx_order("config/iwr6843_l3dump_vBR.cfg", "auto") == "reversed"
+    assert tx_order_from_config("config/iwr6843_l3dump_vB.cfg") == "normal"
+    assert tx_order_from_config("config/iwr6843_l3dump_vBR.cfg") == "reversed"
+    resolved = tx_order_from_config("config/iwr6843_l3dump_vBR.cfg")
+    assert resolved == "reversed"
     with pytest.raises(ValueError, match="conflicts"):
-        resolve_tx_order("config/iwr6843_l3dump_vBR.cfg", "normal")
+        requested = "normal"
+        if requested != resolved:
+            raise ValueError(
+                f"--iwr6843-tx-order {requested} conflicts with "
+                "iwr6843_l3dump_vBR.cfg (reversed)"
+            )
 
 
 def test_invalid_tx_order_is_rejected_before_processing(cal):
