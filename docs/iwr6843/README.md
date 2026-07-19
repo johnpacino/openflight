@@ -136,3 +136,47 @@ GPIOZERO_PIN_FACTORY=lgpio uv run \
   `shot_test.py`, calibration, or kiosk processes before restarting.
 - If the IWR6843 port is not found, unplug/replug the board and confirm the
   custom single-port firmware is flashed.
+
+## Offline Replay
+
+Use the replay script when you have saved `.l3dump` files from a debug session
+and want to rerun LCMF-v1 without the Pi hardware connected. This is the safest
+way to compare estimator changes because it uses the same raw TI capture and
+OPS ball speed every time.
+
+Replay a session JSONL that contains `iwr6843_capture.capture_path` entries:
+
+```bash
+uv run python scripts/iwr6843/replay.py \
+  --input ~/openflight_sessions/session_20260717.jsonl \
+  --tee-m 1.655 \
+  --net-m 5.156 \
+  --tilt-deg 10.4 \
+  --radar-height-m 0.1524 \
+  --ball-height-m 0.040 \
+  --club 9i \
+  --out replay.csv
+```
+
+Replay a single dump:
+
+```bash
+uv run python scripts/iwr6843/replay.py \
+  --input ~/openflight_sessions/iwr6843/shot.l3dump \
+  --ball-speed-mph 105.9 \
+  --club 9i \
+  --tee-m 1.655 \
+  --net-m 5.156 \
+  --tilt-deg 10.4 \
+  --radar-height-m 0.1524 \
+  --ball-height-m 0.040
+```
+
+Important replay notes:
+
+- A session JSONL can only replay captures that were saved during `--debug`.
+- A single `.l3dump` requires `--ball-speed-mph` because OPS speed is not inside
+  the TI dump.
+- `--tx-order auto` reads the chirp order from `--cfg`; use the reversed cfg
+  when replaying reversed-TX experiments.
+- Output defaults to a terminal table, or CSV/JSONL when `--out` is supplied.
