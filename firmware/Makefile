@@ -36,7 +36,7 @@ REQUIRED_INSTALLERS := \
 	sysconfig-1.10.0_2163-setup.run \
 	xdctools_3_61_00_16_core_linux.zip
 
-.PHONY: help check-host check-installers sync-installers-from-stacey install-ti-deps-native install-ti-tools-native probe-installers-native build-vb-native build-debian-base build-debian probe-installers shell-debian clean-image
+.PHONY: help check-host check-installers sync-installers-from-stacey install-ti-deps-native install-ti-tools-native probe-installers-native build-vb-native build-tx2-native build-debian-base build-debian probe-installers shell-debian clean-image
 
 help:
 	@echo "IWR6843 firmware build helpers"
@@ -49,6 +49,7 @@ help:
 	@echo "  install-ti-tools-native    Install TI SDK/toolchain into /opt/ti"
 	@echo "  probe-installers-native    Test TI installer stubs on this host"
 	@echo "  build-vb-native            Build current Variant B firmware"
+	@echo "  build-tx2-native           Build 3TX/TX2 proof firmware"
 	@echo "  build-debian-base          Build Pi/QEMU-friendly base image only"
 	@echo "  build-debian               Build Pi/QEMU-friendly Debian amd64 image"
 	@echo "  probe-installers           Test TI installer stubs under the base image"
@@ -60,6 +61,7 @@ help:
 	@echo "  make -C firmware install-ti-deps-native"
 	@echo "  make -C firmware install-ti-tools-native"
 	@echo "  make -C firmware build-vb-native"
+	@echo "  make -C firmware build-tx2-native"
 	@echo "  make -C firmware build-debian-base"
 	@echo "  make -C firmware probe-installers"
 	@echo "  make -C firmware build-debian"
@@ -127,6 +129,13 @@ build-vb-native:
 	mkdir -p "$(BUILD_ARTIFACT_DIR)"
 	cp "$(L3_DIR)/l3_dump.bin" "$(BUILD_ARTIFACT_DIR)/l3_dump_vB_2tx_16loops_12frames.bin"
 	cp "$(L3_DIR)/l3_dump_mss.xer4f" "$(BUILD_ARTIFACT_DIR)/l3_dump_vB_2tx_16loops_12frames_mss.xer4f"
+
+build-tx2-native:
+	$(BUILD_ENV) $(MAKE) -C "$(L3_DIR)" clean
+	$(BUILD_ENV) $(MAKE) -C "$(L3_DIR)" bin L3_VARIANT_DEFS="--define=N_TX=3 --define=LOOPS=10 --define=RING_FRAMES=12"
+	mkdir -p "$(BUILD_ARTIFACT_DIR)"
+	cp "$(L3_DIR)/l3_dump.bin" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_3tx_10loops_12frames.bin"
+	cp "$(L3_DIR)/l3_dump_mss.xer4f" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_3tx_10loops_12frames_mss.xer4f"
 
 build-debian-base:
 	$(DOCKER) build --platform "$(PLATFORM)" --target base -t "$(IMAGE)-base" -f Dockerfile.debian .

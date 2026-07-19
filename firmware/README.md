@@ -178,6 +178,25 @@ This is the current LCMF capture firmware:
 2 TX x 16 loops x 12 frames
 ```
 
+### Build the TX2/3TX proof firmware
+Build the experimental firmware that adds TX2:
+
+```bash
+make -C firmware build-tx2-native
+```
+
+That writes:
+
+```text
+firmware/build_artifacts/l3_dump_vTX2_3tx_10loops_12frames.bin
+firmware/build_artifacts/l3_dump_vTX2_3tx_10loops_12frames_mss.xer4f
+```
+
+The TX2 build is a capture proof: it enables TX1, TX2, and TX3 while reducing
+the loop count to stay inside the 768 KiB L3 budget. Host-side horizontal/aim
+estimation still needs to be implemented and validated before this becomes a
+production UI feature.
+
 ### Copy firmware artifacts back to the Mac
 From the Mac:
 
@@ -286,3 +305,9 @@ uses:
 
 Fewer loops, fewer range samples, or selected range-bin snapshots buy room for
 more transmitters or more frames in future firmware variants.
+
+The TX2 proof uses:
+
+```text
+3 TX x 10 loops x 12 frames x 4 RX x 128 samples x 4 bytes = 737,280 bytes
+```
