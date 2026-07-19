@@ -26,8 +26,8 @@ Recommended connection layout:
 | OPS243 ground | Pi GND to OPS `GND` | Must share ground with the Pi serial pins. |
 | OPS243 TX | Pi UART RX, GPIO15 / physical pin 10 | OPS transmits data into the Pi. |
 | OPS243 RX | Pi UART TX, GPIO14 / physical pin 8 | Pi sends commands to OPS. |
-| Sound trigger | Sensor `GATE` to OPS `HOST_INT` | OPS uses this as the hardware rolling-buffer trigger. |
-| Shared TI trigger | Same sound edge to Pi BCM17 | The IWR6843 capture monitor timestamps the same impact edge and sends `l3dump`. |
+| Sound trigger `GATE` | Split to OPS `HOST_INT` and Pi BCM17 / physical pin 11 | One GATE output drives both devices: OPS freezes its rolling buffer, and the Pi tells the IWR6843 to dump L3. |
+| Sound trigger power | Pi 3.3V and GND to sound trigger `VCC` / `GND` | The sound trigger, OPS, and Pi must share ground. |
 
 Pi header reference:
 
@@ -37,7 +37,25 @@ Pi header reference:
 | Pin 6, 9, 14, 20, 25, 30, 34, or 39 | GND | OPS ground |
 | Pin 8 | GPIO14 / TXD0 | Pi TX to OPS RX |
 | Pin 10 | GPIO15 / RXD0 | Pi RX from OPS TX |
-| Pin 11 | GPIO17 | Sound trigger edge for IWR6843 capture |
+| Pin 11 | GPIO17 | Sound trigger `GATE` edge for IWR6843 capture |
+
+Sound trigger splice:
+
+```text
+Sound trigger GATE
+  ├── OPS243 HOST_INT
+  └── Pi GPIO17 / physical pin 11
+
+Sound trigger VCC
+  └── Pi 3.3V
+
+Sound trigger GND
+  └── Pi GND, shared with OPS GND
+```
+
+You can splice the GATE wire so the same trigger output feeds both OPS `HOST_INT`
+and Pi GPIO17. Do not create two separate trigger sensors; the whole point is
+that OPS and TI are timestamping the same acoustic impact edge.
 
 Enable the Pi UART before using this wiring:
 
@@ -63,6 +81,8 @@ Important electrical notes:
 
 - Cross TX/RX: OPS `TX` goes to Pi `RX`; OPS `RX` goes to Pi `TX`.
 - Do not connect 5V to any Pi GPIO signal pin.
+- Sound trigger `GATE` must be safe for Pi GPIO input. The SparkFun sound
+  detector used in this rig is powered from Pi 3.3V so `GATE` is 3.3V logic.
 - Confirm the OPS serial pins are 3.3V TTL-level before wiring directly to the
   Pi UART. Do not connect RS-232 voltage levels to Pi GPIO.
 - If either radar resets when both are active, assume power first: separate the
