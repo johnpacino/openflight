@@ -1,0 +1,53 @@
+# amd64 Debian build environment for IWR6843 mmWave-SDK firmware.
+#
+# This image is intended for Raspberry Pi 5 hosts running Docker with QEMU/binfmt
+# amd64 emulation. The existing Ubuntu image can fail on Pi kernels with 16 KB
+# pages; Debian bookworm avoids the apt/OpenSSL mapping failures we observed.
+FROM --platform=linux/amd64 debian:bookworm AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+# TI SDK installers are x86/x86_64 Linux self-extractors and expect a mix of
+# amd64 tools plus i386 compatibility libraries. Avoid ca-certificates/wget here:
+# OpenSSL post-install hooks can fail under QEMU on Pi 16 KB page kernels, and
+# all TI installers are supplied locally in ti_installers/.
+RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y \
+    --no-install-recommends \
+      build-essential make mono-runtime \
+      libc6:i386 libstdc++6:i386 zlib1g:i386 \
+      bison flex unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS ti
+
+# --- TI toolchain (installers are user-provided in ti_installers/, git-ignored) ---
+# Expected:
+#   mmwave_sdk_03_06_02_00-LTS-Linux-x86-Install.bin
+#   ti_cgt_tms470_20.2.7.LTS_linux-x64_installer.bin
+#   bios_6_73_01_01.run
+#   sysconfig-1.10.0_2163-setup.run
+#   xdctools_3_61_00_16_core_linux.zip
+COPY ti_installers/ /tmp/ti_installers/
+
+# The SDK installer exits nonzero after laying down packages because its nested
+# DSP library installers are not needed for the MSS-only L3 dump app and can
+# abort in headless mode. Keep that known quirk explicit and assert the SDK
+# packages directory exists before continuing.
+RUN set -eux; \
+    cd /tmp/ti_installers; \
+    chmod +x *.bin *.run; \
+    ./mmwave_sdk_*Install.bin --mode unattended --unattendedmodeui none --prefix /opt/ti/sdk \
+      || echo "SDK installer exited nonzero after package install; continuing for MSS-only build"; \
+    find /opt/ti/sdk -maxdepth 3 -type d -name packages | grep -q .; \
+    rm -f /opt/ti/sdk/*_Linux.bin; \
+    ./ti_cgt_tms470_*installer.bin --mode unattended --unattendedmodeui none --prefix /opt/ti/cgt-arm; \
+    ./bios_*.run --mode unattended --unattendedmodeui none --prefix /opt/ti/bios; \
+    ./sysconfig*.run --mode unattended --unattendedmodeui none --prefix /opt/ti/sysconfig; \
+    unzip -q xdctools_*.zip -d /opt/ti/xdc; \
+    echo "=== installed dirs under /opt/ti ==="; \
+    find /opt/ti -maxdepth 2 -type d | sort
+
+ENV TI_ROOT=/opt/ti
+WORKDIR /work
+CMD ["/bin/bash"]
