@@ -71,6 +71,48 @@ usually available as:
 /dev/serial0
 ```
 
+What that setup does:
+
+- Enables the Pi UART hardware, equivalent to `enable_uart=1` in the Pi boot
+  config.
+- Removes the Linux login console from the UART, so OpenFlight can own the port.
+- Creates the stable `/dev/serial0` alias for the GPIO UART pins.
+
+You can verify it after reboot:
+
+```bash
+ls -l /dev/serial0
+```
+
+Typical result points at either `/dev/ttyAMA0` or `/dev/ttyS0`, depending on Pi
+model and Bluetooth/UART configuration. Use `/dev/serial0` in OpenFlight instead
+of hard-coding the underlying `tty*` name.
+
+If `/dev/serial0` does not exist, check the boot config:
+
+```bash
+grep enable_uart /boot/firmware/config.txt /boot/config.txt 2>/dev/null
+```
+
+At least one of those files should contain:
+
+```text
+enable_uart=1
+```
+
+Also make sure the current user can open serial devices:
+
+```bash
+groups
+```
+
+If `dialout` is missing:
+
+```bash
+sudo usermod -a -G dialout "$USER"
+sudo reboot
+```
+
 Use that as the OPS port when launching OpenFlight:
 
 ```bash
