@@ -43,10 +43,13 @@
 #define L3_CTRL_TASK_PRIORITY  5
 
 /* --- capture geometry: MUST match the .cfg the host sends ------------------
- * N_SAMPLES / LOOPS / RING_FRAMES are overridable from the make line
- * (variant builds: B = LOOPS=16 RING_FRAMES=12, C = N_SAMPLES=64
- * RING_FRAMES=12). sensorStart REJECTS a cfg whose geometry mismatches. */
+ * N_TX / N_SAMPLES / LOOPS / RING_FRAMES are overridable from the make line
+ * (variant builds: B = N_TX=2 LOOPS=16 RING_FRAMES=12, TX2 = N_TX=3
+ * LOOPS=10 RING_FRAMES=12). sensorStart REJECTS a cfg whose sample/loop/TX
+ * geometry mismatches. Keep chirpCfg/frameCfg in sync with N_TX. */
+#ifndef N_TX
 #define N_TX              2
+#endif
 #define N_RX              4
 #ifndef N_SAMPLES
 #define N_SAMPLES         128
@@ -410,13 +413,18 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     {
         rlProfileCfg_t profCfg;
         memset((void *)&profCfg, 0, sizeof(profCfg));
+        uint16_t chirpCount =
+            (uint16_t)(gCtrlCfg.u.frameCfg.frameCfg.chirpEndIdx -
+                       gCtrlCfg.u.frameCfg.frameCfg.chirpStartIdx + 1U);
         if ((gCtrlCfg.u.frameCfg.profileHandle[0] == NULL) ||
             (MMWave_getProfileCfg(gCtrlCfg.u.frameCfg.profileHandle[0],
                                   &profCfg, &errCode) < 0) ||
             (profCfg.numAdcSamples != N_SAMPLES) ||
-            (gCtrlCfg.u.frameCfg.frameCfg.numLoops != LOOPS)) {
+            (gCtrlCfg.u.frameCfg.frameCfg.numLoops != LOOPS) ||
+            (chirpCount != N_TX)) {
             CLI_write("Error: cfg geometry mismatch — this firmware is built "
-                      "for %d samples x %d loops\n", N_SAMPLES, LOOPS);
+                      "for %d TX x %d samples x %d loops\n",
+                      N_TX, N_SAMPLES, LOOPS);
             return -1;
         }
         /* framePeriodicity LSB = 5 ns -> microseconds. */
