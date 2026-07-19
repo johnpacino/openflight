@@ -16,7 +16,7 @@ import pytest
 
 from openflight.iwr6843 import Calibration, estimate_lcmf_v1, process_dump
 from openflight.iwr6843.dump import pack_dump, parse_header
-from openflight.iwr6843.lcmf import ANGLE_CORRECTION_DEG
+from openflight.iwr6843.lcmf import ANGLE_CORRECTION_DEG, TX2_LOOP_PERIOD_S, TX2_VERTICAL_TDM_TAU_S
 from openflight.iwr6843.music import LAM, steer
 from openflight.iwr6843.shot import geometry_from_header
 from openflight.iwr6843.tracking import LOOP_PRI_S, RANGE_SPAN_M
@@ -493,3 +493,17 @@ def test_lcmf_v1_rejects_empty_capture_without_inventing_angle(cal):
     assert not result.accepted
     assert result.angle_deg is None
     assert result.status == "rejected_by_ball_tracker"
+
+
+def test_lcmf_v1_uses_tx2_effective_timing_on_three_tx_capture(cal):
+    rng = np.random.default_rng(12)
+    cube = (
+        rng.standard_normal((12, 30, 4, 128)) + 1j * rng.standard_normal((12, 30, 4, 128))
+    ) * 8.0
+    raw = pack_dump(cube, n_tx=3, version=3, frame_period_us=6000)
+
+    result = estimate_lcmf_v1(raw, cal, ball_speed_mph=100.0, club="9i")
+
+    assert not result.accepted
+    assert result.effective_tdm_tau_s == pytest.approx(TX2_VERTICAL_TDM_TAU_S)
+    assert result.effective_loop_period_s == pytest.approx(TX2_LOOP_PERIOD_S)

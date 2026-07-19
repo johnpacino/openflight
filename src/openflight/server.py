@@ -1879,7 +1879,20 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
             # Device-level provenance is retained in iwr6843_capture. The
             # public Shot contract uses "radar" for all measured radar angles.
             shot.launch_angle_vertical_source = "radar"
+            shot.launch_angle_vertical_confidence = 0.95
+            shot.launch_angle_confidence = 0.95
             shot.angle_source = "radar"
+            if measurement.horizontal_deg is not None:
+                shot.launch_angle_horizontal = measurement.horizontal_deg
+                shot.launch_angle_horizontal_confidence = 0.95
+                shot.launch_angle_horizontal_source = "radar"
+                logger.info(
+                    "[SERVER] IWR6843 TX2 horizontal proxy: %.2f° "
+                    "(coherence %.0f%%, status=%s)",
+                    measurement.horizontal_deg,
+                    (measurement.horizontal_confidence or 0.0) * 100,
+                    measurement.horizontal_status,
+                )
             logger.info(
                 "[SERVER] IWR6843 LCMF-v1 launch: %.2f° "
                 "(%d snapshots/%d frames, component std %.2f°)",

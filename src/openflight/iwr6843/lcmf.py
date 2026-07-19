@@ -21,7 +21,13 @@ from openflight.iwr6843.multipath import (
     leave_one_channel_out_error,
 )
 from openflight.iwr6843.music import LAM
-from openflight.iwr6843.shot import ShotMeasurement, geometry_from_header, process_dump
+from openflight.iwr6843.shot import (
+    TX2_LOOP_PERIOD_S,
+    TX2_VERTICAL_TDM_TAU_S,
+    ShotMeasurement,
+    geometry_from_header,
+    process_dump,
+)
 
 NAME = "lcmf_v1"
 DISPLAY_NAME = "Late-Flight Complex Multipath Fusion v1"
@@ -37,7 +43,6 @@ MAX_RANGE_M = 4.7
 MAX_PER_FRAME = 4
 LATERAL_TEE_OFFSET_M = 0.064
 MPH_PER_MS = 2.23694
-
 
 @dataclass
 class LCMFResult:
@@ -55,6 +60,11 @@ class LCMFResult:
     track_rms_bins: float | None = None
     track_inliers: int | None = None
     tdm_sign_used: int | None = None
+    horizontal_deg: float | None = None
+    horizontal_confidence: float | None = None
+    horizontal_status: str | None = None
+    effective_tdm_tau_s: float = doa.TDM_TAU_S
+    effective_loop_period_s: float = tracking.LOOP_PRI_S
 
     @property
     def accepted(self) -> bool:
@@ -78,10 +88,21 @@ class LCMFResult:
             "track_rms_bins": self.track_rms_bins,
             "track_inliers": self.track_inliers,
             "tdm_sign_used": self.tdm_sign_used,
+            "horizontal_deg": self.horizontal_deg,
+            "horizontal_confidence": self.horizontal_confidence,
+            "horizontal_status": self.horizontal_status,
+            "effective_tdm_tau_s": self.effective_tdm_tau_s,
+            "effective_loop_period_s": self.effective_loop_period_s,
         }
 
 
-def _result_from_track(status: str, shot: ShotMeasurement) -> LCMFResult:
+def _result_from_track(
+    status: str,
+    shot: ShotMeasurement,
+    *,
+    effective_tdm_tau_s: float = doa.TDM_TAU_S,
+    effective_loop_period_s: float = tracking.LOOP_PRI_S,
+) -> LCMFResult:
     track = shot.track
     return LCMFResult(
         status=status,
@@ -90,6 +111,8 @@ def _result_from_track(status: str, shot: ShotMeasurement) -> LCMFResult:
         track_rms_bins=track.rms_bins if track is not None else None,
         track_inliers=track.n_inliers if track is not None else None,
         tdm_sign_used=shot.tdm_sign_used,
+        effective_tdm_tau_s=effective_tdm_tau_s,
+        effective_loop_period_s=effective_loop_period_s,
     )
 
 
@@ -99,10 +122,12 @@ def _snapshot_cache(
     cal: Calibration,
     tx_order: str,
     tdm_sign: int,
+    tdm_tau_s: float,
+    loop_period_s: float,
 ) -> tuple[dict[str, np.ndarray], object, np.ndarray]:
     """Build calibrated per-loop snapshots along the TI range track."""
     meta, cube = parse_dump(raw)
-    geometry = geometry_from_header(meta)
+    geometry = geometry_from_header(meta, loop_period_s=loop_period_s)
     frame_values = geometry.chirps_per_frame * geometry.n_rx * geometry.n_samples
     got_frames = cube.reshape(-1).size // frame_values
     if got_frames < geometry.n_frames:
@@ -136,7 +161,7 @@ def _snapshot_cache(
             if not 2 <= range_bin < geometry.n_samples - 1:
                 continue
             velocity = track.speed_ms_at(time_s, geometry.range_res_m)
-            tdm_phase = tdm_sign * 4.0 * np.pi * velocity * doa.TDM_TAU_S / LAM
+            tdm_phase = tdm_sign * 4.0 * np.pi * velocity * tdm_tau_s / LAM
             uncalibrated = doa.canonicalize_tx_blocks(
                 mti[frame, 0, loop, :, range_bin],
                 mti[frame, 1, loop, :, range_bin],
@@ -186,6 +211,7 @@ def _spatial_dictionary(
     launch_rad: float,
     range_m: np.ndarray,
     geometry: dict,
+    tdm_tau_s: float,
 ) -> np.ndarray:
     """Build the exact frozen DD/DG/GD/GG moving-ball dictionary."""
     tx_order = doa.validate_tx_order(geometry["tx_order"])
@@ -205,7 +231,7 @@ def _spatial_dictionary(
     gg = np.exp(1j * np.pi * (tx * sin_image + rx * sin_image))
 
     if model == "four4_path_tdm":
-        cross_phase = 2.0 * np.pi * (image_vr - direct_vr) * doa.TDM_TAU_S / LAM
+        cross_phase = 2.0 * np.pi * (image_vr - direct_vr) * tdm_tau_s / LAM
         later = doa.later_physical_tx_index(tx_order)
         block = slice(4 * later, 4 * (later + 1))
         dg[:, block] *= np.exp(1j * cross_phase)[:, None]
@@ -251,7 +277,9 @@ def _channel_estimates(
     for model in CHANNEL_MODELS:
         objective = []
         for angle_deg in grid_deg:
-            dictionary = _spatial_dictionary(model, np.radians(angle_deg), range_m, geometry)
+            dictionary = _spatial_dictionary(
+                model, np.radians(angle_deg), range_m, geometry, geometry["tdm_tau_s"]
+            )
             errors = leave_one_channel_out_error(vectors, dictionary)
             objective.append(_frame_objective(errors, frames, 1e3))
         estimates[f"channel_{model}_deg"] = _refine_grid(grid_deg, np.asarray(objective))
@@ -266,6 +294,7 @@ def _prepared_fft(
     element_correction: np.ndarray,
     tx_order: str,
     tdm_sign: int,
+    tdm_tau_s: float,
     *,
     n_fft: int = 512,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -279,7 +308,7 @@ def _prepared_fft(
     tdm = tdm - tdm.mean(axis=2, keepdims=True)
     window = np.hanning(radar_geometry.n_samples)
     snapshots = []
-    phase_per_ms = 4.0 * np.pi * doa.TDM_TAU_S / LAM
+    phase_per_ms = 4.0 * np.pi * tdm_tau_s / LAM
     for index in indices:
         frame = int(cache["frame"][index])
         loop = int(cache["loop"][index])
@@ -318,7 +347,7 @@ def _fast_design(
     range_res_m: float,
     window: np.ndarray,
 ) -> np.ndarray:
-    spatial = _spatial_dictionary("four4", launch_rad, range_m, geometry)
+    spatial = _spatial_dictionary("four4", launch_rad, range_m, geometry, geometry["tdm_tau_s"])
     x_m, height_m, _direct_vr, _image_vr = _candidate_trajectory(launch_rad, range_m, geometry)
     radar_height_m = geometry["radar_height_m"]
     direct_distance = np.hypot(x_m, height_m - radar_height_m)
@@ -383,6 +412,7 @@ def _fast_estimates(
         cal.elem_correction,
         tx_order,
         tdm_sign,
+        geometry["tdm_tau_s"],
         n_fft=n_fft,
     )
     oversample = n_fft / radar_geometry.n_samples
@@ -423,6 +453,74 @@ def _fast_estimates(
     return estimates
 
 
+def _phase_to_angle_deg(phase_rad: float, *, baseline_lambda: float = 1.0) -> float:
+    """Convert an uncalibrated baseline phase into a signed proxy angle."""
+    sin_angle = phase_rad / (2.0 * np.pi * baseline_lambda)
+    return float(np.degrees(np.arcsin(np.clip(sin_angle, -1.0, 1.0))))
+
+
+def _weighted_circular_mean(phases: list[float], weights: list[float]) -> tuple[float, float]:
+    z = np.sum(np.asarray(weights) * np.exp(1j * np.asarray(phases)))
+    weight_sum = float(np.sum(weights))
+    if weight_sum <= 0:
+        raise ValueError("horizontal proxy has no positive weights")
+    return float(np.angle(z)), float(abs(z) / weight_sum)
+
+
+def _tx2_horizontal_proxy(
+    raw: bytes,
+    shot: ShotMeasurement,
+    *,
+    tdm_sign: int,
+) -> tuple[float | None, float | None, str | None]:
+    """Experimental TX2 horizontal proxy for UI visibility.
+
+    This is intentionally not the final aim estimator. It compares the
+    one-chirp-delayed TX2 response against the TX1/TX3 vertical reference at
+    the fitted ball range bins. Positive is treated as right for this field
+    experiment until a marked-net calibration solves sign and scale.
+    """
+    meta, cube = parse_dump(raw)
+    if meta["n_tx"] != 3 or shot.track is None:
+        return None, None, None
+    geometry = geometry_from_header(meta, loop_period_s=TX2_LOOP_PERIOD_S)
+    n_frames, chirps_per_frame, n_rx, n_samples = cube.shape
+    loops = chirps_per_frame // meta["n_tx"]
+    tdm = cube.reshape(n_frames, loops, meta["n_tx"], n_rx, n_samples)
+    rfft = np.fft.fft(tdm, axis=-1)
+    mti = rfft - rfft.mean(axis=1, keepdims=True)
+    phases: list[float] = []
+    weights: list[float] = []
+    for frame in range(geometry.n_frames):
+        for loop in range(geometry.n_loops):
+            time_s = geometry.loop_time(frame, loop)
+            if not shot.track.t_first - 2e-3 <= time_s <= shot.track.t_last + 2e-3:
+                continue
+            range_bin = int(round(shot.track.bin_at(time_s)))
+            if not 2 <= range_bin < geometry.n_samples - 1:
+                continue
+            velocity = shot.track.speed_ms_at(time_s, geometry.range_res_m)
+            tx1 = mti[frame, loop, 0, :, range_bin]
+            tx2 = mti[frame, loop, 1, :, range_bin] * np.exp(
+                -1j * tdm_sign * 4.0 * np.pi * velocity * doa.TDM_TAU_S / LAM
+            )
+            tx3 = mti[frame, loop, 2, :, range_bin] * np.exp(
+                -1j * tdm_sign * 4.0 * np.pi * velocity * TX2_VERTICAL_TDM_TAU_S / LAM
+            )
+            reference = 0.5 * (tx1 + tx3)
+            weight = float(np.mean(np.abs(reference) ** 2 + np.abs(tx2) ** 2))
+            if weight <= 0:
+                continue
+            phases.append(float(np.angle(np.vdot(reference, tx2))))
+            weights.append(weight)
+    if len(phases) < 6:
+        return None, None, "insufficient_horizontal_snapshots"
+    phase_rad, coherence = _weighted_circular_mean(phases, weights)
+    angle_deg = _phase_to_angle_deg(phase_rad)
+    status = "accepted" if coherence >= 0.25 else "low_coherence"
+    return angle_deg, coherence, status
+
+
 def estimate_lcmf_v1(
     raw: bytes,
     cal: Calibration,
@@ -439,9 +537,14 @@ def estimate_lcmf_v1(
         raise ValueError("ball_speed_mph must be positive")
     if cal.tee_range_m is None:
         raise ValueError("LCMF-v1 requires the measured tee slant range")
+    full_raw = raw
     meta, _cube = parse_dump(raw)
+    tdm_tau_s = doa.TDM_TAU_S
+    loop_period_s = tracking.LOOP_PRI_S
     if meta["n_tx"] == 3:
         raw = project_tx_pair(raw, (0, 2))
+        tdm_tau_s = TX2_VERTICAL_TDM_TAU_S
+        loop_period_s = TX2_LOOP_PERIOD_S
 
     shot = process_dump(
         raw,
@@ -450,14 +553,39 @@ def estimate_lcmf_v1(
         net_range_m=net_range_m,
         tx_order=tx_order,
         tdm_sign_policy=tdm_sign_policy,
+        loop_period_s=loop_period_s,
+        tdm_tau_s=tdm_tau_s,
     )
     if shot.track is None:
-        return _result_from_track("rejected_by_ball_tracker", shot)
+        return _result_from_track(
+            "rejected_by_ball_tracker",
+            shot,
+            effective_tdm_tau_s=tdm_tau_s,
+            effective_loop_period_s=loop_period_s,
+        )
     if shot.tdm_sign_used not in (-1, 1):
-        return _result_from_track("rejected_missing_tdm_sign", shot)
+        return _result_from_track(
+            "rejected_missing_tdm_sign",
+            shot,
+            effective_tdm_tau_s=tdm_tau_s,
+            effective_loop_period_s=loop_period_s,
+        )
 
     try:
-        cache, radar_geometry, cube = _snapshot_cache(raw, shot, cal, tx_order, shot.tdm_sign_used)
+        horizontal_deg, horizontal_conf, horizontal_status = _tx2_horizontal_proxy(
+            full_raw,
+            shot,
+            tdm_sign=shot.tdm_sign_used,
+        )
+        cache, radar_geometry, cube = _snapshot_cache(
+            raw,
+            shot,
+            cal,
+            tx_order,
+            shot.tdm_sign_used,
+            tdm_tau_s,
+            loop_period_s,
+        )
         indices = _balanced_indices(cache)
         vertical_delta_m = cal.tee_ball_height_m - cal.radar_height_m
         tee_x_m = math.sqrt(max(cal.tee_range_m**2 - vertical_delta_m**2, 0.25))
@@ -468,6 +596,7 @@ def estimate_lcmf_v1(
             "radar_height_m": cal.radar_height_m,
             "tilt_rad": cal.tilt_rad,
             "tx_order": tx_order,
+            "tdm_tau_s": tdm_tau_s,
         }
         grid_deg = np.arange(-5.0, 45.0 + grid_step_deg / 2.0, grid_step_deg)
         components = _channel_estimates(cache, indices, model_geometry, grid_deg)
@@ -485,7 +614,12 @@ def estimate_lcmf_v1(
             )
         )
     except (ValueError, IndexError, np.linalg.LinAlgError) as error:
-        return _result_from_track(str(error).replace(" ", "_"), shot)
+        return _result_from_track(
+            str(error).replace(" ", "_"),
+            shot,
+            effective_tdm_tau_s=tdm_tau_s,
+            effective_loop_period_s=loop_period_s,
+        )
 
     component_values = np.asarray(list(components.values()), dtype=float)
     raw_angle_deg = float(np.sum(component_values) * COMPONENT_WEIGHT)
@@ -499,6 +633,11 @@ def estimate_lcmf_v1(
     result.n_snapshots = len(indices)
     result.n_frames = len(np.unique(cache["frame"][indices]))
     result.component_std_deg = float(np.std(component_values))
+    result.horizontal_deg = horizontal_deg
+    result.horizontal_confidence = horizontal_conf
+    result.horizontal_status = horizontal_status
+    result.effective_tdm_tau_s = tdm_tau_s
+    result.effective_loop_period_s = loop_period_s
     return result
 
 

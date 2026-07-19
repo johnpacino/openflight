@@ -20,6 +20,8 @@ from openflight.iwr6843.tracking import BallTrack, Geometry
 from openflight.iwr6843.trajectory import TrajectoryFit
 
 DEFAULT_FRAME_PERIOD_S = 0.012  # header field is 0 on pre-v3 firmware dumps
+TX2_LOOP_PERIOD_S = 3 * doa.TDM_TAU_S
+TX2_VERTICAL_TDM_TAU_S = 2 * doa.TDM_TAU_S
 
 # Two-ray configuration per club class, split-half TrackMan-scored on the
 # 2026-07-14 session (holdout MAE in comments). PROVISIONAL: one session of
@@ -182,16 +184,18 @@ class ShotMeasurement:
         return "  ".join(parts)
 
 
-def geometry_from_header(meta: dict) -> Geometry:
+def geometry_from_header(meta: dict, *, loop_period_s: float = tracking.LOOP_PRI_S) -> Geometry:
     """Dump-header dict -> Geometry (period falls back for pre-v3 dumps)."""
     period_us = meta.get("frame_period_us", 0)
     return Geometry(
         n_frames=meta["n_frames"],
         chirps_per_frame=meta["chirps_per_frame"],
+        n_tx=meta.get("n_tx", 2),
         n_rx=meta["n_rx"],
         n_samples=meta["n_samples"],
         frame_period_s=(period_us / 1e6 if period_us else DEFAULT_FRAME_PERIOD_S),
         trigger_frame=meta["trigger_frame"],
+        loop_period_s=loop_period_s,
     )
 
 
@@ -205,6 +209,8 @@ def process_dump(
     club: str | None = None,
     tx_order: str = "normal",
     tdm_sign_policy: str = "auto",
+    loop_period_s: float = tracking.LOOP_PRI_S,
+    tdm_tau_s: float = doa.TDM_TAU_S,
 ) -> ShotMeasurement:
     """Full pipeline on one dump's bytes.
 
@@ -215,10 +221,16 @@ def process_dump(
     """
     tx_order = doa.validate_tx_order(tx_order)
     tdm_sign_policy = doa.validate_tdm_sign_policy(tdm_sign_policy)
-    raw = project_tx_pair(raw, (0, 2)) if parse_dump(raw)[0]["n_tx"] == 3 else raw
+    meta0, _cube0 = parse_dump(raw)
+    if meta0["n_tx"] == 3:
+        raw = project_tx_pair(raw, (0, 2))
+        if loop_period_s == tracking.LOOP_PRI_S:
+            loop_period_s = TX2_LOOP_PERIOD_S
+        if tdm_tau_s == doa.TDM_TAU_S:
+            tdm_tau_s = TX2_VERTICAL_TDM_TAU_S
     meta, cube = parse_dump(raw)
     # header n_frames may exceed what actually arrived on a stalled transfer
-    geo = geometry_from_header(meta)
+    geo = geometry_from_header(meta, loop_period_s=loop_period_s)
     frame_values = geo.chirps_per_frame * geo.n_rx * geo.n_samples
     got_frames = cube.reshape(-1).size // frame_values
     if got_frames < geo.n_frames:
@@ -283,6 +295,7 @@ def process_dump(
         coherent_loops=1,
         tx_order=tx_order,
         tdm_sign=result.tdm_sign_used,
+        tdm_tau_s=tdm_tau_s,
     )
     result.n_angle_points = len(points)
     for fit in (trajectory.fit_free(points, cal), trajectory.fit_tee(points, cal)):
@@ -297,6 +310,7 @@ def process_dump(
             coherent_loops=1,
             tx_order=tx_order,
             tdm_sign=result.tdm_sign_used,
+            tdm_tau_s=tdm_tau_s,
         )
         snaps = [(t, r, s) for t, r, s, _snr in series]
         # policy from PER-SHOT observables (see POLICY_* above)
