@@ -10,6 +10,64 @@ production shape is intentionally **OPS + IWR6843**, not TI-only:
 
 ## Hardware Setup
 
+### USB / UART Wiring
+
+Do not run the OPS243 and the TI IWR6843 board from the same USB hub. In the
+current production-style rig the TI board uses USB for its CLI/data connection,
+while the OPS243 is wired directly to the Raspberry Pi UART header for power,
+ground, RX, and TX.
+
+Recommended connection layout:
+
+| Device | Connection | Notes |
+|---|---|---|
+| IWR6843 board | USB to Pi or a powered USB hub | Used for TI CLI/config and L3 dump transfer. Give it a stable power path. |
+| OPS243 power | Pi 5V pin to OPS `VIN` / `5V` | Use a 5V pin, not 3.3V, unless your OPS wiring/regulator setup explicitly says otherwise. |
+| OPS243 ground | Pi GND to OPS `GND` | Must share ground with the Pi serial pins. |
+| OPS243 TX | Pi UART RX, GPIO15 / physical pin 10 | OPS transmits data into the Pi. |
+| OPS243 RX | Pi UART TX, GPIO14 / physical pin 8 | Pi sends commands to OPS. |
+| Sound trigger | Sensor `GATE` to OPS `HOST_INT` | OPS uses this as the hardware rolling-buffer trigger. |
+| Shared TI trigger | Same sound edge to Pi BCM17 | The IWR6843 capture monitor timestamps the same impact edge and sends `l3dump`. |
+
+Pi header reference:
+
+| Pi physical pin | BCM name | Use |
+|---|---|---|
+| Pin 2 or 4 | 5V | OPS power |
+| Pin 6, 9, 14, 20, 25, 30, 34, or 39 | GND | OPS ground |
+| Pin 8 | GPIO14 / TXD0 | Pi TX to OPS RX |
+| Pin 10 | GPIO15 / RXD0 | Pi RX from OPS TX |
+| Pin 11 | GPIO17 | Sound trigger edge for IWR6843 capture |
+
+Enable the Pi UART before using this wiring:
+
+```bash
+sudo raspi-config
+```
+
+Then choose `Interface Options` -> `Serial Port`, disable the login shell on the
+serial port, and enable the serial hardware. After reboot, the OPS UART is
+usually available as:
+
+```text
+/dev/serial0
+```
+
+Use that as the OPS port when launching OpenFlight:
+
+```bash
+scripts/start-kiosk.sh --port /dev/serial0 --iwr6843 ...
+```
+
+Important electrical notes:
+
+- Cross TX/RX: OPS `TX` goes to Pi `RX`; OPS `RX` goes to Pi `TX`.
+- Do not connect 5V to any Pi GPIO signal pin.
+- Confirm the OPS serial pins are 3.3V TTL-level before wiring directly to the
+  Pi UART. Do not connect RS-232 voltage levels to Pi GPIO.
+- If either radar resets when both are active, assume power first: separate the
+  USB power paths or use a powered hub for the TI board.
+
 Current validated geometry inputs:
 
 - `--iwr6843-tee-m`: radar antenna center to ball slant range.
