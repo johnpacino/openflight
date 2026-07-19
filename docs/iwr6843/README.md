@@ -116,8 +116,11 @@ sudo reboot
 Use that as the OPS port when launching OpenFlight:
 
 ```bash
-scripts/start-kiosk.sh --port /dev/serial0 --iwr6843 ...
+scripts/start-kiosk.sh --radar-port /dev/serial0 --iwr6843 ...
 ```
+
+`start-kiosk.sh --port` is the web UI port. Use `--radar-port` or `--ops-port`
+for the OPS243 serial device.
 
 Important electrical notes:
 

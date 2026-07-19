@@ -65,6 +65,19 @@ def test_iwr6843_overrides_are_forwarded():
     assert "--iwr6843-capture-timeout 15" in command
 
 
+def test_ops_radar_port_is_forwarded_separately_from_web_port():
+    result = _dry_run("--radar-port", "/dev/serial0", "--port", "9090")
+    command = result.stdout.strip()
+
+    assert command.startswith("openflight-server --web-port 9090 --port /dev/serial0")
+
+
+def test_ops_port_alias_is_forwarded_to_server_radar_port():
+    result = _dry_run("--ops-port", "/dev/serial0")
+
+    assert "--port /dev/serial0" in result.stdout
+
+
 def test_plain_kld7_enables_two_ray_defaults():
     """--kld7 (with the required tilt) forwards the cleaned-up flag set."""
     result = _dry_run("--kld7", "--kld7-mount-tilt", "10")

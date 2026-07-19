@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PORT=8080
 HOST="localhost"
+RADAR_PORT=""
 MOCK_MODE=false
 RADAR_LOG=false
 DEBUG_MODE=false
@@ -278,6 +279,10 @@ while [[ $# -gt 0 ]]; do
             CALCULATED_SPIN=true
             shift
             ;;
+        --radar-port|--ops-port)
+            RADAR_PORT="$2"
+            shift 2
+            ;;
         --port|-p)
             PORT="$2"
             shift 2
@@ -385,6 +390,10 @@ cd "$PROJECT_DIR"
 
 # Build server command
 SERVER_CMD="openflight-server --web-port $PORT"
+
+if [ -n "$RADAR_PORT" ]; then
+    SERVER_CMD="$SERVER_CMD --port $RADAR_PORT"
+fi
 
 if [ "$MOCK_MODE" = true ]; then
     SERVER_CMD="$SERVER_CMD --mock"
