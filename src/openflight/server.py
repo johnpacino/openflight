@@ -996,6 +996,7 @@ def init_iwr6843(
     tilt_deg: float | None = None,
     radar_height_m: float | None = None,
     ball_height_m: float = 0.04,
+    save_dumps: bool = False,
 ) -> bool:
     """Initialize GPIO-triggered TI capture and the frozen LCMF-v1 estimator."""
     global iwr6843_runtime, iwr6843_runtime_config  # pylint: disable=global-statement
@@ -1025,6 +1026,7 @@ def init_iwr6843(
             output_dir=output_dir,
             port=port,
             gpio_pin=trigger_pin,
+            save_dumps=save_dumps,
         )
         capture_monitor.start()
         iwr6843_runtime = IWR6843Runtime(
@@ -1049,6 +1051,7 @@ def init_iwr6843(
             "ball_height_m": calibration.tee_ball_height_m,
             "capture_timeout_s": capture_timeout_s,
             "freeze_delay_ms": round(1000.0 * capture_monitor.freeze_delay_s, 3),
+            "raw_dump_saved": save_dumps,
             "output_dir": str(Path(output_dir).expanduser()),
         }
         logger.info(
@@ -2920,7 +2923,7 @@ def main():
     parser.add_argument(
         "--iwr6843-output-dir",
         default=None,
-        help="Raw TI dump directory (default: <session-log-dir>/iwr6843)",
+        help=("Raw TI dump directory when --debug is enabled (default: <session-log-dir>/iwr6843)"),
     )
     parser.add_argument(
         "--kld7", action="store_true", help="Enable K-LD7 vertical angle radar (launch angle)"
@@ -3227,6 +3230,7 @@ def main():
             tilt_deg=args.iwr6843_tilt_deg,
             radar_height_m=args.iwr6843_radar_height_m,
             ball_height_m=args.iwr6843_ball_height_m,
+            save_dumps=args.debug,
         ):
             calibration = iwr6843_runtime.calibration
             ball_speed_correction_distance_ft = args.iwr6843_tee_m * 3.28084
@@ -3237,6 +3241,8 @@ def main():
                 "IWR6843 enabled (LCMF-v1 launch angle, "
                 f"BCM{args.iwr6843_trigger_pin}, {iwr6843_runtime.tx_order} TX order)"
             )
+            if args.debug:
+                print(f"IWR6843 raw dumps enabled: {iwr_output_dir}")
         else:
             print("ERROR: IWR6843 requested but failed to initialize. Exiting.")
             sys.exit(1)

@@ -72,6 +72,7 @@ class IWR6843CaptureMonitor:
         button_factory: Callable | None = None,
         match_tolerance_s: float = 0.75,
         freeze_delay_s: float = DEFAULT_FREEZE_DELAY_S,
+        save_dumps: bool = False,
     ):
         if freeze_delay_s < 0:
             raise ValueError("freeze_delay_s must be nonnegative")
@@ -80,6 +81,7 @@ class IWR6843CaptureMonitor:
         self.gpio_pin = gpio_pin
         self.match_tolerance_s = match_tolerance_s
         self.freeze_delay_s = freeze_delay_s
+        self.save_dumps = save_dumps
         self.radar = radar or IWR6843Radar(port=port)
         self._button_factory = button_factory
         self._button = None
@@ -103,7 +105,8 @@ class IWR6843CaptureMonitor:
             return
         if not self.config_path.is_file():
             raise FileNotFoundError(f"IWR6843 config not found: {self.config_path}")
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        if self.save_dumps:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.radar.send_config(str(self.config_path))
 
@@ -193,8 +196,9 @@ class IWR6843CaptureMonitor:
                 logger.info("[IWR6843] Trigger #%d: dumping L3 ring", sequence)
                 raw = self.radar.read_dump()
                 self._validate_dump(raw)
-                path = self._capture_path(sequence, edge_timestamp)
-                path.write_bytes(raw)
+                if self.save_dumps:
+                    path = self._capture_path(sequence, edge_timestamp)
+                    path.write_bytes(raw)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 error = str(exc)
                 raw = None

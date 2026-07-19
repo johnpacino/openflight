@@ -170,6 +170,7 @@ def main() -> int:
             "ball_height_m": calibration.tee_ball_height_m,
             "tx_order": tx_order,
             "tilt_sweep": not args.no_tilt_sweep,
+            "raw_dump_saved": args.debug,
         }
     )
 
@@ -178,6 +179,7 @@ def main() -> int:
         output_dir=outdir / "iwr6843",
         port=args.iwr6843_port,
         gpio_pin=args.trigger_pin,
+        save_dumps=args.debug,
     )
     runtime = IWR6843Runtime(
         capture_monitor=iwr_monitor,
@@ -256,6 +258,7 @@ def main() -> int:
 
     print("Starting OPS+IWR6843 calibration session")
     print(f"Output: {outdir}")
+    print(f"Raw .l3dump files: {'enabled' if args.debug else 'disabled'}")
     print(f"Club: {club.value}; TX order: {tx_order}; target shots: {args.shots}")
     print("Hit shots when ready. Press Ctrl+C to stop early.")
 

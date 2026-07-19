@@ -33,7 +33,10 @@ Use the custom L3 rolling-buffer firmware and matching cfg:
 
 The custom firmware keeps recent frames in the IWR6843 L3 RAM. When the sound
 trigger fires, the Pi waits briefly for late-flight frames, freezes the ring,
-dumps it over serial, and saves the raw `.l3dump` file for offline replay.
+and dumps it over serial. The server processes those bytes in memory during
+normal operation. Raw `.l3dump` files are only written when `--debug` is used,
+and the session JSONL stores the resulting file path in the `iwr6843_capture`
+entry.
 
 ## Server Usage
 
@@ -90,7 +93,8 @@ GPIOZERO_PIN_FACTORY=lgpio uv run \
 ```
 
 Outputs are written under `~/openflight_sessions/iwr6843_calibration/<timestamp>/`
-unless `--outdir` is supplied.
+unless `--outdir` is supplied. Normal calibration writes JSONL diagnostics only;
+add `--debug` when you also want raw `.l3dump` files saved for offline replay.
 
 The live output includes:
 
