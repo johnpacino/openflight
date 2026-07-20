@@ -42,7 +42,10 @@
 /* --- task priorities (mirror the mmw demo): ctrl > CLI. -------------------- */
 #define L3_INIT_TASK_PRIORITY  2
 #define L3_CLI_TASK_PRIORITY   3
-#define L3_SNAPSHOT_TASK_PRIORITY 4
+/* Keep the live snapshot worker below CLI. SYS/BIOS Task_yield does not allow
+ * lower-priority tasks to run, and a priority-4 snapshot loop starved l3dump
+ * so the host only saw the echoed 7-byte "l3dump\n" command. */
+#define L3_SNAPSHOT_TASK_PRIORITY 1
 #define L3_CTRL_TASK_PRIORITY  5
 
 /* --- capture geometry: MUST match the .cfg the host sends ------------------
