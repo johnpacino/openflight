@@ -488,8 +488,9 @@ def _tx2_horizontal_proxy(
     Horizontal Late Complex Median Fusion mirrors the vertical-launch lesson:
     use fewer, cleaner snapshots, follow the fitted ball range track, correct
     TDM motion, robustly median TX2 phase per RX channel, then fuse the tail
-    frame slots that separated the pushed-shot experiment. Positive is treated
-    as right until a marked-net calibration solves sign, zero, and scale.
+    frame slots that separated the pushed-shot experiment. The final sign is
+    flipped into TrackMan convention: positive starts right of the target line,
+    negative starts left.
     """
     meta, cube = parse_dump(raw)
     if meta["n_tx"] != 3 or shot.track is None:
@@ -535,7 +536,7 @@ def _tx2_horizontal_proxy(
     phases = [phase for _frame, phase, _weight in snapshots]
     weights = [weight for _frame, _phase, weight in snapshots]
     phase_rad, coherence = _weighted_circular_mean(phases, weights)
-    angle_deg = _phase_to_angle_deg(phase_rad)
+    angle_deg = -_phase_to_angle_deg(phase_rad)
     status = "hlcmf_v0_accepted" if coherence >= 0.25 else "hlcmf_v0_low_coherence"
     return angle_deg, coherence, status
 
