@@ -316,9 +316,19 @@ static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
         (void)HWA_disableDoneInterrupt(gHwaHandle);
         return errCode;
     }
+#ifdef LIVE_SNAPSHOT_RING
+    /* Live snapshot compression runs in the frame-to-frame timing path. A
+     * BIOS tick sleep here guarantees we miss frames, so poll tightly for the
+     * HWA done interrupt. The slower sleep-based wait is kept for CLI smoke
+     * commands and dump-time snapshot builds where latency does not matter. */
+    for (wait = 0U; wait < 200000U && !gHwaDone; wait++) {
+        ;
+    }
+#else
     for (wait = 0U; wait < 200U && !gHwaDone; wait++) {
         Task_sleep(1);
     }
+#endif
     (void)HWA_enable(gHwaHandle, 0U);
     (void)HWA_disableDoneInterrupt(gHwaHandle);
     if (!gHwaDone) {
