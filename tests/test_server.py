@@ -138,9 +138,61 @@ class TestIWR6843ShotIntegration:
         assert shot.launch_angle_vertical == pytest.approx(17.42)
         assert shot.launch_angle_vertical_source == "radar"
         assert shot.angle_source == "radar"
+        assert shot.launch_angle_horizontal is None
         assert logged[0]["shot_number"] == 3
         assert logged[0]["ball_speed_mph"] == 100.0
         assert logged[0]["measurement"]["estimator"] == "lcmf_v1"
+
+    def test_iwr6843_horizontal_uses_estimator_confidence(self, monkeypatch):
+        measurement = SimpleNamespace(
+            accepted=True,
+            angle_deg=18.5,
+            horizontal_deg=2.25,
+            horizontal_confidence=0.63,
+            horizontal_status="hlcmf_v0_accepted",
+            n_snapshots=18,
+            n_frames=5,
+            component_std_deg=1.4,
+            to_dict=lambda: {
+                "estimator": "lcmf_v1",
+                "launch_angle_deg": 18.5,
+                "horizontal_deg": 2.25,
+                "horizontal_confidence": 0.63,
+            },
+        )
+        capture = SimpleNamespace(
+            trigger_timestamp=100.01,
+            path=Path("/tmp/test.l3dump"),
+            raw=b"raw",
+            dump_duration_s=4.5,
+            error=None,
+            valid=True,
+            sequence=1,
+        )
+        runtime = SimpleNamespace(
+            process_shot=lambda **kwargs: SimpleNamespace(
+                capture=capture,
+                measurement=measurement,
+            )
+        )
+        monkeypatch.setattr(server_module, "iwr6843_runtime", runtime)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+
+        shot = Shot(
+            ball_speed_mph=100.0,
+            club_speed_mph=80.0,
+            timestamp=datetime.now(),
+            impact_timestamp=100.0,
+            club=ClubType.IRON_9,
+        )
+
+        server_module._process_iwr6843_angle(shot)
+
+        assert shot.launch_angle_vertical == pytest.approx(18.5)
+        assert shot.launch_angle_vertical_source == "radar"
+        assert shot.launch_angle_horizontal == pytest.approx(2.25)
+        assert shot.launch_angle_horizontal_source == "radar"
+        assert shot.launch_angle_horizontal_confidence == pytest.approx(0.63)
 
     def test_horizontal_fallback_does_not_invent_confidence_for_lcmf_angle(self):
         shot = Shot(
