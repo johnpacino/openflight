@@ -36,7 +36,7 @@ REQUIRED_INSTALLERS := \
 	sysconfig-1.10.0_2163-setup.run \
 	xdctools_3_61_00_16_core_linux.zip
 
-.PHONY: help check-host check-installers sync-installers-from-stacey install-ti-deps-native install-ti-tools-native probe-installers-native build-vb-native build-tx2-native build-tx2-rawcrop80-native build-tx2-hwa-smoke-native build-tx2-hwa-fft-smoke-native build-tx2-hwa-real-smoke-native build-tx2-hwa-snapshot16-native build-tx2-hwa-snapshot80-native build-debian-base build-debian probe-installers shell-debian clean-image
+.PHONY: help check-host check-installers sync-installers-from-stacey install-ti-deps-native install-ti-tools-native probe-installers-native build-vb-native build-tx2-native build-tx2-rawcrop80-native build-tx2-hwa-smoke-native build-tx2-hwa-fft-smoke-native build-tx2-hwa-real-smoke-native build-tx2-hwa-snapshot16-native build-tx2-hwa-snapshot80-native build-tx2-hwa-livesnapshot80-native build-debian-base build-debian probe-installers shell-debian clean-image
 
 help:
 	@echo "IWR6843 firmware build helpers"
@@ -56,6 +56,7 @@ help:
 	@echo "  build-tx2-hwa-real-smoke-native Build 3TX proof with HWA FFT on ADCBUF"
 	@echo "  build-tx2-hwa-snapshot16-native Build 3TX proof that dumps 16 HWA range bins"
 	@echo "  build-tx2-hwa-snapshot80-native Build 3TX proof that dumps bins 20-99"
+	@echo "  build-tx2-hwa-livesnapshot80-native Build 3TX proof that stores bins 20-99 in L3"
 	@echo "  build-debian-base          Build Pi/QEMU-friendly base image only"
 	@echo "  build-debian               Build Pi/QEMU-friendly Debian amd64 image"
 	@echo "  probe-installers           Test TI installer stubs under the base image"
@@ -74,6 +75,7 @@ help:
 	@echo "  make -C firmware build-tx2-hwa-real-smoke-native"
 	@echo "  make -C firmware build-tx2-hwa-snapshot16-native"
 	@echo "  make -C firmware build-tx2-hwa-snapshot80-native"
+	@echo "  make -C firmware build-tx2-hwa-livesnapshot80-native"
 	@echo "  make -C firmware build-debian-base"
 	@echo "  make -C firmware probe-installers"
 	@echo "  make -C firmware build-debian"
@@ -190,6 +192,13 @@ build-tx2-hwa-snapshot80-native:
 	mkdir -p "$(BUILD_ARTIFACT_DIR)"
 	cp "$(L3_DIR)/l3_dump.bin" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_snapshot80_start20_3tx_10loops_12frames.bin"
 	cp "$(L3_DIR)/l3_dump_mss.xer4f" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_snapshot80_start20_3tx_10loops_12frames_mss.xer4f"
+
+build-tx2-hwa-livesnapshot80-native:
+	$(BUILD_ENV) $(MAKE) -C "$(L3_DIR)" clean
+	$(BUILD_ENV) $(MAKE) -C "$(L3_DIR)" bin L3_VARIANT_DEFS="--define=N_TX=3 --define=LOOPS=10 --define=RING_FRAMES=12 --define=ENABLE_HWA_SMOKE=1 --define=SNAPSHOT_DUMP=1 --define=LIVE_SNAPSHOT_RING=1 --define=SNAPSHOT_BIN_START=20 --define=SNAPSHOT_BINS=80"
+	mkdir -p "$(BUILD_ARTIFACT_DIR)"
+	cp "$(L3_DIR)/l3_dump.bin" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_livesnapshot80_start20_3tx_10loops_12frames.bin"
+	cp "$(L3_DIR)/l3_dump_mss.xer4f" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_livesnapshot80_start20_3tx_10loops_12frames_mss.xer4f"
 
 build-debian-base:
 	$(DOCKER) build --platform "$(PLATFORM)" --target base -t "$(IMAGE)-base" -f Dockerfile.debian .

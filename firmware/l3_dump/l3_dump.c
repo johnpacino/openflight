@@ -19,6 +19,7 @@
 /* BIOS/XDC */
 #include <xdc/std.h>
 #include <ti/sysbios/BIOS.h>
+#include <ti/sysbios/hal/Hwi.h>
 #include <ti/sysbios/knl/Task.h>
 
 /* mmWave SDK drivers + control */
@@ -41,6 +42,7 @@
 /* --- task priorities (mirror the mmw demo): ctrl > CLI. -------------------- */
 #define L3_INIT_TASK_PRIORITY  2
 #define L3_CLI_TASK_PRIORITY   3
+#define L3_SNAPSHOT_TASK_PRIORITY 4
 #define L3_CTRL_TASK_PRIORITY  5
 
 /* --- capture geometry: MUST match the .cfg the host sends ------------------
@@ -84,30 +86,57 @@
 #if (SNAPSHOT_BIN_START + SNAPSHOT_BINS) > N_SAMPLES
 #error "SNAPSHOT_BIN_START + SNAPSHOT_BINS must be <= N_SAMPLES"
 #endif
+#ifdef LIVE_SNAPSHOT_RING
+#ifndef SNAPSHOT_DUMP
+#error "LIVE_SNAPSHOT_RING requires SNAPSHOT_DUMP"
+#endif
+#ifndef ENABLE_HWA_SMOKE
+#error "LIVE_SNAPSHOT_RING requires ENABLE_HWA_SMOKE"
+#endif
+#endif
 #define CHIRPS_PER_FRAME  (N_TX * LOOPS)                        /* 64 */
 #define FRAME_COMPLEX     (CHIRPS_PER_FRAME * N_RX * N_SAMPLES)   /* 32768 */
 #define FRAME_BYTES       (FRAME_COMPLEX * 2 * (uint32_t)sizeof(int16_t)) /* 128 KB */
 #define SAVED_FRAME_COMPLEX (CHIRPS_PER_FRAME * N_RX * SAVE_SAMPLES)
 #define SAVED_FRAME_BYTES (SAVED_FRAME_COMPLEX * 2 * (uint32_t)sizeof(int16_t))
+#define SNAPSHOT_CHIRP_COMPLEX (N_RX * SNAPSHOT_BINS)
+#define SNAPSHOT_CHIRP_BYTES (SNAPSHOT_CHIRP_COMPLEX * 2 * (uint32_t)sizeof(int16_t))
+#define SNAPSHOT_FRAME_COMPLEX (CHIRPS_PER_FRAME * SNAPSHOT_CHIRP_COMPLEX)
+#define SNAPSHOT_FRAME_BYTES (SNAPSHOT_FRAME_COMPLEX * 2 * (uint32_t)sizeof(int16_t))
 /* One chirp in ADCBUF (non-interleaved): N_RX x N_SAMPLES x 4 bytes. */
 #define CHIRP_BYTES       (N_RX * N_SAMPLES * 2 * (uint32_t)sizeof(int16_t))  /* 2048 */
 #define SAVED_CHIRP_BYTES (N_RX * SAVE_SAMPLES * 2 * (uint32_t)sizeof(int16_t))
 
 /* --- rolling buffer (default L3 = 6 banks x 128 KB = 768 KB) ----------------
- * The ring fills L3 EXACTLY (zero slack): .l3ring must stay the only
- * section in L3_RAM or the link fails — which is the desired failure mode. */
+ * The raw-ring build fills L3 exactly. LIVE_SNAPSHOT_RING is the first compact
+ * prototype: EDMA captures one raw frame into scratch, then the HWA compresses
+ * selected FFT range bins into the rolling ring. */
 #ifndef RING_FRAMES
 #define RING_FRAMES  6
 #endif
 #define RING_CHIRPS  (RING_FRAMES * CHIRPS_PER_FRAME)
+#ifdef LIVE_SNAPSHOT_RING
+#define RING_FRAME_COMPLEX SNAPSHOT_FRAME_COMPLEX
+#else
+#define RING_FRAME_COMPLEX SAVED_FRAME_COMPLEX
+#endif
 
 #pragma DATA_SECTION(g_ring, ".l3ring")
 #pragma DATA_ALIGN(g_ring, 8)
-static int16_t g_ring[RING_FRAMES][SAVED_FRAME_COMPLEX * 2];
+static int16_t g_ring[RING_FRAMES][RING_FRAME_COMPLEX * 2];
+
+#ifdef LIVE_SNAPSHOT_RING
+/* Two raw frame scratch buffers let EDMA keep chirping while the snapshot task
+ * compresses the previously completed frame into the compact ring. */
+#pragma DATA_SECTION(g_rawFrame, ".l3scratch")
+#pragma DATA_ALIGN(g_rawFrame, 8)
+static int16_t g_rawFrame[2][FRAME_COMPLEX * 2];
+#endif
 
 /* --- EDMA: the DFE chirp-available hardware event channel + shadow link ----- */
 #define L3_EDMA_CHANNEL       EDMA_TPCC0_REQ_DFE_CHIRP_AVAIL
 #define L3_EDMA_LINK_CHANNEL  EDMA_NUM_DMA_CHANNELS
+#define L3_EDMA_LINK_CHANNEL_PONG (EDMA_NUM_DMA_CHANNELS + 1U)
 
 /* --- SDK handles ----------------------------------------------------------- */
 static SOC_Handle    gSocHandle;
@@ -145,6 +174,13 @@ static volatile uint32_t gRingFrame;    /* frames since last EDMA arm — the ri
 static volatile uint32_t gNumWrap;      /* EDMA ring-wrap count */
 static volatile uint32_t gCalibStatus;  /* RL_RF_AE_INITCALIBSTATUS payload */
 static volatile uint32_t gRfFaults;     /* CPU/ESM/analog fault events */
+#ifdef LIVE_SNAPSHOT_RING
+static volatile uint32_t gRawFrameReadyMask;
+static volatile uint32_t gRawFrameDrops;
+static volatile uint32_t gSnapshotFrames;
+static volatile uint32_t gSnapshotErrors;
+static volatile uint8_t  gSnapshotBusy;
+#endif
 
 /* Config pulled from the CLI mmWave extension (kept off the stack -- large). */
 static MMWave_OpenCfg gOpenCfg;
@@ -161,6 +197,9 @@ static int32_t l3_cli_hwaTest(int32_t argc, char *argv[]);
 static int32_t l3_cli_hwaReal(int32_t argc, char *argv[]);
 #endif
 static int32_t l3_armCapture(void);
+#ifdef LIVE_SNAPSHOT_RING
+static void l3_snapshotTask(UArg arg0, UArg arg1);
+#endif
 
 #ifdef ENABLE_HWA_SMOKE
 #define HWA_FFT_SAMPLES      128U
@@ -299,11 +338,10 @@ static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
 }
 
 #ifdef SNAPSHOT_DUMP
-static int32_t l3_emitSnapshotChirp(const int16_t *rawChirp)
+static int32_t l3_snapshotChirpToBuffer(const int16_t *rawChirp, int16_t *out)
 {
     int16_t *src = (int16_t *)HWA_TEST_MEM0;
     int16_t *dst = (int16_t *)HWA_TEST_MEM2;
-    int16_t out[N_RX * SNAPSHOT_BINS * 2U];
     uint16_t peakBin;
     uint32_t peakPower;
     uint32_t sample, rx, bin, outWord;
@@ -333,9 +371,23 @@ static int32_t l3_emitSnapshotChirp(const int16_t *rawChirp)
             out[outWord++] = dst[hwaWord + 1U];
         }
     }
+    return 0;
+}
+
+#ifndef LIVE_SNAPSHOT_RING
+static int32_t l3_emitSnapshotChirp(const int16_t *rawChirp)
+{
+    int16_t out[N_RX * SNAPSHOT_BINS * 2U];
+    int32_t errCode;
+
+    errCode = l3_snapshotChirpToBuffer(rawChirp, out);
+    if (errCode != 0) {
+        return errCode;
+    }
     UART_writePolling(gDataUart, (uint8_t *)out, sizeof(out));
     return 0;
 }
+#endif
 #endif
 #endif
 
@@ -366,7 +418,20 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
 static void l3_edmaCB(uintptr_t arg, uint8_t tcCode)
 {
     (void)arg; (void)tcCode;
+#ifdef LIVE_SNAPSHOT_RING
+    {
+        uintptr_t key;
+        uint32_t bit = 1U << (uint32_t)arg;
+        key = Hwi_disable();
+        if ((gRawFrameReadyMask & bit) != 0U) {
+            gRawFrameDrops++;
+        }
+        gRawFrameReadyMask |= bit;
+        Hwi_restore(key);
+    }
+#else
     gNumWrap++;
+#endif
 }
 
 /* Frame-start ISR: liveness + ring-alignment counters (the EDMA fills the
@@ -375,7 +440,9 @@ static void l3_frameStartISR(uintptr_t arg)
 {
     (void)arg;
     gNumFrame++;
+#ifndef LIVE_SNAPSHOT_RING
     gRingFrame++;
+#endif
 }
 
 /* Start the RF front-end (config must already be applied). Shared by
@@ -422,6 +489,11 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
                        ? (uint16_t)(gRingFrame % RING_FRAMES) : 0U);
     UART_writePolling(gDataUart, (uint8_t *)&h, sizeof(h));
 #ifdef SNAPSHOT_DUMP
+#ifdef LIVE_SNAPSHOT_RING
+    for (i = 0; i < RING_FRAMES; i++) {
+        UART_writePolling(gDataUart, (uint8_t *)g_ring[i], sizeof(g_ring[i]));
+    }
+#else
     if (!gHwaOpened || gHwaHandle == NULL) {
         CLI_write("Error: HWA unavailable for snapshot dump\n");
         gCaptureActive = 0U;
@@ -438,6 +510,7 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
             }
         }
     }
+#endif
 #else
     for (i = 0; i < RING_FRAMES; i++) {
         UART_writePolling(gDataUart, (uint8_t *)g_ring[i], sizeof(g_ring[i]));
@@ -453,6 +526,13 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
         return -1;
     }
     gRingFrame = 0U;
+#ifdef LIVE_SNAPSHOT_RING
+    gRawFrameReadyMask = 0U;
+    gRawFrameDrops     = 0U;
+    gSnapshotFrames    = 0U;
+    gSnapshotErrors    = 0U;
+    gSnapshotBusy      = 0U;
+#endif
     if (l3_startFrontEnd() < 0) {
         CLI_write("Error: RF restart failed\n");
         gCaptureActive = 0U;
@@ -465,9 +545,19 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 static int32_t l3_cli_stats(int32_t argc, char *argv[])
 {
     (void)argc; (void)argv;
+#ifdef LIVE_SNAPSHOT_RING
+    CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u "
+              "snap_frames=%u snap_ready=0x%x snap_drops=%u snap_err=%u snap_busy=%u\n",
+              (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
+              (unsigned)gCalibStatus, (unsigned)gRfFaults,
+              (unsigned)gSnapshotFrames, (unsigned)gRawFrameReadyMask,
+              (unsigned)gRawFrameDrops, (unsigned)gSnapshotErrors,
+              (unsigned)gSnapshotBusy);
+#else
     CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u\n",
               (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
               (unsigned)gCalibStatus, (unsigned)gRfFaults);
+#endif
     return 0;
 }
 
@@ -635,14 +725,26 @@ static int32_t l3_armCapture(void)
     EDMA_channelConfig_t   ch;
     EDMA_paramSetConfig_t *ps;
     EDMA_paramConfig_t     linkCfg;
+#ifdef LIVE_SNAPSHOT_RING
+    EDMA_paramConfig_t     linkCfgPong;
+#endif
     uint32_t               srcAddr, dstAddr;
 
     srcAddr = SOC_translateAddress(
+#ifdef LIVE_SNAPSHOT_RING
+        SOC_XWR68XX_MSS_ADCBUF_BASE_ADDRESS,
+#else
         SOC_XWR68XX_MSS_ADCBUF_BASE_ADDRESS +
             (SAVE_OFFSET_SAMPLES * 2U * (uint32_t)sizeof(int16_t)),
+#endif
         SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+#ifdef LIVE_SNAPSHOT_RING
+    dstAddr = SOC_translateAddress((uint32_t)&g_rawFrame[0][0],
+                                   SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+#else
     dstAddr = SOC_translateAddress((uint32_t)&g_ring[0][0],
                                    SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+#endif
 
     (void)EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
 
@@ -657,6 +759,18 @@ static int32_t l3_armCapture(void)
     ps = &ch.paramSetConfig;
     ps->sourceAddress      = srcAddr;
     ps->destinationAddress = dstAddr;
+#ifdef LIVE_SNAPSHOT_RING
+    ps->aCount             = (uint16_t)(N_SAMPLES * 2U * sizeof(int16_t));
+    ps->bCount             = (uint16_t)N_RX;
+    ps->cCount             = (uint16_t)CHIRPS_PER_FRAME;
+    ps->bCountReload       = (uint16_t)N_RX;
+    ps->sourceBindex       = (int16_t)(N_SAMPLES * 2U * sizeof(int16_t));
+    ps->destinationBindex  = (int16_t)(N_SAMPLES * 2U * sizeof(int16_t));
+    ps->sourceCindex       = 0;
+    ps->destinationCindex  = (int16_t)CHIRP_BYTES;
+    ps->transferCompletionCode = (uint8_t)L3_EDMA_CHANNEL;
+    ch.transferCompletionCallbackFxnArg = (uintptr_t)0U;
+#else
     ps->aCount             = (uint16_t)(SAVE_SAMPLES * 2U * sizeof(int16_t));
     ps->bCount             = (uint16_t)N_RX;          /* 4 arrays = one chirp per event */
     ps->cCount             = (uint16_t)RING_CHIRPS;   /* events before wrap */
@@ -665,9 +779,10 @@ static int32_t l3_armCapture(void)
     ps->destinationBindex  = (int16_t)(SAVE_SAMPLES * 2U * sizeof(int16_t));
     ps->sourceCindex       = 0;                       /* re-read ADCBUF base every event */
     ps->destinationCindex  = (int16_t)SAVED_CHIRP_BYTES; /* advance dest one chirp per event */
+    ps->transferCompletionCode = (uint8_t)L3_EDMA_CHANNEL;
+#endif
     ps->linkAddress        = EDMA_NULL_LINK_ADDRESS;
     ps->transferType       = (uint8_t)EDMA3_SYNC_AB;
-    ps->transferCompletionCode = (uint8_t)L3_EDMA_CHANNEL;
     ps->sourceAddressingMode      = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
     ps->destinationAddressingMode = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
     ps->fifoWidth          = (uint8_t)EDMA3_FIFO_WIDTH_8BIT;
@@ -684,6 +799,32 @@ static int32_t l3_armCapture(void)
     }
     memcpy((void *)&linkCfg.paramSetConfig, (void *)ps, sizeof(EDMA_paramSetConfig_t));
     linkCfg.transferCompletionCallbackFxn    = l3_edmaCB;
+#ifdef LIVE_SNAPSHOT_RING
+    linkCfg.transferCompletionCallbackFxnArg = (uintptr_t)0U;
+    linkCfg.paramSetConfig.destinationAddress =
+        SOC_translateAddress((uint32_t)&g_rawFrame[0][0],
+                             SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+    memcpy((void *)&linkCfgPong, (void *)&linkCfg, sizeof(linkCfgPong));
+    linkCfgPong.transferCompletionCallbackFxnArg = (uintptr_t)1U;
+    linkCfgPong.paramSetConfig.destinationAddress =
+        SOC_translateAddress((uint32_t)&g_rawFrame[1][0],
+                             SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+    if (EDMA_configParamSet(gEdmaHandle, L3_EDMA_LINK_CHANNEL, &linkCfg) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    if (EDMA_configParamSet(gEdmaHandle, L3_EDMA_LINK_CHANNEL_PONG, &linkCfgPong) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    if (EDMA_linkParamSets(gEdmaHandle, L3_EDMA_CHANNEL, L3_EDMA_LINK_CHANNEL_PONG) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    if (EDMA_linkParamSets(gEdmaHandle, L3_EDMA_LINK_CHANNEL_PONG, L3_EDMA_LINK_CHANNEL) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    if (EDMA_linkParamSets(gEdmaHandle, L3_EDMA_LINK_CHANNEL, L3_EDMA_LINK_CHANNEL_PONG) != EDMA_NO_ERROR) {
+        return -1;
+    }
+#else
     linkCfg.transferCompletionCallbackFxnArg = (uintptr_t)0U;
     if (EDMA_configParamSet(gEdmaHandle, L3_EDMA_LINK_CHANNEL, &linkCfg) != EDMA_NO_ERROR) {
         return -1;
@@ -694,6 +835,7 @@ static int32_t l3_armCapture(void)
     if (EDMA_linkParamSets(gEdmaHandle, L3_EDMA_LINK_CHANNEL, L3_EDMA_LINK_CHANNEL) != EDMA_NO_ERROR) {
         return -1;
     }
+#endif
     /* Arm the channel to respond to the hardware event. */
     if (EDMA_enableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA) != EDMA_NO_ERROR) {
         return -1;
@@ -724,6 +866,61 @@ static int32_t l3_mmwaveEvent(uint16_t msgId, uint16_t sbId, uint16_t sbLen,
     }
     return 0;
 }
+
+#ifdef LIVE_SNAPSHOT_RING
+static void l3_snapshotTask(UArg arg0, UArg arg1)
+{
+    (void)arg0; (void)arg1;
+
+    while (1) {
+        uintptr_t key;
+        uint32_t  mask;
+        uint32_t  slot;
+        uint32_t  chirp;
+        uint32_t  ringSlot;
+        int32_t   err = 0;
+
+        key = Hwi_disable();
+        mask = gRawFrameReadyMask;
+        if ((mask & 0x1U) != 0U) {
+            slot = 0U;
+            gRawFrameReadyMask &= ~0x1U;
+        } else if ((mask & 0x2U) != 0U) {
+            slot = 1U;
+            gRawFrameReadyMask &= ~0x2U;
+        } else {
+            Hwi_restore(key);
+            Task_sleep(1);
+            continue;
+        }
+        Hwi_restore(key);
+
+        gSnapshotBusy = 1U;
+        ringSlot = gSnapshotFrames % RING_FRAMES;
+        for (chirp = 0U; chirp < CHIRPS_PER_FRAME; chirp++) {
+            const int16_t *rawChirp =
+                &g_rawFrame[slot][chirp * N_RX * N_SAMPLES * 2U];
+            int16_t *snapshotChirp =
+                &g_ring[ringSlot][chirp * SNAPSHOT_CHIRP_COMPLEX * 2U];
+            err = l3_snapshotChirpToBuffer(rawChirp, snapshotChirp);
+            if (err != 0) {
+                break;
+            }
+        }
+        if (err == 0) {
+            gSnapshotFrames++;
+            gRingFrame = gSnapshotFrames;
+            if ((gSnapshotFrames >= RING_FRAMES) &&
+                ((gSnapshotFrames % RING_FRAMES) == 0U)) {
+                gNumWrap++;
+            }
+        } else {
+            gSnapshotErrors++;
+        }
+        gSnapshotBusy = 0U;
+    }
+}
+#endif
 
 /* mmWave control execution context (must outrank the CLI task). */
 static void l3_mmwaveCtrlTask(UArg arg0, UArg arg1)
@@ -806,6 +1003,13 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     gNumFrame  = 0U;
     gRingFrame = 0U;
     gNumWrap   = 0U;
+#ifdef LIVE_SNAPSHOT_RING
+    gRawFrameReadyMask = 0U;
+    gRawFrameDrops     = 0U;
+    gSnapshotFrames    = 0U;
+    gSnapshotErrors    = 0U;
+    gSnapshotBusy      = 0U;
+#endif
     if (l3_armCapture() < 0) {
         CLI_write("Error: EDMA arm failed\n");
         return -1;
@@ -826,6 +1030,9 @@ static int32_t l3_cli_sensorStop(int32_t argc, char *argv[])
     (void)argc; (void)argv;
     gCaptureActive = 0U;
     (void)EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
+#ifdef LIVE_SNAPSHOT_RING
+    gRawFrameReadyMask = 0U;
+#endif
     MMWave_stop(gMMWaveHandle, &errCode);
     return 0;
 }
@@ -949,6 +1156,13 @@ static void l3_initTask(UArg arg0, UArg arg1)
     taskParams.priority  = L3_CTRL_TASK_PRIORITY;
     taskParams.stackSize = 3 * 1024;
     Task_create(l3_mmwaveCtrlTask, &taskParams, NULL);
+
+#ifdef LIVE_SNAPSHOT_RING
+    Task_Params_init(&taskParams);
+    taskParams.priority  = L3_SNAPSHOT_TASK_PRIORITY;
+    taskParams.stackSize = 4 * 1024;
+    Task_create(l3_snapshotTask, &taskParams, NULL);
+#endif
 
     /* CLI with the mmWave extension. */
     cliCfg.cliPrompt             = "l3dump:/>";
