@@ -161,6 +161,9 @@ static int32_t       gHwaRealErr;
 static uint16_t      gHwaRealPeakBin;
 static uint32_t      gHwaRealPeakPower;
 static uint32_t      gHwaRealRuns;
+#ifdef LIVE_SNAPSHOT_RING
+static uint8_t       gHwaFftConfigured;
+#endif
 #endif
 static uint8_t       gSensorOpened;
 static uint32_t      gCpuClock = 200U * 1000000U;
@@ -228,18 +231,12 @@ static void l3_hwaDoneCB(void *arg)
     gHwaDone = 1U;
 }
 
-static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
+static int32_t l3_hwaConfigFft(void)
 {
     HWA_ParamConfig paramCfg;
     HWA_CommonConfig commonCfg;
-    int16_t *dst = (int16_t *)HWA_TEST_MEM2;
-    uint32_t i, wait;
     int32_t errCode;
 
-    *peakBin = 0U;
-    *peakPower = 0U;
-
-    memset((void *)dst, 0, HWA_MEM_STRIDE);
     memset((void *)&paramCfg, 0, sizeof(paramCfg));
     paramCfg.triggerMode = HWA_TRIG_MODE_SOFTWARE;
     paramCfg.accelMode = HWA_ACCELMODE_FFT;
@@ -297,6 +294,34 @@ static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
         return errCode;
     }
 
+    return 0;
+}
+
+static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
+{
+    int16_t *dst = (int16_t *)HWA_TEST_MEM2;
+    uint32_t i, wait;
+    int32_t errCode;
+
+    *peakBin = 0U;
+    *peakPower = 0U;
+
+    memset((void *)dst, 0, HWA_MEM_STRIDE);
+#ifdef LIVE_SNAPSHOT_RING
+    if (!gHwaFftConfigured) {
+        errCode = l3_hwaConfigFft();
+        if (errCode != 0) {
+            return errCode;
+        }
+        gHwaFftConfigured = 1U;
+    }
+#else
+    errCode = l3_hwaConfigFft();
+    if (errCode != 0) {
+        return errCode;
+    }
+#endif
+
     gHwaDone = 0U;
     errCode = HWA_enableDoneInterrupt(gHwaHandle, l3_hwaDoneCB, NULL);
     if (errCode != 0) {
@@ -307,12 +332,14 @@ static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
         (void)HWA_disableDoneInterrupt(gHwaHandle);
         return errCode;
     }
+#ifndef LIVE_SNAPSHOT_RING
     errCode = HWA_reset(gHwaHandle);
     if (errCode != 0) {
         (void)HWA_enable(gHwaHandle, 0U);
         (void)HWA_disableDoneInterrupt(gHwaHandle);
         return errCode;
     }
+#endif
     errCode = HWA_setSoftwareTrigger(gHwaHandle);
     if (errCode != 0) {
         (void)HWA_enable(gHwaHandle, 0U);
@@ -548,6 +575,7 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
     gSnapshotFrames    = 0U;
     gSnapshotErrors    = 0U;
     gSnapshotBusy      = 0U;
+    gHwaFftConfigured  = 0U;
 #endif
     if (l3_startFrontEnd() < 0) {
         CLI_write("Error: RF restart failed\n");
