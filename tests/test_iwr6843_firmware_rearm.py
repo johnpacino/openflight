@@ -12,23 +12,30 @@ def _function_source(source: str, name: str, next_name: str) -> str:
     return source[start:end]
 
 
-def test_hwa_dump_waits_for_rearm_worker_before_stopping_rf():
+def test_hwa_dump_freezes_only_at_a_completed_ring_boundary():
     source = FIRMWARE.read_text(encoding="utf-8")
     dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
 
-    disable = dump.index("gCaptureActive = 0U")
-    wait = dump.index("l3_waitForHwaRearmIdle")
+    freeze = dump.index("l3_freezeHwaAtRingBoundary")
     stop = dump.index("MMWave_stop")
 
-    assert disable < wait < stop
+    assert freeze < stop
 
 
-def test_full_hwa_rearm_clears_stale_state_before_reconfiguration():
+def test_dump_reuses_completed_chain_instead_of_full_hwa_reconfiguration():
     source = FIRMWARE.read_text(encoding="utf-8")
-    arm = _function_source(source, "static int32_t l3_armHwaChain", "static void l3_hwaRearmTask")
+    dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
 
-    reset = arm.index("HWA_reset")
-    first_param = arm.index("HWA_configParamSet")
+    restart = dump.index("l3_restartCompletedHwaRing")
+    non_hwa_branch = dump.index("#else", restart)
+    full_arm = dump.index("l3_armCapture", restart)
 
-    assert reset < first_param
-    assert "l3_drainHwaRearmSemaphore" in arm
+    assert restart < non_hwa_branch < full_arm
+
+
+def test_freeze_request_suppresses_automatic_ring_rearm():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    queue = _function_source(source, "static void l3_hwaMaybeQueueRearm", "static void l3_hwaChainDoneCB")
+
+    assert "gHwaFreezeRequested" in queue
+    assert "Semaphore_post(gHwaFreezeSemaphore)" in queue

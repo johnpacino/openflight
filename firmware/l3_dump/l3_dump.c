@@ -198,6 +198,7 @@ static uint8_t       gHwaFftConfigured;
 #endif
 #ifdef HWA_CHAINED_SNAPSHOT_RING
 static Semaphore_Handle gHwaRearmSemaphore;
+static Semaphore_Handle gHwaFreezeSemaphore;
 #endif
 #endif
 static uint8_t       gSensorOpened;
@@ -231,6 +232,11 @@ static volatile uint8_t  gHwaDoneSeen;
 static volatile uint8_t  gHwaOutputSeen;
 static volatile uint8_t  gHwaRearmPending;
 static volatile uint8_t  gHwaRearmBusy;
+static volatile uint8_t  gHwaFreezeRequested;
+static volatile uint32_t gHwaFreezeRequests;
+static volatile uint32_t gHwaFreezeCompletions;
+static volatile uint32_t gHwaFreezeTimeouts;
+static volatile uint32_t gHwaFreezeRestarts;
 #endif
 
 /* Config pulled from the CLI mmWave extension (kept off the stack -- large). */
@@ -487,14 +493,24 @@ static void l3_hwaMaybeQueueRearm(void)
 {
     uintptr_t key;
     uint8_t queue = 0U;
+    uint8_t freeze = 0U;
 
     key = Hwi_disable();
     if (gCaptureActive && gHwaDoneSeen && gHwaOutputSeen && !gHwaRearmPending) {
-        gHwaRearmPending = 1U;
-        queue = 1U;
+        if (gHwaFreezeRequested) {
+            gCaptureActive = 0U;
+            gHwaFreezeRequested = 0U;
+            gHwaFreezeCompletions++;
+            freeze = 1U;
+        } else {
+            gHwaRearmPending = 1U;
+            queue = 1U;
+        }
     }
     Hwi_restore(key);
-    if (queue && gHwaRearmSemaphore != NULL) {
+    if (freeze && gHwaFreezeSemaphore != NULL) {
+        Semaphore_post(gHwaFreezeSemaphore);
+    } else if (queue && gHwaRearmSemaphore != NULL) {
         Semaphore_post(gHwaRearmSemaphore);
     }
 }
@@ -737,17 +753,51 @@ static void l3_drainHwaRearmSemaphore(void)
     }
 }
 
-static int32_t l3_waitForHwaRearmIdle(void)
+static int32_t l3_restartCompletedHwaRing(void)
 {
-    uint32_t wait;
+    uintptr_t key;
+    int32_t errCode;
 
-    for (wait = 0U; wait < 1000U; wait++) {
-        if (!gHwaRearmBusy) {
-            return 0;
-        }
-        Task_sleep(1);
+    (void)HWA_disableDoneInterrupt(gHwaHandle);
+    (void)HWA_enable(gHwaHandle, 0U);
+    key = Hwi_disable();
+    gHwaDoneSeen = 0U;
+    gHwaOutputSeen = 0U;
+    gHwaRearmPending = 0U;
+    Hwi_restore(key);
+    errCode = l3_configHwaCommon();
+    if (errCode == 0) {
+        errCode = HWA_enableDoneInterrupt(gHwaHandle, l3_hwaChainDoneCB, NULL);
     }
-    return -1;
+    if (errCode == 0) {
+        errCode = l3_hwaStartRing();
+    }
+    return errCode;
+}
+
+static int32_t l3_freezeHwaAtRingBoundary(void)
+{
+    uintptr_t key;
+
+    if (gHwaFreezeSemaphore == NULL) {
+        return -1;
+    }
+    while (Semaphore_pend(gHwaFreezeSemaphore, BIOS_NO_WAIT)) {
+        /* Discard a stale completion before issuing a new request. */
+    }
+    key = Hwi_disable();
+    gHwaFreezeRequested = 1U;
+    gHwaFreezeRequests++;
+    Hwi_restore(key);
+    /* One 12-frame ring is 72 ms. Allow margin for a rearm already in flight. */
+    if (!Semaphore_pend(gHwaFreezeSemaphore, 250U)) {
+        key = Hwi_disable();
+        gHwaFreezeRequested = 0U;
+        gHwaFreezeTimeouts++;
+        Hwi_restore(key);
+        return -1;
+    }
+    return 0;
 }
 
 static int32_t l3_armHwaChain(void)
@@ -857,21 +907,7 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
                 continue;
             }
 
-            (void)HWA_disableDoneInterrupt(gHwaHandle);
-            (void)HWA_enable(gHwaHandle, 0U);
-            key = Hwi_disable();
-            gHwaDoneSeen = 0U;
-            gHwaOutputSeen = 0U;
-            gHwaRearmPending = 0U;
-            Hwi_restore(key);
-            errCode = l3_configHwaCommon();
-            if (errCode == 0) {
-                errCode = HWA_enableDoneInterrupt(gHwaHandle,
-                                                  l3_hwaChainDoneCB, NULL);
-            }
-            if (errCode == 0) {
-                errCode = l3_hwaStartRing();
-            }
+            errCode = l3_restartCompletedHwaRing();
             if (errCode == 0) {
                 gHwaRearms++;
             } else {
@@ -956,11 +992,10 @@ static int32_t l3_startFrontEnd(void)
     return MMWave_start(gMMWaveHandle, &calibrationCfg, &errCode);
 }
 
-/* CLI "l3dump": STOP the front-end (chirp events cease -> ring static and all
- * EDMA state quiesced), stream RING_FRAMES frames of real ADC, re-arm the EDMA
- * race-free (no events in flight), then restart the RF. Re-arming while
- * chirping raced the 45 us chirp events and eventually wedged the EDMA/CLI.
- * The Pi frames the burst by the header's byte count. */
+/* CLI "l3dump": finish the active HWA/EDMA ring, stop RF, stream the static
+ * ring, then restart through the same lightweight path used between healthy
+ * rings. Freezing mid-ring left stale DFE/DMA state and wedged the CLI after
+ * the first otherwise-valid dump. */
 int32_t l3_cli_dump(int32_t argc, char *argv[])
 {
     l3_dump_header_t h;
@@ -972,28 +1007,17 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
         return -1;
     }
 
-    /* Halt chirping; ignore informational return (demo does the same). */
 #ifdef HWA_CHAINED_SNAPSHOT_RING
-    {
-        uintptr_t key = Hwi_disable();
-        gCaptureActive = 0U;
-        Hwi_restore(key);
-    }
-    if (l3_waitForHwaRearmIdle() != 0) {
-        CLI_write("Error: HWA re-arm worker did not quiesce\n");
+    if (l3_freezeHwaAtRingBoundary() != 0) {
+        CLI_write("Error: HWA ring-boundary freeze timed out\n");
         return -1;
     }
 #endif
+    /* Halt chirping only after HWA and both output EDMAs completed naturally. */
     (void)MMWave_stop(gMMWaveHandle, &errCode);
     Task_sleep(10);
 #ifdef HWA_CHAINED_SNAPSHOT_RING
     (void)HWA_enable(gHwaHandle, 0U);
-    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PING_CHANNEL,
-                              EDMA3_CHANNEL_TYPE_DMA);
-    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PONG_CHANNEL,
-                              EDMA3_CHANNEL_TYPE_DMA);
-    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_SIGNATURE_CHANNEL,
-                              EDMA3_CHANNEL_TYPE_DMA);
 #else
     EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
 #endif
@@ -1034,14 +1058,23 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
     }
 #endif
 
-    /* Re-arm with no chirp events possible, then restart the front-end. The
-     * ring realigns to slot 0 == first chirp of the first post-restart frame,
-     * so the ring-alignment counter restarts with it. */
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    /* The completed EDMA paramsets have self-reloaded. Reuse them rather than
+     * rebuilding HWA/EDMA from the partially consumed state that caused the
+     * repeat-dump deadlock. */
+    if (l3_restartCompletedHwaRing() < 0) {
+        CLI_write("Error: completed HWA ring restart failed\n");
+        gCaptureActive = 0U;
+        return -1;
+    }
+    gHwaFreezeRestarts++;
+#else
     if (l3_armCapture() < 0) {
         CLI_write("Error: EDMA re-arm failed\n");
         gCaptureActive = 0U;
         return -1;
     }
+#endif
     gRingFrame = 0U;
 #ifdef LIVE_SNAPSHOT_RING
     gRawFrameReadyMask = 0U;
@@ -1078,13 +1111,16 @@ static int32_t l3_cli_stats(int32_t argc, char *argv[])
 #ifdef HWA_CHAINED_SNAPSHOT_RING
     CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u "
               "hwa_rings=%u hwa_out=%u hwa_rearms=%u hwa_rearm_err=%u "
-              "hwa_wait=0x%x\n",
+              "hwa_wait=0x%x freeze_req=%u freeze_done=%u freeze_to=%u "
+              "freeze_restart=%u\n",
               (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
               (unsigned)gCalibStatus, (unsigned)gRfFaults,
               (unsigned)gHwaRingDone, (unsigned)gHwaOutputDone,
               (unsigned)gHwaRearms, (unsigned)gHwaRearmErrors,
               (unsigned)((gHwaDoneSeen ? 1U : 0U) |
-                         (gHwaOutputSeen ? 2U : 0U)));
+                         (gHwaOutputSeen ? 2U : 0U)),
+              (unsigned)gHwaFreezeRequests, (unsigned)gHwaFreezeCompletions,
+              (unsigned)gHwaFreezeTimeouts, (unsigned)gHwaFreezeRestarts);
 #else
     CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u\n",
               (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
@@ -1556,6 +1592,11 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     gHwaOutputSeen     = 0U;
     gHwaRearmPending   = 0U;
     gHwaRearmBusy      = 0U;
+    gHwaFreezeRequested = 0U;
+    gHwaFreezeRequests = 0U;
+    gHwaFreezeCompletions = 0U;
+    gHwaFreezeTimeouts = 0U;
+    gHwaFreezeRestarts = 0U;
 #endif
     if (l3_armCapture() < 0) {
         CLI_write("Error: capture arm failed\n");
@@ -1728,6 +1769,10 @@ static void l3_initTask(UArg arg0, UArg arg1)
     semaphoreParams.mode = Semaphore_Mode_BINARY;
     gHwaRearmSemaphore = Semaphore_create(0, &semaphoreParams, NULL);
     if (gHwaRearmSemaphore == NULL) {
+        return;
+    }
+    gHwaFreezeSemaphore = Semaphore_create(0, &semaphoreParams, NULL);
+    if (gHwaFreezeSemaphore == NULL) {
         return;
     }
     Task_Params_init(&taskParams);

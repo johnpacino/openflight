@@ -74,7 +74,7 @@ SOURCES    = l3_dump.c
 DEPENDS    = $(addprefix $(PLATFORM_OBJDIR)/, $(SOURCES:.c=.$(R4F_DEP_EXT)))
 OBJECTS    = $(addprefix $(PLATFORM_OBJDIR)/, $(SOURCES:.c=.$(R4F_OBJ_EXT)))
 
-.PHONY: all bin clean help appRTSC
+.PHONY: all bin clean cleanApp help appRTSC
 
 # --- SYS/BIOS (RTSC) configuration -------------------------------------------
 appRTSC:
@@ -106,12 +106,19 @@ clean:
 	@$(DEL) $(CONFIGPKG)
 	@$(DEL) $(PLATFORM_OBJDIR)
 
+# Same-geometry firmware iterations can reuse the generated RTSC/SYS/BIOS
+# package. Variant switches must continue to use the full `clean` target.
+cleanApp:
+	@$(DEL) $(OBJECTS) $(DEPENDS) $(MAP) $(OUT) $(BIN)
+	@$(DEL) $(PLATFORM_OBJDIR)
+
 help:
 	@echo '****************************************************************'
 	@echo '* OpenFlight L3-dump firmware targets'
 	@echo 'all   -> build the MSS executable (l3_dump_mss.xer4f)'
 	@echo 'bin   -> build the flashable meta-image (l3_dump.bin)'
 	@echo 'clean -> remove build artifacts'
+	@echo 'cleanApp -> remove app objects but retain generated RTSC packages'
 	@echo '****************************************************************'
 
 -include $(DEPENDS)
