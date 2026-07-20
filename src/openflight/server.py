@@ -1885,16 +1885,20 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
             shot.launch_angle_vertical_confidence = 0.95
             shot.launch_angle_confidence = 0.95
             shot.angle_source = "radar"
-            if measurement.horizontal_deg is not None:
-                shot.launch_angle_horizontal = measurement.horizontal_deg
-                shot.launch_angle_horizontal_confidence = 0.95
+            horizontal_deg = getattr(measurement, "horizontal_deg", None)
+            horizontal_confidence = getattr(measurement, "horizontal_confidence", None)
+            horizontal_status = getattr(measurement, "horizontal_status", None)
+            if horizontal_deg is not None:
+                shot.launch_angle_horizontal = horizontal_deg
+                shot.launch_angle_horizontal_confidence = (
+                    horizontal_confidence if horizontal_confidence is not None else 0.95
+                )
                 shot.launch_angle_horizontal_source = "radar"
                 logger.info(
-                    "[SERVER] IWR6843 TX2 horizontal proxy: %.2f° "
-                    "(coherence %.0f%%, status=%s)",
-                    measurement.horizontal_deg,
-                    (measurement.horizontal_confidence or 0.0) * 100,
-                    measurement.horizontal_status,
+                    "[SERVER] IWR6843 TX2 horizontal proxy: %.2f° (coherence %.0f%%, status=%s)",
+                    horizontal_deg,
+                    (horizontal_confidence or 0.0) * 100,
+                    horizontal_status,
                 )
             logger.info(
                 "[SERVER] IWR6843 LCMF-v1 launch: %.2f° "
