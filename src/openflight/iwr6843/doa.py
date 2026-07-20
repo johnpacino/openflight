@@ -69,8 +69,13 @@ def measure_tdm_sign(mti: np.ndarray, track: BallTrack, geo: Geometry) -> int:
             t_s = geo.loop_time(frame, loop)
             b_0 = int(round(track.bin_at(t_s)))
             b_1 = int(round(track.bin_at(t_s + geo.loop_period_s)))
-            if 2 <= b_0 < geo.n_samples and 2 <= b_1 < geo.n_samples:
-                acc += np.vdot(mti[frame, 0, loop, :, b_0], mti[frame, 0, loop + 1, :, b_1])
+            b_0_local = geo.local_bin(b_0)
+            b_1_local = geo.local_bin(b_1)
+            if geo.contains_bin(b_0) and geo.contains_bin(b_1):
+                acc += np.vdot(
+                    mti[frame, 0, loop, :, b_0_local],
+                    mti[frame, 0, loop + 1, :, b_1_local],
+                )
     if abs(acc) == 0:
         return +1
     psi_pred = 4 * np.pi * track.speed_ms * geo.loop_period_s / LAM
@@ -175,9 +180,10 @@ def snapshot_series(
                 loop = start + off
                 t_s = geo.loop_time(frame, loop)
                 rbin = int(round(track.bin_at(t_s)))
-                if not 2 <= rbin < geo.n_samples - 1:
+                local_bin = geo.local_bin(rbin)
+                if not geo.contains_bin(rbin, margin=1):
                     break
-                snap = _snapshot(mti, frame, loop, rbin, tdm_phase, cal, tx_order)
+                snap = _snapshot(mti, frame, loop, local_bin, tdm_phase, cal, tx_order)
                 acc += snap * np.exp(-1j * loop_phase * off)
             else:
                 snr = float((np.abs(acc) ** 2).mean() / (noise * k))

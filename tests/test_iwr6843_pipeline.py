@@ -15,7 +15,13 @@ import numpy as np
 import pytest
 
 from openflight.iwr6843 import Calibration, estimate_lcmf_v1, process_dump
-from openflight.iwr6843.dump import pack_dump, parse_header
+from openflight.iwr6843.dump import (
+    SAMPLE_RANGE_FFT_IQ16,
+    pack_dump,
+    parse_dump,
+    parse_header,
+    project_tx_pair,
+)
 from openflight.iwr6843.lcmf import ANGLE_CORRECTION_DEG, TX2_LOOP_PERIOD_S, TX2_VERTICAL_TDM_TAU_S
 from openflight.iwr6843.music import LAM, steer
 from openflight.iwr6843.shot import geometry_from_header
@@ -92,6 +98,21 @@ def synth_shot(
     )
 
 
+def range_snapshot_dump(raw: bytes, *, start_bin: int = 20, n_bins: int = 80) -> bytes:
+    """Convert a raw ADC dump into the HWA range-snapshot wire format."""
+    meta, cube = parse_dump(raw)
+    rfft = np.fft.fft(cube, axis=-1)
+    return pack_dump(
+        rfft[..., start_bin : start_bin + n_bins],
+        n_tx=meta["n_tx"],
+        trigger_frame=meta["trigger_frame"],
+        version=meta["version"],
+        frame_period_us=meta["frame_period_us"],
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16,
+        range_bin_start=start_bin,
+    )
+
+
 @pytest.fixture(name="cal")
 def _cal():
     cal = Calibration.identity()
@@ -120,8 +141,44 @@ def test_recovers_speed_and_launch_angle(cal):
     shot = process_dump(raw, cal, coherent_loops=1, two_ray=False)
     assert shot.ball_found
     assert shot.track.speed_ms == pytest.approx(truth_v, rel=0.02)
-    assert shot.fits["free"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
     assert shot.fits["tee"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
+
+
+def test_range_snapshot_recovers_speed_and_launch_angle(cal):
+    """Snapshot dumps store selected FFT bins, not raw ADC fast-time samples."""
+    truth_v, truth_la = 45.0, 18.0
+    raw = range_snapshot_dump(
+        synth_shot(speed_ms=truth_v, launch_deg=truth_la, n_loops=10),
+        start_bin=20,
+        n_bins=80,
+    )
+
+    shot = process_dump(raw, cal, coherent_loops=1, two_ray=False)
+
+    assert shot.ball_found
+    assert shot.track.speed_ms == pytest.approx(truth_v, rel=0.02)
+    assert shot.fits["tee"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
+    assert shot.to_dict()["geometry"]["range_bin_start"] == 20
+    assert shot.to_dict()["geometry"]["range_fft_size"] == 128
+
+
+def test_range_snapshot_tx_projection_preserves_absolute_bins():
+    rng = np.random.default_rng(22)
+    cube = rng.standard_normal((12, 30, 4, 128)) + 1j * rng.standard_normal((12, 30, 4, 128))
+    raw = pack_dump(cube, n_tx=3, trigger_frame=4, version=3, frame_period_us=6000)
+    snapshot = range_snapshot_dump(raw, start_bin=20, n_bins=80)
+
+    projected = project_tx_pair(snapshot, (0, 2))
+    meta, parsed = parse_dump(projected)
+    geo = geometry_from_header(meta, loop_period_s=TX2_LOOP_PERIOD_S)
+
+    assert meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16
+    assert meta["range_bin_start"] == 20
+    assert parsed.shape == (12, 20, 4, 80)
+    assert geo.range_res_m == pytest.approx(RANGE_SPAN_M / 128)
+    assert geo.local_bin(34) == 14
+    assert geo.contains_bin(34)
+    assert not geo.contains_bin(110)
 
 
 def test_reversed_tx_order_recovers_same_speed_and_angle(cal):
@@ -479,6 +536,32 @@ def test_lcmf_v1_fuses_five_frozen_components(cal):
     assert result.n_snapshots <= 4 * result.n_frames
     assert result.n_frames >= 3
     assert result.to_dict()["angle_correction_deg"] == ANGLE_CORRECTION_DEG
+
+
+def test_lcmf_v1_fuses_range_snapshot_channel_components(cal):
+    """Range snapshots intentionally skip raw-ADC fast-time models."""
+    raw = range_snapshot_dump(
+        synth_shot(speed_ms=45.0, launch_deg=18.0, image_gain=0.35, noise=4.0, n_loops=10),
+        start_bin=20,
+        n_bins=80,
+    )
+
+    result = estimate_lcmf_v1(
+        raw,
+        cal,
+        ball_speed_mph=45.0 * 2.23694,
+        club="9i",
+    )
+
+    assert result.accepted
+    assert set(result.components_deg) == {
+        "channel_two8_deg",
+        "channel_four4_path_tdm_deg",
+    }
+    assert result.raw_angle_deg == pytest.approx(np.mean(list(result.components_deg.values())))
+    assert result.angle_deg == pytest.approx(result.raw_angle_deg + ANGLE_CORRECTION_DEG)
+    assert result.n_snapshots <= 4 * result.n_frames
+    assert result.n_frames >= 3
 
 
 def test_lcmf_v1_rejects_empty_capture_without_inventing_angle(cal):

@@ -36,6 +36,7 @@ vpath %.c .
 #   pinmux+uart+cli : dual-UART I/O (CLI trigger in, data burst out)
 #   crc+mailbox+mmwavelink+mmwave : RF front-end config (self-config on boot)
 #   dma+edma+adcbuf : raw ADCBUF -> L3 capture
+#   hwa             : optional range-FFT smoke/prototype path
 ###################################################################################
 L3_STD_LIBS = $(R4F_COMMON_STD_LIB)                                        \
         -llibpinmux_$(MMWAVE_SDK_DEVICE_TYPE).$(R4F_LIB_EXT)               \
@@ -45,6 +46,7 @@ L3_STD_LIBS = $(R4F_COMMON_STD_LIB)                                        \
         -llibdma_$(MMWAVE_SDK_DEVICE_TYPE).$(R4F_LIB_EXT)                  \
         -llibedma_$(MMWAVE_SDK_DEVICE_TYPE).$(R4F_LIB_EXT)                 \
         -llibadcbuf_$(MMWAVE_SDK_DEVICE_TYPE).$(R4F_LIB_EXT)               \
+        -llibhwa_$(MMWAVE_SDK_DEVICE_TYPE).$(R4F_LIB_EXT)                  \
         -llibmailbox_$(MMWAVE_SDK_DEVICE_TYPE).$(R4F_LIB_EXT)              \
         -llibmmwavelink_$(MMWAVE_SDK_DEVICE_TYPE).$(R4F_LIB_EXT)           \
         -llibmmwave_$(MMWAVE_SDK_DEVICE_TYPE).$(R4F_LIB_EXT)
@@ -57,6 +59,7 @@ L3_LOC_LIBS = $(R4F_COMMON_LOC_LIB)                                        \
         -i$(MMWAVE_SDK_INSTALL_PATH)/ti/drivers/dma/lib                    \
         -i$(MMWAVE_SDK_INSTALL_PATH)/ti/drivers/edma/lib                   \
         -i$(MMWAVE_SDK_INSTALL_PATH)/ti/drivers/adcbuf/lib                 \
+        -i$(MMWAVE_SDK_INSTALL_PATH)/ti/drivers/hwa/lib                    \
         -i$(MMWAVE_SDK_INSTALL_PATH)/ti/drivers/mailbox/lib                \
         -i$(MMWAVE_SDK_INSTALL_PATH)/ti/control/mmwavelink/lib             \
         -i$(MMWAVE_SDK_INSTALL_PATH)/ti/control/mmwave/lib
