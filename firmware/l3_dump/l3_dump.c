@@ -9,6 +9,11 @@
  * ring continuously (dest auto-advances per chirp, wraps every RING_CHIRPS).
  * `l3dump` disables the channel (freeze), streams the ring, re-arms.
  *
+ * HWA_CHAINED_SNAPSHOT_RING replaces that raw path with TI's production data
+ * flow: the DFE triggers range FFTs directly in HWA and HWA param completion
+ * triggers EDMA copies of selected range bins into the compact L3 ring. The CPU
+ * only rearms the 12-frame hardware chain during inter-frame idle time.
+ *
  * Chirp order filled == chirp order fired == TDM (chirp c -> tx=c%N_TX,
  * loop=c/N_TX), matching iwr6843_l3dump.
  */
@@ -20,6 +25,7 @@
 #include <xdc/std.h>
 #include <ti/sysbios/BIOS.h>
 #include <ti/sysbios/hal/Hwi.h>
+#include <ti/sysbios/knl/Semaphore.h>
 #include <ti/sysbios/knl/Task.h>
 
 /* mmWave SDK drivers + control */
@@ -97,6 +103,17 @@
 #error "LIVE_SNAPSHOT_RING requires ENABLE_HWA_SMOKE"
 #endif
 #endif
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+#ifndef SNAPSHOT_DUMP
+#error "HWA_CHAINED_SNAPSHOT_RING requires SNAPSHOT_DUMP"
+#endif
+#ifndef ENABLE_HWA_SMOKE
+#error "HWA_CHAINED_SNAPSHOT_RING requires ENABLE_HWA_SMOKE"
+#endif
+#ifdef LIVE_SNAPSHOT_RING
+#error "Select either LIVE_SNAPSHOT_RING or HWA_CHAINED_SNAPSHOT_RING"
+#endif
+#endif
 #define CHIRPS_PER_FRAME  (N_TX * LOOPS)                        /* 64 */
 #define FRAME_COMPLEX     (CHIRPS_PER_FRAME * N_RX * N_SAMPLES)   /* 32768 */
 #define FRAME_BYTES       (FRAME_COMPLEX * 2 * (uint32_t)sizeof(int16_t)) /* 128 KB */
@@ -118,7 +135,7 @@
 #define RING_FRAMES  6
 #endif
 #define RING_CHIRPS  (RING_FRAMES * CHIRPS_PER_FRAME)
-#ifdef LIVE_SNAPSHOT_RING
+#if defined(LIVE_SNAPSHOT_RING) || defined(HWA_CHAINED_SNAPSHOT_RING)
 #define RING_FRAME_COMPLEX SNAPSHOT_FRAME_COMPLEX
 #else
 #define RING_FRAME_COMPLEX SAVED_FRAME_COMPLEX
@@ -140,6 +157,21 @@ static int16_t g_rawFrame[2][FRAME_COMPLEX * 2];
 #define L3_EDMA_CHANNEL       EDMA_TPCC0_REQ_DFE_CHIRP_AVAIL
 #define L3_EDMA_LINK_CHANNEL  EDMA_NUM_DMA_CHANNELS
 #define L3_EDMA_LINK_CHANNEL_PONG (EDMA_NUM_DMA_CHANNELS + 1U)
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+/* Match TI RangeProc's reserved request lines. HWA param-done events drive the
+ * ping/pong output channels; their completion chains a two-hot signature into
+ * the dummy HWA paramsets so the next DFE-triggered FFT can run. */
+#define L3_HWA_OUT_PING_CHANNEL EDMA_TPCC0_REQ_HWACC_0
+#define L3_HWA_OUT_PONG_CHANNEL EDMA_TPCC0_REQ_HWACC_1
+#define L3_HWA_SIGNATURE_CHANNEL EDMA_TPCC0_REQ_FREE_7
+#define L3_HWA_OUT_PING_SHADOW EDMA_NUM_DMA_CHANNELS
+#define L3_HWA_OUT_PONG_SHADOW (EDMA_NUM_DMA_CHANNELS + 1U)
+#define L3_HWA_SIGNATURE_SHADOW (EDMA_NUM_DMA_CHANNELS + 2U)
+#define L3_HWA_PARAM_DUMMY_PING 0U
+#define L3_HWA_PARAM_FFT_PING   1U
+#define L3_HWA_PARAM_DUMMY_PONG 2U
+#define L3_HWA_PARAM_FFT_PONG   3U
+#endif
 
 /* --- SDK handles ----------------------------------------------------------- */
 static SOC_Handle    gSocHandle;
@@ -164,6 +196,9 @@ static uint32_t      gHwaRealRuns;
 #ifdef LIVE_SNAPSHOT_RING
 static uint8_t       gHwaFftConfigured;
 #endif
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+static Semaphore_Handle gHwaRearmSemaphore;
+#endif
 #endif
 static uint8_t       gSensorOpened;
 static uint32_t      gCpuClock = 200U * 1000000U;
@@ -187,6 +222,15 @@ static volatile uint32_t gSnapshotFrames;
 static volatile uint32_t gSnapshotErrors;
 static volatile uint8_t  gSnapshotBusy;
 #endif
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+static volatile uint32_t gHwaRingDone;
+static volatile uint32_t gHwaOutputDone;
+static volatile uint32_t gHwaRearms;
+static volatile uint32_t gHwaRearmErrors;
+static volatile uint8_t  gHwaDoneSeen;
+static volatile uint8_t  gHwaOutputSeen;
+static volatile uint8_t  gHwaRearmPending;
+#endif
 
 /* Config pulled from the CLI mmWave extension (kept off the stack -- large). */
 static MMWave_OpenCfg gOpenCfg;
@@ -205,6 +249,9 @@ static int32_t l3_cli_hwaReal(int32_t argc, char *argv[]);
 static int32_t l3_armCapture(void);
 #ifdef LIVE_SNAPSHOT_RING
 static void l3_snapshotTask(UArg arg0, UArg arg1);
+#endif
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+static void l3_hwaRearmTask(UArg arg0, UArg arg1);
 #endif
 
 #ifdef ENABLE_HWA_SMOKE
@@ -380,7 +427,7 @@ static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
     return 0;
 }
 
-#ifdef SNAPSHOT_DUMP
+#if defined(SNAPSHOT_DUMP) && !defined(HWA_CHAINED_SNAPSHOT_RING)
 static int32_t l3_snapshotChirpToBuffer(const int16_t *rawChirp, int16_t *out)
 {
     int16_t *src = (int16_t *)HWA_TEST_MEM0;
@@ -434,6 +481,364 @@ static int32_t l3_emitSnapshotChirp(const int16_t *rawChirp)
 #endif
 #endif
 
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+static void l3_hwaMaybeQueueRearm(void)
+{
+    uintptr_t key;
+    uint8_t queue = 0U;
+
+    key = Hwi_disable();
+    if (gCaptureActive && gHwaDoneSeen && gHwaOutputSeen && !gHwaRearmPending) {
+        gHwaRearmPending = 1U;
+        queue = 1U;
+    }
+    Hwi_restore(key);
+    if (queue && gHwaRearmSemaphore != NULL) {
+        Semaphore_post(gHwaRearmSemaphore);
+    }
+}
+
+static void l3_hwaChainDoneCB(void *arg)
+{
+    (void)arg;
+    gHwaRingDone++;
+    gHwaDoneSeen = 1U;
+    l3_hwaMaybeQueueRearm();
+}
+
+static void l3_hwaOutputDoneCB(uintptr_t arg, uint8_t tcCode)
+{
+    (void)arg;
+    (void)tcCode;
+    gHwaOutputDone++;
+    gNumWrap++;
+    gHwaOutputSeen = 1U;
+    l3_hwaMaybeQueueRearm();
+}
+
+static int32_t l3_hwaStartRing(void)
+{
+    int32_t errCode;
+
+    errCode = HWA_enable(gHwaHandle, 1U);
+    if (errCode != 0) {
+        return errCode;
+    }
+    errCode = HWA_setDMA2ACCManualTrig(gHwaHandle, L3_HWA_PARAM_DUMMY_PING);
+    if (errCode != 0) {
+        (void)HWA_enable(gHwaHandle, 0U);
+        return errCode;
+    }
+    errCode = HWA_setDMA2ACCManualTrig(gHwaHandle, L3_HWA_PARAM_DUMMY_PONG);
+    if (errCode != 0) {
+        (void)HWA_enable(gHwaHandle, 0U);
+        return errCode;
+    }
+    return 0;
+}
+
+static int32_t l3_configHwaProcessParam(uint8_t paramIdx, uint8_t outChannel,
+                                        uint16_t dstAddr)
+{
+    HWA_ParamConfig paramCfg;
+    HWA_InterruptConfig interruptCfg;
+    uint8_t dmaChannel;
+    int32_t errCode;
+
+    memset((void *)&paramCfg, 0, sizeof(paramCfg));
+    paramCfg.triggerMode = HWA_TRIG_MODE_DFE;
+    paramCfg.accelMode = HWA_ACCELMODE_FFT;
+    paramCfg.source.srcAddr = 0U;
+    paramCfg.source.srcAcnt = N_SAMPLES - 1U;
+    paramCfg.source.srcAIdx = HWA_COMPLEX16_BYTES;
+    paramCfg.source.srcBcnt = N_RX - 1U;
+    paramCfg.source.srcBIdx = N_SAMPLES * HWA_COMPLEX16_BYTES;
+    paramCfg.source.srcRealComplex = HWA_SAMPLES_FORMAT_COMPLEX;
+    paramCfg.source.srcWidth = HWA_SAMPLES_WIDTH_16BIT;
+    paramCfg.source.srcSign = HWA_SAMPLES_SIGNED;
+    paramCfg.source.srcConjugate = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.source.srcScale = 0U;
+    paramCfg.source.bpmEnable = HWA_FEATURE_BIT_DISABLE;
+
+    /* RX-major output makes the compact ring byte-for-byte compatible with the
+     * existing sample_fmt=1 host parser. EDMA then crops the same 80 bins from
+     * each of the four 128-bin RX blocks. */
+    paramCfg.dest.dstAddr = dstAddr;
+    paramCfg.dest.dstAcnt = N_SAMPLES - 1U;
+    paramCfg.dest.dstAIdx = HWA_COMPLEX16_BYTES;
+    paramCfg.dest.dstBIdx = N_SAMPLES * HWA_COMPLEX16_BYTES;
+    paramCfg.dest.dstRealComplex = HWA_SAMPLES_FORMAT_COMPLEX;
+    paramCfg.dest.dstWidth = HWA_SAMPLES_WIDTH_16BIT;
+    paramCfg.dest.dstSign = HWA_SAMPLES_SIGNED;
+    paramCfg.dest.dstConjugate = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.dest.dstScale = 0U;
+    paramCfg.dest.dstSkipInit = 0U;
+    paramCfg.accelModeArgs.fftMode.fftEn = HWA_FEATURE_BIT_ENABLE;
+    paramCfg.accelModeArgs.fftMode.fftSize = (uint8_t)l3_log2_u32(N_SAMPLES);
+    paramCfg.accelModeArgs.fftMode.butterflyScaling = 0x7FU;
+    paramCfg.accelModeArgs.fftMode.interfZeroOutEn = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.accelModeArgs.fftMode.windowEn = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.accelModeArgs.fftMode.windowStart = 0U;
+    paramCfg.accelModeArgs.fftMode.winSymm = HWA_FFT_WINDOW_NONSYMMETRIC;
+    paramCfg.accelModeArgs.fftMode.winInterpolateMode = HWA_FFT_WINDOW_INTERPOLATE_MODE_NONE;
+    paramCfg.accelModeArgs.fftMode.magLogEn = HWA_FFT_MODE_MAGNITUDE_LOG2_DISABLED;
+    paramCfg.accelModeArgs.fftMode.fftOutMode = HWA_FFT_MODE_OUTPUT_DEFAULT;
+    paramCfg.complexMultiply.mode = HWA_COMPLEX_MULTIPLY_MODE_DISABLE;
+
+    errCode = HWA_configParamSet(gHwaHandle, paramIdx, &paramCfg, NULL);
+    if (errCode != 0) {
+        return errCode;
+    }
+    errCode = HWA_getDMAChanIndex(gHwaHandle, outChannel, &dmaChannel);
+    if (errCode != 0) {
+        return errCode;
+    }
+    memset((void *)&interruptCfg, 0, sizeof(interruptCfg));
+    interruptCfg.interruptTypeFlag = HWA_PARAMDONE_INTERRUPT_TYPE_DMA;
+    interruptCfg.dma.dstChannel = dmaChannel;
+    return HWA_enableParamSetInterrupt(gHwaHandle, paramIdx, &interruptCfg);
+}
+
+static int32_t l3_configHwaOutputEdma(uint8_t channel, uint16_t shadow,
+                                      uint32_t source, uint32_t destination,
+                                      uintptr_t callbackArg)
+{
+    EDMA_channelConfig_t channelCfg;
+    EDMA_paramConfig_t shadowCfg;
+    EDMA_paramSetConfig_t *param;
+
+    memset((void *)&channelCfg, 0, sizeof(channelCfg));
+    channelCfg.channelId = channel;
+    channelCfg.channelType = (uint8_t)EDMA3_CHANNEL_TYPE_DMA;
+    channelCfg.paramId = channel;
+    channelCfg.eventQueueId = 0U;
+    channelCfg.transferCompletionCallbackFxn =
+        (callbackArg != 0U) ? l3_hwaOutputDoneCB : NULL;
+    channelCfg.transferCompletionCallbackFxnArg = callbackArg;
+
+    param = &channelCfg.paramSetConfig;
+    param->sourceAddress = SOC_translateAddress(source, SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+    param->destinationAddress = SOC_translateAddress(destination, SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+    param->aCount = (uint16_t)(SNAPSHOT_BINS * HWA_COMPLEX16_BYTES);
+    param->bCount = (uint16_t)N_RX;
+    param->cCount = (uint16_t)(RING_CHIRPS / 2U);
+    param->bCountReload = (uint16_t)N_RX;
+    param->sourceBindex = (int16_t)(N_SAMPLES * HWA_COMPLEX16_BYTES);
+    param->destinationBindex = (int16_t)(SNAPSHOT_BINS * HWA_COMPLEX16_BYTES);
+    param->sourceCindex = 0;
+    param->destinationCindex = (int16_t)(2U * SNAPSHOT_CHIRP_BYTES);
+    param->linkAddress = EDMA_NULL_LINK_ADDRESS;
+    param->transferCompletionCode = L3_HWA_SIGNATURE_CHANNEL;
+    param->transferType = (uint8_t)EDMA3_SYNC_AB;
+    param->sourceAddressingMode = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
+    param->destinationAddressingMode = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
+    param->fifoWidth = (uint8_t)EDMA3_FIFO_WIDTH_8BIT;
+    param->isStaticSet = false;
+    param->isEarlyCompletion = false;
+    param->isFinalTransferInterruptEnabled = (callbackArg != 0U);
+    param->isIntermediateTransferInterruptEnabled = false;
+    param->isFinalChainingEnabled = true;
+    param->isIntermediateChainingEnabled = true;
+
+    if (EDMA_configChannel(gEdmaHandle, &channelCfg, true) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    memset((void *)&shadowCfg, 0, sizeof(shadowCfg));
+    memcpy((void *)&shadowCfg.paramSetConfig, (void *)param, sizeof(*param));
+    shadowCfg.transferCompletionCallbackFxn =
+        (callbackArg != 0U) ? l3_hwaOutputDoneCB : NULL;
+    shadowCfg.transferCompletionCallbackFxnArg = callbackArg;
+    if (EDMA_configParamSet(gEdmaHandle, shadow, &shadowCfg) != EDMA_NO_ERROR ||
+        EDMA_linkParamSets(gEdmaHandle, channel, shadow) != EDMA_NO_ERROR ||
+        EDMA_linkParamSets(gEdmaHandle, shadow, shadow) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    return 0;
+}
+
+static int32_t l3_configHwaSignatureEdma(void)
+{
+    HWA_SrcDMAConfig trigger[2];
+    EDMA_channelConfig_t channelCfg;
+    EDMA_paramConfig_t shadowCfg;
+    EDMA_paramSetConfig_t *param;
+
+    if (HWA_getDMAconfig(gHwaHandle, L3_HWA_PARAM_DUMMY_PING, &trigger[0]) != 0 ||
+        HWA_getDMAconfig(gHwaHandle, L3_HWA_PARAM_DUMMY_PONG, &trigger[1]) != 0) {
+        return -1;
+    }
+    memset((void *)&channelCfg, 0, sizeof(channelCfg));
+    channelCfg.channelId = L3_HWA_SIGNATURE_CHANNEL;
+    channelCfg.channelType = (uint8_t)EDMA3_CHANNEL_TYPE_DMA;
+    channelCfg.paramId = L3_HWA_SIGNATURE_CHANNEL;
+    channelCfg.eventQueueId = 0U;
+    param = &channelCfg.paramSetConfig;
+    param->sourceAddress = SOC_translateAddress(trigger[0].srcAddr,
+                                                SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+    param->destinationAddress = SOC_translateAddress(trigger[0].destAddr,
+                                                     SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+    param->aCount = trigger[0].aCnt;
+    param->bCount = (uint16_t)(trigger[0].bCnt * 2U);
+    param->cCount = trigger[0].cCnt;
+    param->bCountReload = param->bCount;
+    param->sourceBindex = (int16_t)(trigger[1].srcAddr - trigger[0].srcAddr);
+    param->destinationBindex = 0;
+    param->sourceCindex = 0;
+    param->destinationCindex = 0;
+    param->linkAddress = EDMA_NULL_LINK_ADDRESS;
+    param->transferCompletionCode = 0U;
+    param->transferType = (uint8_t)EDMA3_SYNC_A;
+    param->sourceAddressingMode = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
+    param->destinationAddressingMode = (uint8_t)EDMA3_ADDRESSING_MODE_LINEAR;
+    param->fifoWidth = (uint8_t)EDMA3_FIFO_WIDTH_8BIT;
+    param->isStaticSet = false;
+    param->isEarlyCompletion = false;
+    if (EDMA_configChannel(gEdmaHandle, &channelCfg, false) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    memset((void *)&shadowCfg, 0, sizeof(shadowCfg));
+    memcpy((void *)&shadowCfg.paramSetConfig, (void *)param, sizeof(*param));
+    if (EDMA_configParamSet(gEdmaHandle, L3_HWA_SIGNATURE_SHADOW, &shadowCfg) != EDMA_NO_ERROR ||
+        EDMA_linkParamSets(gEdmaHandle, L3_HWA_SIGNATURE_CHANNEL,
+                          L3_HWA_SIGNATURE_SHADOW) != EDMA_NO_ERROR ||
+        EDMA_linkParamSets(gEdmaHandle, L3_HWA_SIGNATURE_SHADOW,
+                          L3_HWA_SIGNATURE_SHADOW) != EDMA_NO_ERROR) {
+        return -1;
+    }
+    return 0;
+}
+
+static int32_t l3_configHwaCommon(void)
+{
+    HWA_CommonConfig commonCfg;
+
+    memset((void *)&commonCfg, 0, sizeof(commonCfg));
+    commonCfg.configMask = HWA_COMMONCONFIG_MASK_NUMLOOPS |
+                           HWA_COMMONCONFIG_MASK_PARAMSTARTIDX |
+                           HWA_COMMONCONFIG_MASK_PARAMSTOPIDX |
+                           HWA_COMMONCONFIG_MASK_FFT1DENABLE |
+                           HWA_COMMONCONFIG_MASK_INTERFERENCETHRESHOLD;
+    commonCfg.numLoops = RING_CHIRPS / 2U;
+    commonCfg.paramStartIdx = L3_HWA_PARAM_DUMMY_PING;
+    commonCfg.paramStopIdx = L3_HWA_PARAM_FFT_PONG;
+    commonCfg.fftConfig.fft1DEnable = HWA_FEATURE_BIT_ENABLE;
+    commonCfg.fftConfig.interferenceThreshold = 0xFFFFFFU;
+    return HWA_configCommon(gHwaHandle, &commonCfg);
+}
+
+static int32_t l3_armHwaChain(void)
+{
+    HWA_ParamConfig dummyCfg;
+    uint16_t mem2Offset = (uint16_t)(SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS -
+                                     SOC_XWR68XX_MSS_HWA_MEM0_BASE_ADDRESS);
+    uint16_t mem3Offset = (uint16_t)(mem2Offset + HWA_MEM_STRIDE);
+    uint32_t pingSource = SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS +
+                          SNAPSHOT_BIN_START * HWA_COMPLEX16_BYTES;
+    uint32_t pongSource = SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS + HWA_MEM_STRIDE +
+                          SNAPSHOT_BIN_START * HWA_COMPLEX16_BYTES;
+    int32_t errCode;
+
+    if (!gHwaOpened || gHwaHandle == NULL) {
+        return -1;
+    }
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PING_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PONG_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_SIGNATURE_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)HWA_enable(gHwaHandle, 0U);
+    gHwaDoneSeen = 0U;
+    gHwaOutputSeen = 0U;
+    gHwaRearmPending = 0U;
+    (void)HWA_disableDoneInterrupt(gHwaHandle);
+    (void)HWA_disableParamSetInterrupt(gHwaHandle, L3_HWA_PARAM_FFT_PING,
+                                      HWA_PARAMDONE_INTERRUPT_TYPE_CPU |
+                                      HWA_PARAMDONE_INTERRUPT_TYPE_DMA);
+    (void)HWA_disableParamSetInterrupt(gHwaHandle, L3_HWA_PARAM_FFT_PONG,
+                                      HWA_PARAMDONE_INTERRUPT_TYPE_CPU |
+                                      HWA_PARAMDONE_INTERRUPT_TYPE_DMA);
+
+    memset((void *)&dummyCfg, 0, sizeof(dummyCfg));
+    dummyCfg.triggerMode = HWA_TRIG_MODE_DMA;
+    dummyCfg.dmaTriggerSrc = L3_HWA_PARAM_DUMMY_PING;
+    dummyCfg.accelMode = HWA_ACCELMODE_NONE;
+    errCode = HWA_configParamSet(gHwaHandle, L3_HWA_PARAM_DUMMY_PING, &dummyCfg, NULL);
+    if (errCode != 0) {
+        return errCode;
+    }
+    dummyCfg.dmaTriggerSrc = L3_HWA_PARAM_DUMMY_PONG;
+    errCode = HWA_configParamSet(gHwaHandle, L3_HWA_PARAM_DUMMY_PONG, &dummyCfg, NULL);
+    if (errCode != 0) {
+        return errCode;
+    }
+    errCode = l3_configHwaProcessParam(L3_HWA_PARAM_FFT_PING,
+                                      L3_HWA_OUT_PING_CHANNEL, mem2Offset);
+    if (errCode != 0) {
+        return errCode;
+    }
+    errCode = l3_configHwaProcessParam(L3_HWA_PARAM_FFT_PONG,
+                                      L3_HWA_OUT_PONG_CHANNEL, mem3Offset);
+    if (errCode != 0) {
+        return errCode;
+    }
+
+    errCode = l3_configHwaCommon();
+    if (errCode != 0) {
+        return errCode;
+    }
+
+    if (l3_configHwaOutputEdma(L3_HWA_OUT_PING_CHANNEL, L3_HWA_OUT_PING_SHADOW,
+                              pingSource, (uint32_t)&g_ring[0][0], 0U) != 0 ||
+        l3_configHwaOutputEdma(L3_HWA_OUT_PONG_CHANNEL, L3_HWA_OUT_PONG_SHADOW,
+                              pongSource,
+                              (uint32_t)&g_ring[0][SNAPSHOT_CHIRP_COMPLEX * 2U],
+                              1U) != 0 ||
+        l3_configHwaSignatureEdma() != 0) {
+        return -1;
+    }
+    errCode = HWA_enableDoneInterrupt(gHwaHandle, l3_hwaChainDoneCB, NULL);
+    if (errCode != 0) {
+        return errCode;
+    }
+    return l3_hwaStartRing();
+}
+
+static void l3_hwaRearmTask(UArg arg0, UArg arg1)
+{
+    (void)arg0;
+    (void)arg1;
+    while (1) {
+        Semaphore_pend(gHwaRearmSemaphore, BIOS_WAIT_FOREVER);
+        if (gCaptureActive) {
+            uintptr_t key;
+            int32_t errCode;
+
+            (void)HWA_disableDoneInterrupt(gHwaHandle);
+            (void)HWA_enable(gHwaHandle, 0U);
+            key = Hwi_disable();
+            gHwaDoneSeen = 0U;
+            gHwaOutputSeen = 0U;
+            gHwaRearmPending = 0U;
+            Hwi_restore(key);
+            errCode = l3_configHwaCommon();
+            if (errCode == 0) {
+                errCode = HWA_enableDoneInterrupt(gHwaHandle,
+                                                  l3_hwaChainDoneCB, NULL);
+            }
+            if (errCode == 0) {
+                errCode = l3_hwaStartRing();
+            }
+            if (errCode == 0) {
+                gHwaRearms++;
+            } else {
+                gHwaRearmErrors++;
+            }
+        }
+    }
+}
+#endif
+
 /* Fill the 20-byte dump header (dump_format.h / iwr6843_l3dump.HEADER). */
 static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
                            uint16_t trigger_frame)
@@ -457,6 +862,7 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
     h->frame_period_us  = gFramePeriodUs;
 }
 
+#ifndef HWA_CHAINED_SNAPSHOT_RING
 /* EDMA ring-wrap completion (fires once per RING_CHIRPS; liveness only). */
 static void l3_edmaCB(uintptr_t arg, uint8_t tcCode)
 {
@@ -476,6 +882,7 @@ static void l3_edmaCB(uintptr_t arg, uint8_t tcCode)
     gNumWrap++;
 #endif
 }
+#endif
 
 /* Frame-start ISR: liveness + ring-alignment counters (the EDMA fills the
  * ring autonomously). */
@@ -483,7 +890,7 @@ static void l3_frameStartISR(uintptr_t arg)
 {
     (void)arg;
     gNumFrame++;
-#ifndef LIVE_SNAPSHOT_RING
+#if !defined(LIVE_SNAPSHOT_RING)
     gRingFrame++;
 #endif
 }
@@ -520,9 +927,22 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
     }
 
     /* Halt chirping; ignore informational return (demo does the same). */
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    gCaptureActive = 0U;
+#endif
     (void)MMWave_stop(gMMWaveHandle, &errCode);
     Task_sleep(10);
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    (void)HWA_enable(gHwaHandle, 0U);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PING_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PONG_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_SIGNATURE_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+#else
     EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
+#endif
 
     /* Oldest slot = time-order start (best-effort: a frame-start ISR racing
      * the stop can skew this by one; the host cross-checks with its own
@@ -532,7 +952,7 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
                        ? (uint16_t)(gRingFrame % RING_FRAMES) : 0U);
     UART_writePolling(gDataUart, (uint8_t *)&h, sizeof(h));
 #ifdef SNAPSHOT_DUMP
-#ifdef LIVE_SNAPSHOT_RING
+#if defined(LIVE_SNAPSHOT_RING) || defined(HWA_CHAINED_SNAPSHOT_RING)
     for (i = 0; i < RING_FRAMES; i++) {
         UART_writePolling(gDataUart, (uint8_t *)g_ring[i], sizeof(g_ring[i]));
     }
@@ -577,6 +997,9 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
     gSnapshotBusy      = 0U;
     gHwaFftConfigured  = 0U;
 #endif
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    gCaptureActive = 1U;
+#endif
     if (l3_startFrontEnd() < 0) {
         CLI_write("Error: RF restart failed\n");
         gCaptureActive = 0U;
@@ -598,9 +1021,21 @@ static int32_t l3_cli_stats(int32_t argc, char *argv[])
               (unsigned)gRawFrameDrops, (unsigned)gSnapshotErrors,
               (unsigned)gSnapshotBusy);
 #else
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u "
+              "hwa_rings=%u hwa_out=%u hwa_rearms=%u hwa_rearm_err=%u "
+              "hwa_wait=0x%x\n",
+              (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
+              (unsigned)gCalibStatus, (unsigned)gRfFaults,
+              (unsigned)gHwaRingDone, (unsigned)gHwaOutputDone,
+              (unsigned)gHwaRearms, (unsigned)gHwaRearmErrors,
+              (unsigned)((gHwaDoneSeen ? 1U : 0U) |
+                         (gHwaOutputSeen ? 2U : 0U)));
+#else
     CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u\n",
               (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
               (unsigned)gCalibStatus, (unsigned)gRfFaults);
+#endif
 #endif
     return 0;
 }
@@ -766,6 +1201,9 @@ static int32_t l3_configAdcBuf(void)
  * base) -> continuous rolling capture. */
 static int32_t l3_armCapture(void)
 {
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    return l3_armHwaChain();
+#else
     EDMA_channelConfig_t   ch;
     EDMA_paramSetConfig_t *ps;
     EDMA_paramConfig_t     linkCfg;
@@ -885,6 +1323,7 @@ static int32_t l3_armCapture(void)
         return -1;
     }
     return 0;
+#endif
 }
 
 /* mmWave async-event callback: record RF health (calibration status, faults). */
@@ -1054,8 +1493,17 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     gSnapshotErrors    = 0U;
     gSnapshotBusy      = 0U;
 #endif
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    gHwaRingDone       = 0U;
+    gHwaOutputDone     = 0U;
+    gHwaRearms         = 0U;
+    gHwaRearmErrors    = 0U;
+    gHwaDoneSeen       = 0U;
+    gHwaOutputSeen     = 0U;
+    gHwaRearmPending   = 0U;
+#endif
     if (l3_armCapture() < 0) {
-        CLI_write("Error: EDMA arm failed\n");
+        CLI_write("Error: capture arm failed\n");
         return -1;
     }
     gCaptureActive = 1U;
@@ -1073,7 +1521,17 @@ static int32_t l3_cli_sensorStop(int32_t argc, char *argv[])
     int32_t errCode;
     (void)argc; (void)argv;
     gCaptureActive = 0U;
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    (void)HWA_enable(gHwaHandle, 0U);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PING_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PONG_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_SIGNATURE_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+#else
     (void)EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
+#endif
 #ifdef LIVE_SNAPSHOT_RING
     gRawFrameReadyMask = 0U;
 #endif
@@ -1090,6 +1548,9 @@ static void l3_initTask(UArg arg0, UArg arg1)
     ADCBuf_Params         adcbufParams;
     SOC_SysIntListenerCfg socIntCfg;
     EDMA_instanceInfo_t   edmaInstanceInfo;
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    Semaphore_Params      semaphoreParams;
+#endif
     static CLI_Cfg        cliCfg;
     int32_t               errCode;
 
@@ -1206,6 +1667,18 @@ static void l3_initTask(UArg arg0, UArg arg1)
     taskParams.priority  = L3_SNAPSHOT_TASK_PRIORITY;
     taskParams.stackSize = 4 * 1024;
     Task_create(l3_snapshotTask, &taskParams, NULL);
+#endif
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    Semaphore_Params_init(&semaphoreParams);
+    semaphoreParams.mode = Semaphore_Mode_BINARY;
+    gHwaRearmSemaphore = Semaphore_create(0, &semaphoreParams, NULL);
+    if (gHwaRearmSemaphore == NULL) {
+        return;
+    }
+    Task_Params_init(&taskParams);
+    taskParams.priority = 4U;
+    taskParams.stackSize = 2U * 1024U;
+    Task_create(l3_hwaRearmTask, &taskParams, NULL);
 #endif
 
     /* CLI with the mmWave extension. */
