@@ -143,7 +143,7 @@ class TestIWR6843ShotIntegration:
         assert logged[0]["ball_speed_mph"] == 100.0
         assert logged[0]["measurement"]["estimator"] == "lcmf_v1"
 
-    def test_iwr6843_horizontal_uses_estimator_confidence(self, monkeypatch):
+    def test_iwr6843_horizontal_forces_high_confidence_for_field_testing(self, monkeypatch):
         measurement = SimpleNamespace(
             accepted=True,
             angle_deg=18.5,
@@ -192,7 +192,7 @@ class TestIWR6843ShotIntegration:
         assert shot.launch_angle_vertical_source == "radar"
         assert shot.launch_angle_horizontal == pytest.approx(2.25)
         assert shot.launch_angle_horizontal_source == "radar"
-        assert shot.launch_angle_horizontal_confidence == pytest.approx(0.63)
+        assert shot.launch_angle_horizontal_confidence == pytest.approx(0.95)
 
     def test_horizontal_fallback_does_not_invent_confidence_for_lcmf_angle(self):
         shot = Shot(

@@ -1890,9 +1890,7 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
             horizontal_status = getattr(measurement, "horizontal_status", None)
             if horizontal_deg is not None:
                 shot.launch_angle_horizontal = horizontal_deg
-                shot.launch_angle_horizontal_confidence = (
-                    horizontal_confidence if horizontal_confidence is not None else 0.95
-                )
+                shot.launch_angle_horizontal_confidence = 0.95
                 shot.launch_angle_horizontal_source = "radar"
                 logger.info(
                     "[SERVER] IWR6843 TX2 horizontal proxy: %.2f° (coherence %.0f%%, status=%s)",
