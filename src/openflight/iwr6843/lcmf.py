@@ -15,7 +15,7 @@ import numpy as np
 
 from openflight.iwr6843 import doa, tracking
 from openflight.iwr6843.calibration import Calibration
-from openflight.iwr6843.dump import parse_dump, project_tx_pair
+from openflight.iwr6843.dump import is_range_snapshot, parse_dump, project_tx_pair
 from openflight.iwr6843.multipath import (
     ballistic_trajectory_from_range,
     leave_one_channel_out_error,
@@ -37,12 +37,12 @@ DISPLAY_NAME = "Late-Flight Complex Multipath Fusion v1"
 ANGLE_CORRECTION_DEG = 0.0
 CHANNEL_MODELS = ("two8", "four4_path_tdm")
 FAST_MODELS = ("direct1", "two2", "four4")
-COMPONENT_WEIGHT = 0.2
 MIN_SNR = 8.0
 MAX_RANGE_M = 4.7
 MAX_PER_FRAME = 4
 LATERAL_TEE_OFFSET_M = 0.064
 MPH_PER_MS = 2.23694
+
 
 @dataclass
 class LCMFResult:
@@ -137,7 +137,8 @@ def _snapshot_cache(
         raise ValueError(f"LCMF-v1 requires two TX channels, got {meta['n_tx']}")
 
     scope = "window" if shot.notch_recovered else "burst"
-    mti = tracking.mti_filter(cube, scope=scope)
+    range_domain = is_range_snapshot(meta)
+    mti = tracking.mti_filter(cube, scope=scope, range_domain=range_domain)
     noise = float(np.median(np.abs(mti) ** 2))
     track = shot.track
     if track is None:
@@ -158,13 +159,14 @@ def _snapshot_cache(
             if not track.t_first - 2e-3 <= time_s <= track.t_last + 2e-3:
                 continue
             range_bin = int(round(track.bin_at(time_s)))
-            if not 2 <= range_bin < geometry.n_samples - 1:
+            local_bin = geometry.local_bin(range_bin)
+            if not geometry.contains_bin(range_bin, margin=1):
                 continue
             velocity = track.speed_ms_at(time_s, geometry.range_res_m)
             tdm_phase = tdm_sign * 4.0 * np.pi * velocity * tdm_tau_s / LAM
             uncalibrated = doa.canonicalize_tx_blocks(
-                mti[frame, 0, loop, :, range_bin],
-                mti[frame, 1, loop, :, range_bin],
+                mti[frame, 0, loop, :, local_bin],
+                mti[frame, 1, loop, :, local_bin],
                 tdm_phase=tdm_phase,
                 tx_order=tx_order,
             )
@@ -471,8 +473,7 @@ def _circular_median(phases: list[float]) -> float:
     """Small-sample circular median: observed phase with least median distance."""
     values = np.asarray(phases)
     distances = [
-        np.median(np.abs(np.angle(np.exp(1j * (values - candidate)))))
-        for candidate in values
+        np.median(np.abs(np.angle(np.exp(1j * (values - candidate))))) for candidate in values
     ]
     return float(values[int(np.argmin(distances))])
 
@@ -499,7 +500,7 @@ def _tx2_horizontal_proxy(
     n_frames, chirps_per_frame, n_rx, n_samples = cube.shape
     loops = chirps_per_frame // meta["n_tx"]
     tdm = cube.reshape(n_frames, loops, meta["n_tx"], n_rx, n_samples)
-    rfft = np.fft.fft(tdm, axis=-1)
+    rfft = tdm if is_range_snapshot(meta) else np.fft.fft(tdm, axis=-1)
     mti = rfft - rfft.mean(axis=1, keepdims=True)
     snapshots: list[tuple[float, float, float]] = []
     for frame in range(geometry.n_frames):
@@ -508,14 +509,15 @@ def _tx2_horizontal_proxy(
             if not shot.track.t_first - 2e-3 <= time_s <= shot.track.t_last + 2e-3:
                 continue
             range_bin = int(round(shot.track.bin_at(time_s)))
-            if not 2 <= range_bin < geometry.n_samples - 1:
+            local_bin = geometry.local_bin(range_bin)
+            if not geometry.contains_bin(range_bin, margin=1):
                 continue
             velocity = shot.track.speed_ms_at(time_s, geometry.range_res_m)
-            tx1 = mti[frame, loop, 0, :, range_bin]
-            tx2 = mti[frame, loop, 1, :, range_bin] * np.exp(
+            tx1 = mti[frame, loop, 0, :, local_bin]
+            tx2 = mti[frame, loop, 1, :, local_bin] * np.exp(
                 -1j * tdm_sign * 4.0 * np.pi * velocity * doa.TDM_TAU_S / LAM
             )
-            tx3 = mti[frame, loop, 2, :, range_bin] * np.exp(
+            tx3 = mti[frame, loop, 2, :, local_bin] * np.exp(
                 -1j * tdm_sign * 4.0 * np.pi * velocity * TX2_VERTICAL_TDM_TAU_S / LAM
             )
             reference = 0.5 * (tx1 + tx3)
@@ -620,19 +622,20 @@ def estimate_lcmf_v1(
         }
         grid_deg = np.arange(-5.0, 45.0 + grid_step_deg / 2.0, grid_step_deg)
         components = _channel_estimates(cache, indices, model_geometry, grid_deg)
-        components.update(
-            _fast_estimates(
-                cube,
-                radar_geometry,
-                cache,
-                indices,
-                model_geometry,
-                cal,
-                grid_deg,
-                tx_order,
-                shot.tdm_sign_used,
+        if not is_range_snapshot(meta):
+            components.update(
+                _fast_estimates(
+                    cube,
+                    radar_geometry,
+                    cache,
+                    indices,
+                    model_geometry,
+                    cal,
+                    grid_deg,
+                    tx_order,
+                    shot.tdm_sign_used,
+                )
             )
-        )
     except (ValueError, IndexError, np.linalg.LinAlgError) as error:
         return _result_from_track(
             str(error).replace(" ", "_"),
@@ -642,7 +645,7 @@ def estimate_lcmf_v1(
         )
 
     component_values = np.asarray(list(components.values()), dtype=float)
-    raw_angle_deg = float(np.sum(component_values) * COMPONENT_WEIGHT)
+    raw_angle_deg = float(np.mean(component_values))
     result = _result_from_track(
         "accepted_track_quality_warning" if shot.quality == "reject" else "accepted",
         shot,

@@ -2,7 +2,11 @@
  *
  * MUST stay byte-for-byte in sync with iwr6843_l3dump.py (HEADER =
  * struct.Struct("<4sHHHBBHBBHH")). Little-endian. 20-byte header, then payload:
- *   for each frame, each chirp, each rx: n_samples * (int16 I, int16 Q).
+ *   raw fmt:
+ *     for each frame, each chirp, each rx: n_samples * (int16 I, int16 Q).
+ *   range-bin fmt:
+ *     for each frame, each chirp, each rx: n_samples selected range bins *
+ *     (int16 I, int16 Q), where _pad carries the first range-bin index.
  * Chirp order is TDM-interleaved: chirp c -> tx = c % n_tx, loop = c / n_tx.
  */
 #ifndef L3_DUMP_FORMAT_H
@@ -14,6 +18,7 @@
 #define L3_DUMP_VERSION     3   /* v2: trigger_frame = oldest ring slot;
                                  * v3: frame_period_us populated */
 #define L3_SAMPLE_INT16_IQ  0
+#define L3_SAMPLE_RANGE_FFT_IQ16 1
 
 typedef struct __attribute__((packed)) {
     char     magic[4];          /* "ILD1" */
@@ -24,7 +29,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  n_rx;
     uint16_t n_samples;         /* ADC samples per chirp */
     uint8_t  sample_fmt;        /* L3_SAMPLE_INT16_IQ */
-    uint8_t  _pad;
+    uint8_t  _pad;              /* fmt 1: first range-bin index */
     uint16_t trigger_frame;     /* v2+: OLDEST ring slot = time-order start
                                  * (slots stream in memory order; rotate by
                                  * this to get chronological frames). 0 in v1. */

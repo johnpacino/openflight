@@ -31,6 +31,7 @@
 #include <ti/drivers/mailbox/mailbox.h>
 #include <ti/drivers/adcbuf/ADCBuf.h>
 #include <ti/drivers/edma/edma.h>
+#include <ti/drivers/hwa/hwa.h>
 #include <ti/control/mmwavelink/mmwavelink.h>
 #include <ti/control/mmwave/mmwave.h>
 #include <ti/utils/cli/cli.h>
@@ -43,10 +44,12 @@
 #define L3_CTRL_TASK_PRIORITY  5
 
 /* --- capture geometry: MUST match the .cfg the host sends ------------------
- * N_TX / N_SAMPLES / LOOPS / RING_FRAMES are overridable from the make line
+ * N_TX / N_SAMPLES / SAVE_SAMPLES / SAVE_OFFSET_SAMPLES / LOOPS /
+ * RING_FRAMES are overridable from the make line
  * (variant builds: B = N_TX=2 LOOPS=16 RING_FRAMES=12, TX2 = N_TX=3
- * LOOPS=10 RING_FRAMES=12). sensorStart REJECTS a cfg whose sample/loop/TX
- * geometry mismatches. Keep chirpCfg/frameCfg in sync with N_TX. */
+ * LOOPS=10 RING_FRAMES=12). sensorStart REJECTS a cfg whose acquired
+ * sample/loop/TX geometry mismatches. Keep chirpCfg/frameCfg in sync with
+ * N_TX. SAVE_* only changes what raw ADC samples are copied into L3. */
 #ifndef N_TX
 #define N_TX              2
 #endif
@@ -54,14 +57,41 @@
 #ifndef N_SAMPLES
 #define N_SAMPLES         128
 #endif
+#ifndef SAVE_SAMPLES
+#define SAVE_SAMPLES      N_SAMPLES
+#endif
+#ifndef SAVE_OFFSET_SAMPLES
+#define SAVE_OFFSET_SAMPLES 0
+#endif
+#if SAVE_SAMPLES > N_SAMPLES
+#error "SAVE_SAMPLES must be <= N_SAMPLES"
+#endif
+#if (SAVE_OFFSET_SAMPLES + SAVE_SAMPLES) > N_SAMPLES
+#error "SAVE_OFFSET_SAMPLES + SAVE_SAMPLES must be <= N_SAMPLES"
+#endif
 #ifndef LOOPS
 #define LOOPS             32
+#endif
+#ifndef SNAPSHOT_BINS
+#define SNAPSHOT_BINS     16
+#endif
+#ifndef SNAPSHOT_BIN_START
+#define SNAPSHOT_BIN_START 2
+#endif
+#if SNAPSHOT_BINS > N_SAMPLES
+#error "SNAPSHOT_BINS must be <= N_SAMPLES"
+#endif
+#if (SNAPSHOT_BIN_START + SNAPSHOT_BINS) > N_SAMPLES
+#error "SNAPSHOT_BIN_START + SNAPSHOT_BINS must be <= N_SAMPLES"
 #endif
 #define CHIRPS_PER_FRAME  (N_TX * LOOPS)                        /* 64 */
 #define FRAME_COMPLEX     (CHIRPS_PER_FRAME * N_RX * N_SAMPLES)   /* 32768 */
 #define FRAME_BYTES       (FRAME_COMPLEX * 2 * (uint32_t)sizeof(int16_t)) /* 128 KB */
+#define SAVED_FRAME_COMPLEX (CHIRPS_PER_FRAME * N_RX * SAVE_SAMPLES)
+#define SAVED_FRAME_BYTES (SAVED_FRAME_COMPLEX * 2 * (uint32_t)sizeof(int16_t))
 /* One chirp in ADCBUF (non-interleaved): N_RX x N_SAMPLES x 4 bytes. */
 #define CHIRP_BYTES       (N_RX * N_SAMPLES * 2 * (uint32_t)sizeof(int16_t))  /* 2048 */
+#define SAVED_CHIRP_BYTES (N_RX * SAVE_SAMPLES * 2 * (uint32_t)sizeof(int16_t))
 
 /* --- rolling buffer (default L3 = 6 banks x 128 KB = 768 KB) ----------------
  * The ring fills L3 EXACTLY (zero slack): .l3ring must stay the only
@@ -73,7 +103,7 @@
 
 #pragma DATA_SECTION(g_ring, ".l3ring")
 #pragma DATA_ALIGN(g_ring, 8)
-static int16_t g_ring[RING_FRAMES][FRAME_COMPLEX * 2];
+static int16_t g_ring[RING_FRAMES][SAVED_FRAME_COMPLEX * 2];
 
 /* --- EDMA: the DFE chirp-available hardware event channel + shadow link ----- */
 #define L3_EDMA_CHANNEL       EDMA_TPCC0_REQ_DFE_CHIRP_AVAIL
@@ -86,6 +116,20 @@ static UART_Handle   gDataUart;   /* MSS UARTB, instance 1, 921600, TX only */
 static MMWave_Handle gMMWaveHandle;
 static EDMA_Handle   gEdmaHandle;
 static ADCBuf_Handle gAdcbufHandle;
+#ifdef ENABLE_HWA_SMOKE
+static HWA_Handle    gHwaHandle;
+static int32_t       gHwaOpenErr;
+static uint8_t       gHwaOpened;
+static volatile uint8_t gHwaDone;
+static int32_t       gHwaTestErr;
+static uint16_t      gHwaTestPeakBin;
+static uint32_t      gHwaTestPeakPower;
+static uint32_t      gHwaTestRuns;
+static int32_t       gHwaRealErr;
+static uint16_t      gHwaRealPeakBin;
+static uint32_t      gHwaRealPeakPower;
+static uint32_t      gHwaRealRuns;
+#endif
 static uint8_t       gSensorOpened;
 static uint32_t      gCpuClock = 200U * 1000000U;
 
@@ -111,7 +155,189 @@ int32_t l3_cli_dump(int32_t argc, char *argv[]);
 static int32_t l3_cli_sensorStart(int32_t argc, char *argv[]);
 static int32_t l3_cli_sensorStop(int32_t argc, char *argv[]);
 static int32_t l3_cli_stats(int32_t argc, char *argv[]);
+#ifdef ENABLE_HWA_SMOKE
+static int32_t l3_cli_hwaStats(int32_t argc, char *argv[]);
+static int32_t l3_cli_hwaTest(int32_t argc, char *argv[]);
+static int32_t l3_cli_hwaReal(int32_t argc, char *argv[]);
+#endif
 static int32_t l3_armCapture(void);
+
+#ifdef ENABLE_HWA_SMOKE
+#define HWA_FFT_SAMPLES      128U
+#define HWA_FFT_RX           4U
+#define HWA_FFT_TONE_BIN     9U
+#define HWA_COMPLEX16_BYTES  4U
+#define HWA_MEM_STRIDE       (16U * 1024U)
+#define HWA_TEST_MEM0        SOC_XWR68XX_MSS_HWA_MEM0_BASE_ADDRESS
+#define HWA_TEST_MEM2        SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS
+
+static uint32_t l3_log2_u32(uint32_t x)
+{
+    uint32_t n = 0U;
+    while ((1U << n) < x) {
+        n++;
+    }
+    return n;
+}
+
+static void l3_hwaDoneCB(void *arg)
+{
+    (void)arg;
+    gHwaDone = 1U;
+}
+
+static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
+{
+    HWA_ParamConfig paramCfg;
+    HWA_CommonConfig commonCfg;
+    int16_t *dst = (int16_t *)HWA_TEST_MEM2;
+    uint32_t i, wait;
+    int32_t errCode;
+
+    *peakBin = 0U;
+    *peakPower = 0U;
+
+    memset((void *)dst, 0, HWA_MEM_STRIDE);
+    memset((void *)&paramCfg, 0, sizeof(paramCfg));
+    paramCfg.triggerMode = HWA_TRIG_MODE_SOFTWARE;
+    paramCfg.accelMode = HWA_ACCELMODE_FFT;
+    paramCfg.source.srcAddr = 0U;
+    paramCfg.source.srcAcnt = HWA_FFT_SAMPLES - 1U;
+    paramCfg.source.srcAIdx = HWA_FFT_RX * HWA_COMPLEX16_BYTES;
+    paramCfg.source.srcBcnt = HWA_FFT_RX - 1U;
+    paramCfg.source.srcBIdx = HWA_COMPLEX16_BYTES;
+    paramCfg.source.srcRealComplex = HWA_SAMPLES_FORMAT_COMPLEX;
+    paramCfg.source.srcWidth = HWA_SAMPLES_WIDTH_16BIT;
+    paramCfg.source.srcSign = HWA_SAMPLES_SIGNED;
+    paramCfg.source.srcConjugate = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.source.srcScale = 0U;
+    paramCfg.source.bpmEnable = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.dest.dstAddr = (uint16_t)(HWA_TEST_MEM2 - HWA_TEST_MEM0);
+    paramCfg.dest.dstAcnt = HWA_FFT_SAMPLES - 1U;
+    paramCfg.dest.dstAIdx = HWA_FFT_RX * HWA_COMPLEX16_BYTES;
+    paramCfg.dest.dstBIdx = HWA_COMPLEX16_BYTES;
+    paramCfg.dest.dstRealComplex = HWA_SAMPLES_FORMAT_COMPLEX;
+    paramCfg.dest.dstWidth = HWA_SAMPLES_WIDTH_16BIT;
+    paramCfg.dest.dstSign = HWA_SAMPLES_SIGNED;
+    paramCfg.dest.dstConjugate = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.dest.dstScale = 0U;
+    paramCfg.dest.dstSkipInit = 0U;
+    paramCfg.accelModeArgs.fftMode.fftEn = HWA_FEATURE_BIT_ENABLE;
+    paramCfg.accelModeArgs.fftMode.fftSize = (uint8_t)l3_log2_u32(HWA_FFT_SAMPLES);
+    paramCfg.accelModeArgs.fftMode.butterflyScaling = 0x7FU;
+    paramCfg.accelModeArgs.fftMode.interfZeroOutEn = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.accelModeArgs.fftMode.windowEn = HWA_FEATURE_BIT_DISABLE;
+    paramCfg.accelModeArgs.fftMode.windowStart = 0U;
+    paramCfg.accelModeArgs.fftMode.winSymm = HWA_FFT_WINDOW_NONSYMMETRIC;
+    paramCfg.accelModeArgs.fftMode.winInterpolateMode = HWA_FFT_WINDOW_INTERPOLATE_MODE_NONE;
+    paramCfg.accelModeArgs.fftMode.magLogEn = HWA_FFT_MODE_MAGNITUDE_LOG2_DISABLED;
+    paramCfg.accelModeArgs.fftMode.fftOutMode = HWA_FFT_MODE_OUTPUT_DEFAULT;
+    paramCfg.complexMultiply.mode = HWA_COMPLEX_MULTIPLY_MODE_DISABLE;
+
+    errCode = HWA_configParamSet(gHwaHandle, 0U, &paramCfg, NULL);
+    if (errCode != 0) {
+        return errCode;
+    }
+
+    memset((void *)&commonCfg, 0, sizeof(commonCfg));
+    commonCfg.configMask = HWA_COMMONCONFIG_MASK_NUMLOOPS |
+                           HWA_COMMONCONFIG_MASK_PARAMSTARTIDX |
+                           HWA_COMMONCONFIG_MASK_PARAMSTOPIDX |
+                           HWA_COMMONCONFIG_MASK_FFT1DENABLE |
+                           HWA_COMMONCONFIG_MASK_INTERFERENCETHRESHOLD;
+    commonCfg.numLoops = 1U;
+    commonCfg.paramStartIdx = 0U;
+    commonCfg.paramStopIdx = 0U;
+    commonCfg.fftConfig.fft1DEnable = HWA_FEATURE_BIT_DISABLE;
+    commonCfg.fftConfig.interferenceThreshold = 0xFFFFFFU;
+    errCode = HWA_configCommon(gHwaHandle, &commonCfg);
+    if (errCode != 0) {
+        return errCode;
+    }
+
+    gHwaDone = 0U;
+    errCode = HWA_enableDoneInterrupt(gHwaHandle, l3_hwaDoneCB, NULL);
+    if (errCode != 0) {
+        return errCode;
+    }
+    errCode = HWA_enable(gHwaHandle, 1U);
+    if (errCode != 0) {
+        (void)HWA_disableDoneInterrupt(gHwaHandle);
+        return errCode;
+    }
+    errCode = HWA_reset(gHwaHandle);
+    if (errCode != 0) {
+        (void)HWA_enable(gHwaHandle, 0U);
+        (void)HWA_disableDoneInterrupt(gHwaHandle);
+        return errCode;
+    }
+    errCode = HWA_setSoftwareTrigger(gHwaHandle);
+    if (errCode != 0) {
+        (void)HWA_enable(gHwaHandle, 0U);
+        (void)HWA_disableDoneInterrupt(gHwaHandle);
+        return errCode;
+    }
+    for (wait = 0U; wait < 200U && !gHwaDone; wait++) {
+        Task_sleep(1);
+    }
+    (void)HWA_enable(gHwaHandle, 0U);
+    (void)HWA_disableDoneInterrupt(gHwaHandle);
+    if (!gHwaDone) {
+        return -102;
+    }
+
+    for (i = 0U; i < HWA_FFT_SAMPLES; i++) {
+        int32_t im = (int32_t)dst[((i * HWA_FFT_RX) * 2U) + 0U];
+        int32_t re = (int32_t)dst[((i * HWA_FFT_RX) * 2U) + 1U];
+        uint32_t p = (uint32_t)((im * im) + (re * re));
+        if (p > *peakPower) {
+            *peakPower = p;
+            *peakBin = (uint16_t)i;
+        }
+    }
+    return 0;
+}
+
+#ifdef SNAPSHOT_DUMP
+static int32_t l3_emitSnapshotChirp(const int16_t *rawChirp)
+{
+    int16_t *src = (int16_t *)HWA_TEST_MEM0;
+    int16_t *dst = (int16_t *)HWA_TEST_MEM2;
+    int16_t out[N_RX * SNAPSHOT_BINS * 2U];
+    uint16_t peakBin;
+    uint32_t peakPower;
+    uint32_t sample, rx, bin, outWord;
+    int32_t errCode;
+
+    memset((void *)src, 0, HWA_MEM_STRIDE);
+    for (sample = 0U; sample < HWA_FFT_SAMPLES; sample++) {
+        for (rx = 0U; rx < HWA_FFT_RX; rx++) {
+            uint32_t rawWord = ((rx * N_SAMPLES) + sample) * 2U;
+            uint32_t hwaWord = ((sample * HWA_FFT_RX) + rx) * 2U;
+            src[hwaWord + 0U] = rawChirp[rawWord + 0U];
+            src[hwaWord + 1U] = rawChirp[rawWord + 1U];
+        }
+    }
+
+    errCode = l3_hwaRunFft(&peakBin, &peakPower);
+    if (errCode != 0) {
+        return errCode;
+    }
+
+    outWord = 0U;
+    for (rx = 0U; rx < N_RX; rx++) {
+        for (bin = 0U; bin < SNAPSHOT_BINS; bin++) {
+            uint32_t srcBin = SNAPSHOT_BIN_START + bin;
+            uint32_t hwaWord = ((srcBin * HWA_FFT_RX) + rx) * 2U;
+            out[outWord++] = dst[hwaWord + 0U];
+            out[outWord++] = dst[hwaWord + 1U];
+        }
+    }
+    UART_writePolling(gDataUart, (uint8_t *)out, sizeof(out));
+    return 0;
+}
+#endif
+#endif
 
 /* Fill the 20-byte dump header (dump_format.h / iwr6843_l3dump.HEADER). */
 static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
@@ -123,9 +349,15 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
     h->chirps_per_frame = CHIRPS_PER_FRAME;
     h->n_tx             = N_TX;
     h->n_rx             = N_RX;
-    h->n_samples        = N_SAMPLES;
+#ifdef SNAPSHOT_DUMP
+    h->n_samples        = SNAPSHOT_BINS;
+    h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ16;
+    h->_pad             = SNAPSHOT_BIN_START;
+#else
+    h->n_samples        = SAVE_SAMPLES;
     h->sample_fmt       = L3_SAMPLE_INT16_IQ;
     h->_pad             = 0;
+#endif
     h->trigger_frame    = trigger_frame;
     h->frame_period_us  = gFramePeriodUs;
 }
@@ -189,9 +421,28 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
                    (gRingFrame >= RING_FRAMES)
                        ? (uint16_t)(gRingFrame % RING_FRAMES) : 0U);
     UART_writePolling(gDataUart, (uint8_t *)&h, sizeof(h));
+#ifdef SNAPSHOT_DUMP
+    if (!gHwaOpened || gHwaHandle == NULL) {
+        CLI_write("Error: HWA unavailable for snapshot dump\n");
+        gCaptureActive = 0U;
+        return -1;
+    }
+    for (i = 0; i < RING_FRAMES; i++) {
+        uint32_t chirp;
+        for (chirp = 0U; chirp < CHIRPS_PER_FRAME; chirp++) {
+            uint32_t rawWord = chirp * N_RX * N_SAMPLES * 2U;
+            if (l3_emitSnapshotChirp(&g_ring[i][rawWord]) != 0) {
+                CLI_write("Error: HWA snapshot emit failed\n");
+                gCaptureActive = 0U;
+                return -1;
+            }
+        }
+    }
+#else
     for (i = 0; i < RING_FRAMES; i++) {
         UART_writePolling(gDataUart, (uint8_t *)g_ring[i], sizeof(g_ring[i]));
     }
+#endif
 
     /* Re-arm with no chirp events possible, then restart the front-end. The
      * ring realigns to slot 0 == first chirp of the first post-restart frame,
@@ -219,6 +470,115 @@ static int32_t l3_cli_stats(int32_t argc, char *argv[])
               (unsigned)gCalibStatus, (unsigned)gRfFaults);
     return 0;
 }
+
+#ifdef ENABLE_HWA_SMOKE
+/* CLI "hwastats": smoke-test visibility for the HWA driver/link path. */
+static int32_t l3_cli_hwaStats(int32_t argc, char *argv[])
+{
+    (void)argc; (void)argv;
+    CLI_write("hwa_opened=%u hwa_handle=0x%x hwa_open_err=%d "
+              "test_err=%d peak_bin=%u peak_power=%u runs=%u "
+              "real_err=%d real_peak_bin=%u real_peak_power=%u real_runs=%u\n",
+              (unsigned)gHwaOpened, (unsigned)gHwaHandle, (int)gHwaOpenErr,
+              (int)gHwaTestErr, (unsigned)gHwaTestPeakBin,
+              (unsigned)gHwaTestPeakPower, (unsigned)gHwaTestRuns,
+              (int)gHwaRealErr, (unsigned)gHwaRealPeakBin,
+              (unsigned)gHwaRealPeakPower, (unsigned)gHwaRealRuns);
+    return 0;
+}
+
+/* CLI "hwatest": software-triggered 128-point FFT on a synthetic tone.
+ * This proves HWA param/common config and execution before live chirp plumbing. */
+static int32_t l3_cli_hwaTest(int32_t argc, char *argv[])
+{
+    int16_t *src = (int16_t *)HWA_TEST_MEM0;
+    uint32_t rx;
+    int32_t errCode;
+
+    (void)argc; (void)argv;
+    gHwaTestRuns++;
+    gHwaTestErr = 0;
+    gHwaTestPeakBin = 0;
+    gHwaTestPeakPower = 0;
+
+    if (!gHwaOpened || gHwaHandle == NULL) {
+        gHwaTestErr = -100;
+        CLI_write("hwatest failed: HWA not open\n");
+        return -1;
+    }
+    if (gCaptureActive) {
+        gHwaTestErr = -101;
+        CLI_write("hwatest failed: stop sensor first\n");
+        return -1;
+    }
+
+    /* Build a sparse impulse without pulling in math libraries. This does not
+     * validate frequency-bin placement yet; it proves the HWA FFT param set can
+     * execute and produce non-zero output without touching live chirp timing. */
+    memset((void *)src, 0, HWA_MEM_STRIDE);
+    for (rx = 0; rx < HWA_FFT_RX; rx++) {
+        uint32_t word = ((HWA_FFT_TONE_BIN * HWA_FFT_RX) + rx) * 2U;
+        src[word + 0U] = 0;       /* imag */
+        src[word + 1U] = 4096;    /* real */
+    }
+
+    errCode = l3_hwaRunFft(&gHwaTestPeakBin, &gHwaTestPeakPower);
+    if (errCode != 0) {
+        gHwaTestErr = errCode;
+        CLI_write("hwatest failed: err=%d\n", errCode);
+        return -1;
+    }
+    CLI_write("hwatest ok: peak_bin=%u peak_power=%u impulse_at_sample=%u runs=%u\n",
+              (unsigned)gHwaTestPeakBin, (unsigned)gHwaTestPeakPower,
+              (unsigned)HWA_FFT_TONE_BIN, (unsigned)gHwaTestRuns);
+    return 0;
+}
+
+/* CLI "hwareal": copy the current ADCBUF chirp into HWA memory and FFT it.
+ * This is not the final rolling path yet; it validates real chirp layout,
+ * ADCBUF visibility, and HWA FFT together before event-driven snapshotting. */
+static int32_t l3_cli_hwaReal(int32_t argc, char *argv[])
+{
+    volatile int16_t *adc = (volatile int16_t *)SOC_XWR68XX_MSS_ADCBUF_BASE_ADDRESS;
+    int16_t *src = (int16_t *)HWA_TEST_MEM0;
+    uint32_t sample, rx;
+    int32_t errCode;
+
+    (void)argc; (void)argv;
+    gHwaRealRuns++;
+    gHwaRealErr = 0;
+    gHwaRealPeakBin = 0;
+    gHwaRealPeakPower = 0;
+
+    if (!gHwaOpened || gHwaHandle == NULL) {
+        gHwaRealErr = -100;
+        CLI_write("hwareal failed: HWA not open\n");
+        return -1;
+    }
+
+    memset((void *)src, 0, HWA_MEM_STRIDE);
+    for (sample = 0U; sample < HWA_FFT_SAMPLES; sample++) {
+        for (rx = 0U; rx < HWA_FFT_RX; rx++) {
+            uint32_t adcWord = ((rx * N_SAMPLES) + sample) * 2U;
+            uint32_t hwaWord = ((sample * HWA_FFT_RX) + rx) * 2U;
+            src[hwaWord + 0U] = adc[adcWord + 0U];
+            src[hwaWord + 1U] = adc[adcWord + 1U];
+        }
+    }
+
+    errCode = l3_hwaRunFft(&gHwaRealPeakBin, &gHwaRealPeakPower);
+    if (errCode != 0) {
+        gHwaRealErr = errCode;
+        CLI_write("hwareal failed: err=%d\n", errCode);
+        return -1;
+    }
+    CLI_write("hwareal ok: peak_bin=%u peak_power=%u active=%u frames=%u runs=%u\n",
+              (unsigned)gHwaRealPeakBin, (unsigned)gHwaRealPeakPower,
+              (unsigned)gCaptureActive, (unsigned)gNumFrame,
+              (unsigned)gHwaRealRuns);
+    return 0;
+}
+#endif
 
 /* Configure the ADCBUF for our chirp format (complex, non-interleaved, 4 RX). */
 static int32_t l3_configAdcBuf(void)
@@ -277,8 +637,10 @@ static int32_t l3_armCapture(void)
     EDMA_paramConfig_t     linkCfg;
     uint32_t               srcAddr, dstAddr;
 
-    srcAddr = SOC_translateAddress(SOC_XWR68XX_MSS_ADCBUF_BASE_ADDRESS,
-                                   SOC_TranslateAddr_Dir_TO_EDMA, NULL);
+    srcAddr = SOC_translateAddress(
+        SOC_XWR68XX_MSS_ADCBUF_BASE_ADDRESS +
+            (SAVE_OFFSET_SAMPLES * 2U * (uint32_t)sizeof(int16_t)),
+        SOC_TranslateAddr_Dir_TO_EDMA, NULL);
     dstAddr = SOC_translateAddress((uint32_t)&g_ring[0][0],
                                    SOC_TranslateAddr_Dir_TO_EDMA, NULL);
 
@@ -295,14 +657,14 @@ static int32_t l3_armCapture(void)
     ps = &ch.paramSetConfig;
     ps->sourceAddress      = srcAddr;
     ps->destinationAddress = dstAddr;
-    ps->aCount             = (uint16_t)(N_SAMPLES * 2U * sizeof(int16_t)); /* 512: one RX chan */
+    ps->aCount             = (uint16_t)(SAVE_SAMPLES * 2U * sizeof(int16_t));
     ps->bCount             = (uint16_t)N_RX;          /* 4 arrays = one chirp per event */
     ps->cCount             = (uint16_t)RING_CHIRPS;   /* events before wrap */
     ps->bCountReload       = (uint16_t)N_RX;
     ps->sourceBindex       = (int16_t)(N_SAMPLES * 2U * sizeof(int16_t)); /* step RX chans */
-    ps->destinationBindex  = (int16_t)(N_SAMPLES * 2U * sizeof(int16_t));
+    ps->destinationBindex  = (int16_t)(SAVE_SAMPLES * 2U * sizeof(int16_t));
     ps->sourceCindex       = 0;                       /* re-read ADCBUF base every event */
-    ps->destinationCindex  = (int16_t)CHIRP_BYTES;    /* advance dest one chirp per event */
+    ps->destinationCindex  = (int16_t)SAVED_CHIRP_BYTES; /* advance dest one chirp per event */
     ps->linkAddress        = EDMA_NULL_LINK_ADDRESS;
     ps->transferType       = (uint8_t)EDMA3_SYNC_AB;
     ps->transferCompletionCode = (uint8_t)L3_EDMA_CHANNEL;
@@ -542,6 +904,14 @@ static void l3_initTask(UArg arg0, UArg arg1)
         return;
     }
 
+#ifdef ENABLE_HWA_SMOKE
+    /* Incremental HWA bring-up: prove the driver/lib opens on MSS before we
+     * put HWA in the chirp timing path. No HWA params or DMA triggers yet. */
+    HWA_init();
+    gHwaHandle = HWA_open(0, gSocHandle, &gHwaOpenErr);
+    gHwaOpened = (gHwaHandle != NULL) ? 1U : 0U;
+#endif
+
     /* Frame-start liveness ISR (per-chirp capture is now the hardware EDMA). */
     memset((void *)&socIntCfg, 0, sizeof(socIntCfg));
     socIntCfg.systemInterrupt = SOC_XWR68XX_MSS_FRAME_START_INT;
@@ -601,6 +971,17 @@ static void l3_initTask(UArg arg0, UArg arg1)
     cliCfg.tableEntry[3].cmd           = "stats";
     cliCfg.tableEntry[3].helpString    = "Report capture counters";
     cliCfg.tableEntry[3].cmdHandlerFxn = l3_cli_stats;
+#ifdef ENABLE_HWA_SMOKE
+    cliCfg.tableEntry[4].cmd           = "hwastats";
+    cliCfg.tableEntry[4].helpString    = "Report HWA smoke-test status";
+    cliCfg.tableEntry[4].cmdHandlerFxn = l3_cli_hwaStats;
+    cliCfg.tableEntry[5].cmd           = "hwatest";
+    cliCfg.tableEntry[5].helpString    = "Run HWA FFT self-test";
+    cliCfg.tableEntry[5].cmdHandlerFxn = l3_cli_hwaTest;
+    cliCfg.tableEntry[6].cmd           = "hwareal";
+    cliCfg.tableEntry[6].helpString    = "Run HWA FFT on current ADCBUF chirp";
+    cliCfg.tableEntry[6].cmdHandlerFxn = l3_cli_hwaReal;
+#endif
     CLI_open(&cliCfg);
 }
 

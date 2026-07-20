@@ -11,24 +11,25 @@ The chain that found the ball on every swing this weekend:
 Ring slots stream in memory order; the header's ``trigger_frame`` (fw v2+)
 gives the true time order and is treated as authoritative.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
 
-LOOP_PRI_S = 90e-6            # TX1-to-next-TX1 loop period for the 2TX config
-RANGE_SPAN_M = 6.0            # every cfg keeps a 6 m span: bin = 6.0/n_samples
+LOOP_PRI_S = 90e-6  # TX1-to-next-TX1 loop period for the 2TX config
+RANGE_SPAN_M = 6.0  # every cfg keeps a 6 m span: bin = 6.0/n_samples
 BALL_GATES_M = ((2.25, 3.75), (3.75, 5.5))
 SPEED_BOUNDS_MS = (20.0, 90.0)
 # fastest-credible selection: slow objects (flying tee ~25 m/s, post-impact
 # clubhead ~0.7x ball) outlast the ball in the gates and win most-inliers
 # RANSAC. 2026-07-14 TrackMan session: 5 driver + several SW live tracks
 # stolen this way. A fast track wins if it has enough support of its own.
-FAST_TRACK_MS = 26.5          # RADIAL m/s: slowest real SW ball reads ~27.5
+FAST_TRACK_MS = 26.5  # RADIAL m/s: slowest real SW ball reads ~27.5
 #                               (66 mph x cos projection); flying tee ~25
-FAST_SUPPORT_FRAC = 0.55      # of the most-inliers candidate
-MAX_RADIAL_ACCEL = 200.0      # m/s^2 sanity for the quadratic refit
+FAST_SUPPORT_FRAC = 0.55  # of the most-inliers candidate
+MAX_RADIAL_ACCEL = 200.0  # m/s^2 sanity for the quadratic refit
 
 
 @dataclass
@@ -43,6 +44,8 @@ class Geometry:
     frame_period_s: float
     trigger_frame: int
     loop_period_s: float = LOOP_PRI_S
+    range_bin_start: int = 0
+    range_fft_size: int | None = None
 
     @property
     def n_loops(self) -> int:
@@ -52,7 +55,16 @@ class Geometry:
     @property
     def range_res_m(self) -> float:
         """Range bin size in meters."""
-        return RANGE_SPAN_M / self.n_samples
+        return RANGE_SPAN_M / (self.range_fft_size or self.n_samples)
+
+    def local_bin(self, absolute_bin: int) -> int:
+        """Convert full-FFT bin coordinates into this dump's payload index."""
+        return absolute_bin - self.range_bin_start
+
+    def contains_bin(self, absolute_bin: int, margin: int = 0) -> bool:
+        """True when an absolute range bin is present in this dump payload."""
+        local = self.local_bin(absolute_bin)
+        return margin <= local < self.n_samples - margin
 
     def loop_time(self, frame: int, loop: int) -> float:
         """Seconds from window start for (ring-slot frame, loop)."""
@@ -101,7 +113,7 @@ class BallTrack:
         return (2.0 * q2 * t_s + q1) * range_res_m
 
 
-def mti_filter(cube: np.ndarray, scope: str = "burst") -> np.ndarray:
+def mti_filter(cube: np.ndarray, scope: str = "burst", *, range_domain: bool = False) -> np.ndarray:
     """Raw cube [nf, cpf, nrx, ns] -> complex MTI [nf, 2(tx), loops, nrx, ns].
 
     Range FFT then static removal. ``scope="burst"`` subtracts each bin's
@@ -116,7 +128,7 @@ def mti_filter(cube: np.ndarray, scope: str = "burst") -> np.ndarray:
     n_frames, cpf, n_rx, n_samples = cube.shape
     tdm = cube.reshape(n_frames, cpf // 2, 2, n_rx, n_samples)
     tdm = tdm.transpose(0, 2, 1, 3, 4)
-    rfft = np.fft.fft(tdm, axis=-1)
+    rfft = tdm if range_domain else np.fft.fft(tdm, axis=-1)
     if scope == "window":
         return rfft - rfft.mean(axis=(0, 2), keepdims=True)
     return rfft - rfft.mean(axis=2, keepdims=True)
@@ -130,10 +142,9 @@ def loop_power(mti: np.ndarray) -> np.ndarray:
     return power.reshape(n_frames * n_loops, mti.shape[-1])
 
 
-def _detections(power: np.ndarray, geo: Geometry,
-                snr_min: float = 4.0,
-                max_range_m: float | None = None
-                ) -> tuple[np.ndarray, np.ndarray]:
+def _detections(
+    power: np.ndarray, geo: Geometry, snr_min: float = 4.0, max_range_m: float | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """Per-loop sub-bin peaks inside the ball gates, SNR-gated.
 
     ``max_range_m`` clamps the gates — set it just short of the NET so
@@ -148,7 +159,10 @@ def _detections(power: np.ndarray, geo: Geometry,
             hi_m = min(hi_m, max_range_m)
         if hi_m <= lo_m:
             continue
-        g_lo, g_hi = int(lo_m / res), min(int(hi_m / res), n_samples - 2)
+        abs_lo = int(lo_m / res)
+        abs_hi = int(hi_m / res)
+        g_lo = max(abs_lo - geo.range_bin_start, 0)
+        g_hi = min(abs_hi - geo.range_bin_start, n_samples - 2)
         if g_hi - g_lo < 3:
             continue
         gate = power[:, g_lo:g_hi]
@@ -156,22 +170,27 @@ def _detections(power: np.ndarray, geo: Geometry,
         idx = np.argmax(gate, axis=1)
         snr = gate[np.arange(len(power)), idx] / base
         for i in np.nonzero(snr > snr_min)[0]:
-            peak = float(g_lo + idx[i])
-            j = int(peak)
+            peak_local = float(g_lo + idx[i])
+            j = int(peak_local)
             if g_lo < j < g_hi - 1:
                 y_0, y_1, y_2 = power[i, j - 1], power[i, j], power[i, j + 1]
                 den = y_0 - 2 * y_1 + y_2
                 if den < 0 and abs((y_0 - y_2) / (2 * den)) < 1:
-                    peak += (y_0 - y_2) / (2 * den)
+                    peak_local += (y_0 - y_2) / (2 * den)
             loops_idx.append(i)
-            bins.append(peak)
+            bins.append(geo.range_bin_start + peak_local)
     return np.asarray(loops_idx), np.asarray(bins)
 
 
-def find_ball(mti: np.ndarray, geo: Geometry, *,
-              iterations: int = 2500, seed: int = 1,
-              max_range_m: float | None = None,
-              min_ball_ms: float = FAST_TRACK_MS) -> BallTrack | None:
+def find_ball(
+    mti: np.ndarray,
+    geo: Geometry,
+    *,
+    iterations: int = 2500,
+    seed: int = 1,
+    max_range_m: float | None = None,
+    min_ball_ms: float = FAST_TRACK_MS,
+) -> BallTrack | None:
     """RANSAC the ball's range walk; None when no plausible streak exists.
 
     Selection is FASTEST-CREDIBLE, not most-inliers: the best fast
@@ -187,11 +206,10 @@ def find_ball(mti: np.ndarray, geo: Geometry, *,
         return None
     res = geo.range_res_m
     n_loops = geo.n_loops
-    times = np.array([geo.loop_time(i // n_loops, i % n_loops)
-                      for i in loops_idx])
+    times = np.array([geo.loop_time(i // n_loops, i % n_loops) for i in loops_idx])
     tol = 1.2 if geo.n_samples >= 128 else 0.8
     rng = np.random.default_rng(seed)
-    best = None       # most inliers at any speed
+    best = None  # most inliers at any speed
     best_fast = None  # most inliers among fast candidates
     for _ in range(iterations):
         i, j = rng.choice(times.size, 2, replace=False)
@@ -207,8 +225,7 @@ def find_ball(mti: np.ndarray, geo: Geometry, *,
         if n_new < 8:
             continue
         beats_best = best is None or n_new > best[0]
-        beats_fast = (slope * res >= min_ball_ms
-                      and (best_fast is None or n_new > best_fast[0]))
+        beats_fast = slope * res >= min_ball_ms and (best_fast is None or n_new > best_fast[0])
         if not (beats_best or beats_fast):
             continue
         design = np.vstack([times[inliers], np.ones(n_new)]).T
@@ -216,20 +233,20 @@ def find_ball(mti: np.ndarray, geo: Geometry, *,
         if not SPEED_BOUNDS_MS[0] <= sl2 * res <= SPEED_BOUNDS_MS[1]:
             continue
         resid = bins[inliers] - (sl2 * times[inliers] + ic2)
-        rms = float(np.sqrt((resid ** 2).mean()))
-        cand = (n_new, sl2, ic2, rms,
-                float(times[inliers].min()), float(times[inliers].max()))
+        rms = float(np.sqrt((resid**2).mean()))
+        cand = (n_new, sl2, ic2, rms, float(times[inliers].min()), float(times[inliers].max()))
         if beats_best:
             best = cand
-        if sl2 * res >= min_ball_ms and (best_fast is None
-                                         or n_new > best_fast[0]):
+        if sl2 * res >= min_ball_ms and (best_fast is None or n_new > best_fast[0]):
             best_fast = cand
     if best is None:
         return None
     pick = best
-    if (best_fast is not None
-            and best[1] * res < min_ball_ms
-            and best_fast[0] >= FAST_SUPPORT_FRAC * best[0]):
+    if (
+        best_fast is not None
+        and best[1] * res < min_ball_ms
+        and best_fast[0] >= FAST_SUPPORT_FRAC * best[0]
+    ):
         pick = best_fast
     n_inl, slope, icpt, rms, t_first, t_last = pick
     # quadratic refit of the picked track's inliers: local radial speed
@@ -240,8 +257,14 @@ def find_ball(mti: np.ndarray, geo: Geometry, *,
         if abs(2.0 * q2 * res) < MAX_RADIAL_ACCEL:
             quad = (float(q2), float(q1), float(q0))
     span_s = t_last - t_first
-    return BallTrack(speed_ms=slope * res, slope_bins=slope,
-                     intercept_bins=icpt, rms_bins=rms, n_inliers=n_inl,
-                     t_first=t_first, t_last=t_last,
-                     low_confidence=bool(rms >= 0.45 or span_s < 0.012),
-                     quad_bins=quad)
+    return BallTrack(
+        speed_ms=slope * res,
+        slope_bins=slope,
+        intercept_bins=icpt,
+        rms_bins=rms,
+        n_inliers=n_inl,
+        t_first=t_first,
+        t_last=t_last,
+        low_confidence=bool(rms >= 0.45 or span_s < 0.012),
+        quad_bins=quad,
+    )
