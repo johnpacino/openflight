@@ -318,11 +318,14 @@ static int32_t l3_hwaRunFft(uint16_t *peakBin, uint32_t *peakPower)
     }
 #ifdef LIVE_SNAPSHOT_RING
     /* Live snapshot compression runs in the frame-to-frame timing path. A
-     * BIOS tick sleep here guarantees we miss frames, so poll tightly for the
-     * HWA done interrupt. The slower sleep-based wait is kept for CLI smoke
-     * commands and dump-time snapshot builds where latency does not matter. */
+     * BIOS tick sleep here guarantees we miss frames, but a fully tight loop
+     * can starve the mmWave/CLI tasks on SYS/BIOS. Poll in short bursts and
+     * yield cooperatively so the firmware stays responsive while avoiding a
+     * full millisecond-scale sleep per chirp. */
     for (wait = 0U; wait < 200000U && !gHwaDone; wait++) {
-        ;
+        if ((wait & 0x3FFU) == 0x3FFU) {
+            Task_yield();
+        }
     }
 #else
     for (wait = 0U; wait < 200U && !gHwaDone; wait++) {
