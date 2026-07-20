@@ -230,6 +230,7 @@ static volatile uint32_t gHwaRearmErrors;
 static volatile uint8_t  gHwaDoneSeen;
 static volatile uint8_t  gHwaOutputSeen;
 static volatile uint8_t  gHwaRearmPending;
+static volatile uint8_t  gHwaRearmBusy;
 #endif
 
 /* Config pulled from the CLI mmWave extension (kept off the stack -- large). */
@@ -726,6 +727,29 @@ static int32_t l3_configHwaCommon(void)
     return HWA_configCommon(gHwaHandle, &commonCfg);
 }
 
+static void l3_drainHwaRearmSemaphore(void)
+{
+    if (gHwaRearmSemaphore != NULL) {
+        while (Semaphore_pend(gHwaRearmSemaphore, BIOS_NO_WAIT)) {
+            /* A completed ring may have posted immediately before capture was
+             * frozen. It must not reconfigure the freshly armed chain. */
+        }
+    }
+}
+
+static int32_t l3_waitForHwaRearmIdle(void)
+{
+    uint32_t wait;
+
+    for (wait = 0U; wait < 1000U; wait++) {
+        if (!gHwaRearmBusy) {
+            return 0;
+        }
+        Task_sleep(1);
+    }
+    return -1;
+}
+
 static int32_t l3_armHwaChain(void)
 {
     HWA_ParamConfig dummyCfg;
@@ -758,6 +782,14 @@ static int32_t l3_armHwaChain(void)
     (void)HWA_disableParamSetInterrupt(gHwaHandle, L3_HWA_PARAM_FFT_PONG,
                                       HWA_PARAMDONE_INTERRUPT_TYPE_CPU |
                                       HWA_PARAMDONE_INTERRUPT_TYPE_DMA);
+    l3_drainHwaRearmSemaphore();
+    /* A dump can freeze the accelerator between ping and pong. Reset the HWA
+     * state machine before replacing its paramsets; otherwise the second dump
+     * can wedge in MMWave_stop while stale DFE/DMA triggers remain pending. */
+    errCode = HWA_reset(gHwaHandle);
+    if (errCode != 0) {
+        return errCode;
+    }
 
     memset((void *)&dummyCfg, 0, sizeof(dummyCfg));
     dummyCfg.triggerMode = HWA_TRIG_MODE_DMA;
@@ -810,9 +842,20 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
     (void)arg1;
     while (1) {
         Semaphore_pend(gHwaRearmSemaphore, BIOS_WAIT_FOREVER);
-        if (gCaptureActive) {
+        {
             uintptr_t key;
+            uint8_t shouldRearm = 0U;
             int32_t errCode;
+
+            key = Hwi_disable();
+            if (gCaptureActive) {
+                gHwaRearmBusy = 1U;
+                shouldRearm = 1U;
+            }
+            Hwi_restore(key);
+            if (!shouldRearm) {
+                continue;
+            }
 
             (void)HWA_disableDoneInterrupt(gHwaHandle);
             (void)HWA_enable(gHwaHandle, 0U);
@@ -834,6 +877,9 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
             } else {
                 gHwaRearmErrors++;
             }
+            key = Hwi_disable();
+            gHwaRearmBusy = 0U;
+            Hwi_restore(key);
         }
     }
 }
@@ -928,7 +974,15 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 
     /* Halt chirping; ignore informational return (demo does the same). */
 #ifdef HWA_CHAINED_SNAPSHOT_RING
-    gCaptureActive = 0U;
+    {
+        uintptr_t key = Hwi_disable();
+        gCaptureActive = 0U;
+        Hwi_restore(key);
+    }
+    if (l3_waitForHwaRearmIdle() != 0) {
+        CLI_write("Error: HWA re-arm worker did not quiesce\n");
+        return -1;
+    }
 #endif
     (void)MMWave_stop(gMMWaveHandle, &errCode);
     Task_sleep(10);
@@ -1501,6 +1555,7 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     gHwaDoneSeen       = 0U;
     gHwaOutputSeen     = 0U;
     gHwaRearmPending   = 0U;
+    gHwaRearmBusy      = 0U;
 #endif
     if (l3_armCapture() < 0) {
         CLI_write("Error: capture arm failed\n");
