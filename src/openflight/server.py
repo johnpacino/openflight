@@ -993,6 +993,7 @@ def init_iwr6843(
     net_range_m: float | None,
     tx_order: str,
     capture_timeout_s: float,
+    freeze_delay_s: float = 0.05,
     tilt_deg: float | None = None,
     radar_height_m: float | None = None,
     ball_height_m: float = 0.04,
@@ -1025,6 +1026,7 @@ def init_iwr6843(
             output_dir=output_dir,
             port=port,
             gpio_pin=trigger_pin,
+            freeze_delay_s=freeze_delay_s,
         )
         capture_monitor.start()
         iwr6843_runtime = IWR6843Runtime(
@@ -2933,6 +2935,15 @@ def main():
         help="Maximum seconds an OPS shot waits for its TI UART dump (default: 12)",
     )
     parser.add_argument(
+        "--iwr6843-freeze-delay-ms",
+        type=float,
+        default=50.0,
+        help=(
+            "Delay after the sound edge before requesting a TI ring freeze "
+            "(default: 50; use 0 for boundary-frozen HWA snapshot firmware)"
+        ),
+    )
+    parser.add_argument(
         "--iwr6843-output-dir",
         default=None,
         help="Raw TI dump directory (default: <session-log-dir>/iwr6843)",
@@ -3118,6 +3129,8 @@ def main():
         parser.error("--iwr6843 already owns BCM GPIO; use the default --trigger sound")
     if args.iwr6843 and (args.iwr6843_tee_m <= 0 or args.iwr6843_net_m <= 0):
         parser.error("--iwr6843-tee-m and --iwr6843-net-m must be positive")
+    if args.iwr6843_freeze_delay_ms < 0:
+        parser.error("--iwr6843-freeze-delay-ms must be nonnegative")
 
     global experimental_kld7_radc_tuning
     global experimental_kld7_raw_radc_logging
@@ -3239,6 +3252,7 @@ def main():
             net_range_m=args.iwr6843_net_m,
             tx_order=args.iwr6843_tx_order,
             capture_timeout_s=args.iwr6843_capture_timeout,
+            freeze_delay_s=args.iwr6843_freeze_delay_ms / 1000.0,
             tilt_deg=args.iwr6843_tilt_deg,
             radar_height_m=args.iwr6843_radar_height_m,
             ball_height_m=args.iwr6843_ball_height_m,

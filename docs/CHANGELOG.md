@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Flash IWR6843 firmware directly from a Raspberry Pi.** Contributors no
+  longer need an Intel Mac, UniFlash, or TI Cloud Agent for routine firmware
+  updates. The guided terminal workflow verifies the image hash, offers a
+  non-destructive bootloader probe, erases the existing image, transfers the
+  replacement in acknowledged chunks, and requires the radar's ROM bootloader
+  to verify the completed image. The current IWR6843LEVM still requires its
+  physical flash-mode switch and reset button.
+- **Experimental three-transmitter capture for horizontal launch direction.**
+  The TX2 firmware variant captures all three transmitters while retaining the
+  TX1/TX3 vertical array, giving the offline and live pipelines the antenna
+  diversity needed to begin measuring left/right start direction.
+- **On-chip range snapshots for smaller IWR6843 shot captures.** The radar can
+  now use its hardware accelerator and EDMA to retain selected range-FFT bins
+  instead of every raw ADC sample. The current 80-bin prototype reduces a
+  three-transmitter dump from about 737 KB to about 461 KB while preserving the
+  vertical and horizontal processing inputs.
 - **`--kld7` now delivers the full launch-angle pipeline by default.** Enabling
   the K-LD7 radars turns on the **two-ray multipath vertical launch-angle
   estimator** (per-frame demodulation that separates the ball from its floor
@@ -43,6 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--kld7-bypass-vertical-gate` renamed to `--kld7-vertical-raw`.
 
 ### Fixed
+- IWR6843 range-snapshot capture now freezes only at a completed ring boundary
+  and correctly rearms the HWA/EDMA chain, preventing partial or one-shot-only
+  captures during repeated shots.
 - K-LD7 tracker: shots could silently lose their launch angle when the
   stream thread appended a frame while the shot path iterated the ring
   buffer (`snapshot_buffer` / `_radc_frames_for_extraction`). CPython

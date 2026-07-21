@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from openflight import server as server_module
+from openflight.iwr6843 import Calibration
 from openflight.kld7.types import KLD7Angle
 from openflight.launch_monitor import ClubType, Shot
 from openflight.server import (
@@ -92,6 +93,49 @@ class TestShutdownCleanup:
 
 class TestIWR6843ShotIntegration:
     """TI angle processing must enrich, never suppress, an OPS shot."""
+
+    def test_init_iwr6843_passes_explicit_freeze_delay_to_monitor(self, monkeypatch, tmp_path):
+        """Boundary-freeze snapshot firmware must be able to request the active ring immediately."""
+        captured = {}
+        calibration = Calibration.identity()
+
+        class FakeCaptureMonitor:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.port = "/dev/ttyUSB0"
+                self.freeze_delay_s = kwargs["freeze_delay_s"]
+
+            def start(self):
+                return None
+
+            def stop(self):
+                return None
+
+        monkeypatch.setattr(Calibration, "load", lambda _path: calibration)
+        monkeypatch.setattr(
+            "openflight.iwr6843.monitor.IWR6843CaptureMonitor",
+            FakeCaptureMonitor,
+        )
+        monkeypatch.setattr(
+            "openflight.iwr6843.monitor.tx_order_from_config",
+            lambda _path: "normal",
+        )
+
+        assert server_module.init_iwr6843(
+            port="/dev/ttyUSB0",
+            config_path="snapshot.cfg",
+            calibration_path="cal.json",
+            output_dir=tmp_path,
+            trigger_pin=17,
+            tee_range_m=1.575,
+            net_range_m=4.6,
+            tx_order="auto",
+            capture_timeout_s=12.0,
+            freeze_delay_s=0.0,
+        )
+
+        assert captured["freeze_delay_s"] == 0.0
+        server_module.iwr6843_runtime = None
 
     def test_accepted_lcmf_angle_is_applied_to_existing_shot_contract(self, monkeypatch):
         measurement = SimpleNamespace(

@@ -12,7 +12,8 @@ Usage:
       --tm firmware/l3_dump/trackman_session_data_7_17_40shots.json \
       --tm firmware/l3_dump/trackman_session_data_7_17_55shots.json \
       --sessions artifacts/pi_sync_20260717/openflight_sessions \
-      --out ~/openflight_sessions/tm_0717/session_aligned_2026-07-17.csv
+      --out ~/openflight_sessions/tm_0717/session_aligned_2026-07-17.csv \
+      --no-shanks-out ~/openflight_sessions/tm_0717/session_aligned_2026-07-17_no_shanks.csv
 """
 from __future__ import annotations
 
@@ -27,6 +28,26 @@ MPH = 2.23694
 ET_UTC_OFFSET_S = -4 * 3600          # EDT
 MATCH_HALF_WINDOW_S = 3.0
 OF_TS_DELAY_S = 8.0                  # shot_detected fires after the TI dump
+SHANK_RIGHT_DEG = 8.0
+SHANK_FACE_OPEN_DEG = 8.0
+SKULL_LA_DEG = 8.0
+
+
+def classify_shot(m: dict) -> tuple[str, str]:
+    """Flag obvious TrackMan shot-shape outliers before scoring TI angle."""
+    la = m.get("LaunchAngle")
+    launch_dir = m.get("LaunchDirection")
+    face = m.get("FaceAngle")
+    face_to_path = m.get("FaceToPath")
+    if launch_dir is not None and launch_dir >= SHANK_RIGHT_DEG:
+        return "shank", f"launch_direction>={SHANK_RIGHT_DEG:g}"
+    if face is not None and face >= SHANK_FACE_OPEN_DEG:
+        return "shank", f"face_angle>={SHANK_FACE_OPEN_DEG:g}"
+    if face_to_path is not None and face_to_path >= SHANK_FACE_OPEN_DEG:
+        return "shank", f"face_to_path>={SHANK_FACE_OPEN_DEG:g}"
+    if la is not None and la < SKULL_LA_DEG:
+        return "skull", f"launch_angle<{SKULL_LA_DEG:g}"
+    return "good", ""
 
 
 def tm_strokes(paths: list[Path]) -> list[dict]:
@@ -37,6 +58,7 @@ def tm_strokes(paths: list[Path]) -> list[dict]:
             club = grp.get("Club", "?")
             for s in grp["Strokes"]:
                 m = s["Measurement"]
+                shot_type, shot_type_reason = classify_shot(m)
                 out.append(dict(
                     t=datetime.fromisoformat(s["Time"]).timestamp(),
                     club=club, file=p.name,
@@ -44,7 +66,14 @@ def tm_strokes(paths: list[Path]) -> list[dict]:
                     club_mph=(m.get("ClubSpeed") or 0) * MPH,
                     la=m.get("LaunchAngle"), dir=m.get("LaunchDirection"),
                     attack=m.get("AttackAngle"), spin=m.get("SpinRate"),
-                    carry=(m.get("Carry") or 0) * 1.09361))
+                    carry=(m.get("Carry") or 0) * 1.09361,
+                    face=m.get("FaceAngle"),
+                    club_path=m.get("ClubPath"),
+                    face_to_path=m.get("FaceToPath"),
+                    carry_side=(m.get("CarrySide") or 0) * 1.09361,
+                    total_side=(m.get("TotalSide") or 0) * 1.09361,
+                    shot_type=shot_type,
+                    shot_type_reason=shot_type_reason))
     out.sort(key=lambda r: r["t"])
     return out
 
@@ -150,6 +179,7 @@ def main() -> None:
     ap.add_argument("--tm", action="append", type=Path, required=True)
     ap.add_argument("--sessions", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--no-shanks-out", type=Path)
     a = ap.parse_args()
 
     tm = tm_strokes(a.tm)
@@ -167,7 +197,14 @@ def main() -> None:
                    tm_club_mph=round(r["club_mph"], 1),
                    tm_la_deg=r["la"], tm_dir_deg=r["dir"],
                    tm_attack_deg=r["attack"], tm_spin_rpm=r["spin"],
-                   tm_carry_yds=round(r["carry"], 1), tm_file=r["file"])
+                   tm_carry_yds=round(r["carry"], 1), tm_file=r["file"],
+                   tm_face_deg=r["face"],
+                   tm_club_path_deg=r["club_path"],
+                   tm_face_to_path_deg=r["face_to_path"],
+                   tm_carry_side_yds=round(r["carry_side"], 1),
+                   tm_total_side_yds=round(r["total_side"], 1),
+                   shot_type=r["shot_type"],
+                   shot_type_reason=r["shot_type_reason"])
         s = shots[mm[i]] if i in mm else {}
 
         def rd(v, nd=1):
@@ -203,6 +240,14 @@ def main() -> None:
         w.writeheader()
         w.writerows(rows)
     print(f"wrote {a.out} ({len(rows)} rows)")
+    if a.no_shanks_out:
+        no_shanks = [r for r in rows if r["shot_type"] != "shank"]
+        a.no_shanks_out.parent.mkdir(parents=True, exist_ok=True)
+        with open(a.no_shanks_out, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows(no_shanks)
+        print(f"wrote {a.no_shanks_out} ({len(no_shanks)} rows)")
 
     n_m = len(mm)
     print(f"matched {n_m}/{len(tm)} TM strokes; skipped "

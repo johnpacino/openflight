@@ -11,7 +11,8 @@ lab capture card. Full plan: [../docs/plans/stage1c_l3_burst_dump.md](../docs/pl
   On Intel Macs/Linux boxes, build natively. On Raspberry Pi 5, Docker/QEMU can
   be used for smoke tests, but the TI 32-bit installer stubs can fail under the
   Pi 5 16 KB page-size kernel.
-- **Flash: the Pi web flow / UniFlash.** Off-container; the `.bin` is portable.
+- **Flash: directly from the Pi or with UniFlash.** The checked-in Python
+  flasher uses TI's ROM UART protocol and does not require TI Cloud Agent.
 - **Run: the Pi** drives it via [`../iwr6843_runtime.py`](../iwr6843_runtime.py).
 
 ## Apple Silicon Mac: UTM AMD64/x86_64 Debian VM
@@ -192,10 +193,11 @@ firmware/build_artifacts/l3_dump_vTX2_3tx_10loops_12frames.bin
 firmware/build_artifacts/l3_dump_vTX2_3tx_10loops_12frames_mss.xer4f
 ```
 
-The TX2 build is a capture proof: it enables TX1, TX2, and TX3 while reducing
-the loop count to stay inside the 768 KiB L3 budget. Host-side horizontal/aim
-estimation still needs to be implemented and validated before this becomes a
-production UI feature.
+The TX2 build enables TX1, TX2, and TX3 while reducing the loop count to stay
+inside the 768 KiB L3 budget. OpenFlight can decode the three-transmitter dump
+and produce an experimental horizontal/aim estimate. That estimate still needs
+broader source-of-truth calibration and coverage validation before it becomes
+a production-quality metric.
 
 ### Copy firmware artifacts back to the Mac
 From the Mac:
@@ -207,6 +209,94 @@ rsync -av openflight@VM_ADDRESS:~/openflight/firmware/build_artifacts/ artifacts
 
 The `.bin` files are the flashable images. The `.xer4f` files are useful for
 debugging/symbols but are not what you flash.
+
+## Flash from the Raspberry Pi
+
+The Pi can flash an IWR6843 `.bin` directly over the CP2105 **Enhanced** UART.
+This replaces the Intel Mac, UniFlash, and TI Cloud Agent. The current LEVM's
+boot-mode switch and reset button are still manual; a future board can wire
+SOP2 and reset to Pi GPIO for a fully unattended update.
+
+This workflow was hardware-validated on a Raspberry Pi 5 and IWR6843LEVM on
+July 20, 2026, including full erase, a 339,268-byte image transfer, image close,
+and ROM bootloader verification.
+
+Before starting, stop OpenFlight so it releases the TI serial port. Connect the
+TI board's USB cable to the Pi and identify its two CP2105 ports:
+
+```bash
+ls -l /dev/serial/by-id/
+ls -l /dev/ttyUSB*
+```
+
+Use the **Enhanced/UARTA** port, normally `/dev/ttyUSB0` and USB interface
+number `00`. Do not use the Standard/data port, normally `/dev/ttyUSB1`. For
+the first Pi test, use the non-destructive probe. It performs only the
+UART-break handshake and `PING`; it does not erase or write flash:
+
+```bash
+uv run python firmware/flash_iwr6843.py --probe --port /dev/ttyUSB0
+```
+
+After the probe passes, run the actual flash from the repository root:
+
+```bash
+uv run python firmware/flash_iwr6843.py \
+  firmware/build_artifacts/l3_dump_vTX2_hwa_frame_ring_v1.bin \
+  --port /dev/ttyUSB0
+```
+
+The script displays the image size and SHA-256, then prompts for the physical
+board steps:
+
+1. Flash mode: `S1.1 ON, S1.2 OFF, S1.3 ON, S1.4 ON, S1.5 OFF`.
+2. Type `READY` so the script opens UART and settles its control lines.
+3. Only when the script asks, press and release `RESET`, then wait one second.
+4. Type `FLASH` at the prompt.
+5. The default workflow performs a full SFLASH erase, opens the new image,
+   writes acknowledged 240-byte chunks, closes the image, and checks the final
+   ROM bootloader status. Erasing can take longer than ten seconds; the script
+   allows up to two minutes. Do not reset or disconnect the board while it is
+   erasing or writing.
+6. Functional mode: `S1.1 OFF, S1.2 OFF, S1.3 ON, S1.4 ON, S1.5 OFF`.
+7. Press and release `RESET` again.
+
+A successful transfer looks like:
+
+```text
+Erasing existing SFLASH...
+Opening firmware image...
+Writing firmware...
+Writing: 100% (.../... bytes)
+Closing and verifying firmware...
+
+Flash verified by the IWR6843 ROM bootloader.
+```
+
+The flasher uses the protocol documented in TI application note
+[SWRA627, IWR6843 Bootloader Flow](https://www.ti.com/lit/an/swra627/swra627.pdf):
+115200-baud UARTA, UART-break handshake, `OPEN`, acknowledged `WRITE TO FLASH`
+chunks, `CLOSE`, and final status validation. BREAK responses from the CP2105
+can contain leading zero bytes; the flasher skips that preamble before
+validating the bootloader ACK.
+
+If a transfer fails, leave the board in flash mode and rerun the command using
+the normal `READY` → `RESET` → one-second wait → `FLASH` sequence. A failure
+after `Erasing existing SFLASH...` may mean the previous application image is
+already gone, even if no write percentage appeared. This is recoverable: the
+immutable ROM bootloader remains available in flash mode, so retry the complete
+flash rather than attempting to boot in functional mode.
+
+Safety notes:
+
+- Do not flash while `scripts/start-kiosk.sh`, `shot_test.py`, or another
+  serial process is running.
+- Keep the TI board on stable USB power for the complete operation.
+- Do not use `--yes` until the interactive workflow has been proven on your
+  setup.
+- The default intentionally matches UniFlash by erasing SFLASH first.
+  `--no-erase` is available for controlled development use, but a complete
+  erase is the safer general-purpose workflow.
 
 ### Common issues
 - If the VM boots back into the Debian installer after installation, eject or
@@ -277,13 +367,11 @@ for the full toolchain install.
    before writing any custom C — it's the cheapest place to hit toolchain issues.)
 
 ## Phase 1 — the L3-dump app
-`l3_dump/` is a **skeleton**: the ring-buffer + post-trigger windowing logic and
-the wire format are final; the SDK glue is marked `TODO(SDK)`.
+`l3_dump/` contains the custom capture firmware and its wire-format contract:
 - `dump_format.h` — the 20-byte header + payload layout, byte-for-byte matching
   `iwr6843_l3dump.py` (`parse_dump`). **One format, two languages — keep in sync.**
-- `l3_dump.c` — per-frame raw-ADC archival into an L3 ring, a `l3dump` CLI command
-  that captures `POST_FRAMES` then streams the window. Fill in the `TODO(SDK)`
-  calls (EDMA ADCBUF copy, `UART_write`, CLI registration, the frame-done hook).
+- `l3_dump.c` — raw-ADC and HWA range-snapshot capture variants, circular L3
+  buffering, `l3dump` freeze/stream/rearm behavior, and diagnostics.
 
 Build → `.bin` → flash → the Pi's `iwr6843_runtime.py` runs it end-to-end (the Pi
 side is already implemented + tested: `iwr6843_l3dump.py`, `iwr6843_runtime.py`).
@@ -310,4 +398,61 @@ The TX2 proof uses:
 
 ```text
 3 TX x 10 loops x 12 frames x 4 RX x 128 samples x 4 bytes = 737,280 bytes
+```
+
+The HWA frame-ring prototype performs each 128-point range FFT on-chip and
+retains only bins 20–99. It keeps the same 3 TX, 10 loops, 12 frames, 4 RX,
+and 6 ms frame period while reducing the L3 payload to:
+
+```text
+3 TX x 10 loops x 12 frames x 4 RX x 80 complex bins x 4 bytes = 460,800 bytes
+```
+
+The ring advances one completed frame at a time. When the Pi sends `l3dump`,
+the firmware records the request, retains eight additional frames, freezes at
+that completed-frame boundary, rotates the circular ring into chronological
+order, and streams it. With a full 12-frame ring this targets approximately
+four pre-impact and eight impact/post-impact frames. The Pi should therefore
+use `--iwr6843-freeze-delay-ms 0`; the post-trigger delay belongs in firmware,
+not on the host.
+
+Build this variant in the x86 Debian environment with:
+
+```bash
+make -C firmware build-tx2-hwa-frame-ring-native
+```
+
+Artifacts:
+
+```text
+firmware/build_artifacts/l3_dump_vTX2_hwa_frame_ring_v1.bin
+firmware/build_artifacts/l3_dump_vTX2_hwa_frame_ring_v1_mss.xer4f
+```
+
+The validated dynamic-window firmware keeps 53 bins per frame and shifts the
+saved range interval from the tee toward the net as the post-trigger frames
+arrive. The baseline build retains 10 loops, 12 frames, and 6 ms spacing:
+
+```bash
+make -C firmware build-tx2-hwa-window53-native
+```
+
+The higher-density test build uses 12 loops, 18 frames, and 4 ms spacing. It
+retains six pre-trigger and twelve post-trigger frames while using 549,504 of
+the available 786,432 L3 bytes:
+
+```bash
+make -C firmware build-tx2-hwa-window53-12l18f-native
+```
+
+Use the matching runtime configuration:
+
+```text
+config/iwr6843_l3dump_vTX2_window53_12l18f.cfg
+```
+
+The flashable artifact is:
+
+```text
+firmware/build_artifacts/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v1.bin
 ```

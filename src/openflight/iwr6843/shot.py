@@ -199,6 +199,7 @@ def geometry_from_header(meta: dict, *, loop_period_s: float = tracking.LOOP_PRI
         loop_period_s=loop_period_s,
         range_bin_start=meta.get("range_bin_start", 0),
         range_fft_size=128 if range_domain else None,
+        range_bin_starts=meta.get("range_bin_starts"),
     )
 
 
@@ -240,7 +241,7 @@ def process_dump(
         geo.n_frames = got_frames
         cube = cube[:got_frames]
     range_domain = is_range_snapshot(meta)
-    mti = tracking.mti_filter(cube, range_domain=range_domain)
+    mti = tracking.mti_filter(cube, range_domain=range_domain, geometry=geo)
     # keep everything 25 cm short of the net: a ball riding up the net is
     # an upward mover that tilts every angle fit high (user setup: net
     # ~3 m past the tee)
@@ -262,7 +263,7 @@ def process_dump(
         # burst-MTI notches balls near n x 26.93 m/s and shatters their
         # range walk; the window-scope filter keeps them (statics still
         # cancel over the full window)
-        mti_w = tracking.mti_filter(cube, scope="window", range_domain=range_domain)
+        mti_w = tracking.mti_filter(cube, scope="window", range_domain=range_domain, geometry=geo)
         track_w = tracking.find_ball(mti_w, geo, max_range_m=max_r, min_ball_ms=min_ms)
         if not track_broken(track_w) and (
             track_broken(track)
@@ -349,14 +350,15 @@ def movers_by_slot(raw: bytes) -> list[tuple[int, float, float]]:
     """Diagnostic: per ring slot, (slot, strongest mover range m, power)."""
     meta, cube = parse_dump(raw)
     geo = geometry_from_header(meta)
-    mti = tracking.mti_filter(cube, range_domain=is_range_snapshot(meta))
+    mti = tracking.mti_filter(cube, range_domain=is_range_snapshot(meta), geometry=geo)
     power = (np.abs(mti) ** 2).sum(axis=(1, 2, 3))
     res = geo.range_res_m
     lo_bin = max(3, int(0.35 / res))
-    lo_local = max(0, lo_bin - geo.range_bin_start)
     out = []
     for slot in range(power.shape[0]):
+        start = geo.frame_bin_start(slot)
+        lo_local = max(0, lo_bin - start)
         best_local = lo_local + int(np.argmax(power[slot, lo_local:]))
-        best = geo.range_bin_start + best_local
+        best = start + best_local
         out.append((slot, best * res, float(power[slot, best_local])))
     return out

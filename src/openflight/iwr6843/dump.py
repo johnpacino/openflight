@@ -36,6 +36,7 @@ MAGIC = b"ILD1"
 HEADER = struct.Struct("<4sHHHBBHBBHH")
 SAMPLE_INT16_IQ = 0
 SAMPLE_RANGE_FFT_IQ16 = 1
+SAMPLE_RANGE_FFT_IQ16_WINDOWED = 2
 
 
 def pack_dump(
@@ -47,6 +48,7 @@ def pack_dump(
     frame_period_us: int = 0,
     sample_fmt: int = SAMPLE_INT16_IQ,
     range_bin_start: int = 0,
+    range_bin_starts: tuple[int, ...] | list[int] | None = None,
 ) -> bytes:
     """Complex cube [n_frames, chirps_per_frame, n_rx, n_samples] -> dump bytes.
 
@@ -54,8 +56,21 @@ def pack_dump(
     the synthesis/test path uses it so the format has one executable definition.
     """
     n_frames, cpf, n_rx, n_samples = cube.shape
-    if sample_fmt not in (SAMPLE_INT16_IQ, SAMPLE_RANGE_FFT_IQ16):
+    if sample_fmt not in (
+        SAMPLE_INT16_IQ,
+        SAMPLE_RANGE_FFT_IQ16,
+        SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+    ):
         raise ValueError(f"unsupported sample_fmt {sample_fmt}")
+    frame_prefix = b""
+    if sample_fmt == SAMPLE_RANGE_FFT_IQ16_WINDOWED:
+        if version < 4:
+            raise ValueError("windowed range snapshots require dump version 4+")
+        if range_bin_starts is None or len(range_bin_starts) != n_frames:
+            raise ValueError("windowed range snapshots require one start bin per frame")
+        if any(start < 0 or start > 255 for start in range_bin_starts):
+            raise ValueError("frame range-bin starts must fit in uint8")
+        frame_prefix = bytes(range_bin_starts)
     pad = range_bin_start if sample_fmt == SAMPLE_RANGE_FFT_IQ16 else 0
     hdr = HEADER.pack(
         MAGIC,
@@ -74,7 +89,7 @@ def pack_dump(
     iq = np.empty(flat.size * 2, dtype="<i2")
     iq[0::2] = np.clip(np.round(flat.imag), -32768, 32767).astype("<i2")  # Im first (TI ImRe)
     iq[1::2] = np.clip(np.round(flat.real), -32768, 32767).astype("<i2")
-    return hdr + iq.tobytes()
+    return hdr + frame_prefix + iq.tobytes()
 
 
 def parse_header(raw: bytes) -> dict:
@@ -85,7 +100,11 @@ def parse_header(raw: bytes) -> dict:
     (magic, ver, nf, cpf, ntx, nrx, ns, fmt, _pad, trig, period_us) = HEADER.unpack_from(raw, 0)
     if magic != MAGIC:
         raise ValueError(f"bad magic {magic!r} (expected {MAGIC!r})")
-    if fmt not in (SAMPLE_INT16_IQ, SAMPLE_RANGE_FFT_IQ16):
+    if fmt not in (
+        SAMPLE_INT16_IQ,
+        SAMPLE_RANGE_FFT_IQ16,
+        SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+    ):
         raise ValueError(f"unsupported sample_fmt {fmt}")
     return dict(
         version=ver,
@@ -98,20 +117,27 @@ def parse_header(raw: bytes) -> dict:
         frame_period_us=period_us,
         sample_fmt=fmt,
         range_bin_start=_pad if fmt == SAMPLE_RANGE_FFT_IQ16 else 0,
+        frame_metadata_nbytes=nf if fmt == SAMPLE_RANGE_FFT_IQ16_WINDOWED else 0,
     )
 
 
 def payload_nbytes(meta: dict) -> int:
     """Bytes of int16-I/Q ADC payload following the header."""
-    return meta["n_frames"] * meta["chirps_per_frame"] * meta["n_rx"] * meta["n_samples"] * 4
+    iq_nbytes = meta["n_frames"] * meta["chirps_per_frame"] * meta["n_rx"] * meta["n_samples"] * 4
+    return meta.get("frame_metadata_nbytes", 0) + iq_nbytes
 
 
 def parse_dump(raw: bytes):
     """Dump bytes -> (meta dict, complex cube [n_frames, cpf, n_rx, n_samples])."""
     meta = parse_header(raw)
     nf, cpf, nrx, ns = (meta["n_frames"], meta["chirps_per_frame"], meta["n_rx"], meta["n_samples"])
+    payload_offset = HEADER.size + meta.get("frame_metadata_nbytes", 0)
+    if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_WINDOWED:
+        if len(raw) < payload_offset:
+            raise ValueError("short per-frame range-window table")
+        meta["range_bin_starts"] = tuple(raw[HEADER.size : payload_offset])
     n = nf * cpf * nrx * ns
-    body = np.frombuffer(raw, dtype="<i2", offset=HEADER.size, count=2 * n)
+    body = np.frombuffer(raw, dtype="<i2", offset=payload_offset, count=2 * n)
     if body.size < 2 * n:
         raise ValueError(f"short payload: {body.size} i16 < {2 * n} needed")
     iq = body.astype(np.float64)
@@ -121,7 +147,10 @@ def parse_dump(raw: bytes):
 
 def is_range_snapshot(meta: dict) -> bool:
     """True when payload already contains selected range-FFT bins."""
-    return meta.get("sample_fmt", SAMPLE_INT16_IQ) == SAMPLE_RANGE_FFT_IQ16
+    return meta.get("sample_fmt", SAMPLE_INT16_IQ) in (
+        SAMPLE_RANGE_FFT_IQ16,
+        SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+    )
 
 
 def project_tx_pair(raw: bytes, tx_indices: tuple[int, int] = (0, 1)) -> bytes:
@@ -159,6 +188,7 @@ def project_tx_pair(raw: bytes, tx_indices: tuple[int, int] = (0, 1)) -> bytes:
         frame_period_us=meta.get("frame_period_us", 0),
         sample_fmt=meta.get("sample_fmt", SAMPLE_INT16_IQ),
         range_bin_start=meta.get("range_bin_start", 0),
+        range_bin_starts=meta.get("range_bin_starts"),
     )
 
 

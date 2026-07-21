@@ -159,8 +159,8 @@ def _snapshot_cache(
             if not track.t_first - 2e-3 <= time_s <= track.t_last + 2e-3:
                 continue
             range_bin = int(round(track.bin_at(time_s)))
-            local_bin = geometry.local_bin(range_bin)
-            if not geometry.contains_bin(range_bin, margin=1):
+            local_bin = geometry.local_bin(range_bin, frame)
+            if not geometry.contains_bin(range_bin, margin=1, frame=frame):
                 continue
             velocity = track.speed_ms_at(time_s, geometry.range_res_m)
             tdm_phase = tdm_sign * 4.0 * np.pi * velocity * tdm_tau_s / LAM
@@ -509,8 +509,8 @@ def _tx2_horizontal_proxy(
             if not shot.track.t_first - 2e-3 <= time_s <= shot.track.t_last + 2e-3:
                 continue
             range_bin = int(round(shot.track.bin_at(time_s)))
-            local_bin = geometry.local_bin(range_bin)
-            if not geometry.contains_bin(range_bin, margin=1):
+            local_bin = geometry.local_bin(range_bin, frame)
+            if not geometry.contains_bin(range_bin, margin=1, frame=frame):
                 continue
             velocity = shot.track.speed_ms_at(time_s, geometry.range_res_m)
             tx1 = mti[frame, loop, 0, :, local_bin]
@@ -531,7 +531,10 @@ def _tx2_horizontal_proxy(
             ]
             if rx_phases:
                 snapshots.append((float(frame), _circular_median(rx_phases), weight))
-    tail_frames = set(range(max(0, geometry.n_frames - 3), geometry.n_frames))
+    # A boundary-frozen HWA block can contain impact in any physical ring slot.
+    # Follow the observed flight instead of assuming slots 9-11 are always late.
+    observed_frames = sorted({frame for frame, _phase, _weight in snapshots})
+    tail_frames = set(observed_frames[-3:])
     snapshots = [snapshot for snapshot in snapshots if snapshot[0] in tail_frames]
     if len(snapshots) < 6:
         return None, None, "hlcmf_v0_insufficient_tail_snapshots"

@@ -46,6 +46,7 @@ class Geometry:
     loop_period_s: float = LOOP_PRI_S
     range_bin_start: int = 0
     range_fft_size: int | None = None
+    range_bin_starts: tuple[int, ...] | None = None
 
     @property
     def n_loops(self) -> int:
@@ -57,13 +58,21 @@ class Geometry:
         """Range bin size in meters."""
         return RANGE_SPAN_M / (self.range_fft_size or self.n_samples)
 
-    def local_bin(self, absolute_bin: int) -> int:
-        """Convert full-FFT bin coordinates into this dump's payload index."""
-        return absolute_bin - self.range_bin_start
+    def frame_bin_start(self, frame: int | None = None) -> int:
+        """Absolute first bin for a frame, or the dump-wide start."""
+        if self.range_bin_starts is None:
+            return self.range_bin_start
+        if frame is None:
+            raise ValueError("frame is required for a windowed range dump")
+        return self.range_bin_starts[frame]
 
-    def contains_bin(self, absolute_bin: int, margin: int = 0) -> bool:
+    def local_bin(self, absolute_bin: int, frame: int | None = None) -> int:
+        """Convert full-FFT bin coordinates into this dump's payload index."""
+        return absolute_bin - self.frame_bin_start(frame)
+
+    def contains_bin(self, absolute_bin: int, margin: int = 0, frame: int | None = None) -> bool:
         """True when an absolute range bin is present in this dump payload."""
-        local = self.local_bin(absolute_bin)
+        local = self.local_bin(absolute_bin, frame)
         return margin <= local < self.n_samples - margin
 
     def loop_time(self, frame: int, loop: int) -> float:
@@ -113,7 +122,13 @@ class BallTrack:
         return (2.0 * q2 * t_s + q1) * range_res_m
 
 
-def mti_filter(cube: np.ndarray, scope: str = "burst", *, range_domain: bool = False) -> np.ndarray:
+def mti_filter(
+    cube: np.ndarray,
+    scope: str = "burst",
+    *,
+    range_domain: bool = False,
+    geometry: Geometry | None = None,
+) -> np.ndarray:
     """Raw cube [nf, cpf, nrx, ns] -> complex MTI [nf, 2(tx), loops, nrx, ns].
 
     Range FFT then static removal. ``scope="burst"`` subtracts each bin's
@@ -129,6 +144,21 @@ def mti_filter(cube: np.ndarray, scope: str = "burst", *, range_domain: bool = F
     tdm = cube.reshape(n_frames, cpf // 2, 2, n_rx, n_samples)
     tdm = tdm.transpose(0, 2, 1, 3, 4)
     rfft = tdm if range_domain else np.fft.fft(tdm, axis=-1)
+    if scope == "window" and geometry is not None and geometry.range_bin_starts is not None:
+        fft_size = geometry.range_fft_size or max(geometry.range_bin_starts) + n_samples
+        totals = np.zeros((tdm.shape[1], n_rx, fft_size), dtype=complex)
+        counts = np.zeros(fft_size, dtype=float)
+        for frame, start in enumerate(geometry.range_bin_starts):
+            stop = start + n_samples
+            totals[:, :, start:stop] += rfft[frame].sum(axis=1)
+            counts[start:stop] += rfft.shape[2]
+        counts[counts == 0] = 1.0
+        means = totals / counts[None, None, :]
+        out = np.empty_like(rfft)
+        for frame, start in enumerate(geometry.range_bin_starts):
+            stop = start + n_samples
+            out[frame] = rfft[frame] - means[:, None, :, start:stop]
+        return out
     if scope == "window":
         return rfft - rfft.mean(axis=(0, 2), keepdims=True)
     return rfft - rfft.mean(axis=2, keepdims=True)
@@ -154,6 +184,38 @@ def _detections(
     res = geo.range_res_m
     loops_idx: list[int] = []
     bins: list[float] = []
+    if geo.range_bin_starts is not None:
+        n_loops = geo.n_loops
+        for row_index, row in enumerate(power):
+            frame = row_index // n_loops
+            frame_start = geo.frame_bin_start(frame)
+            for lo_m, hi_m in BALL_GATES_M:
+                if max_range_m is not None:
+                    hi_m = min(hi_m, max_range_m)
+                if hi_m <= lo_m:
+                    continue
+                abs_lo = int(lo_m / res)
+                abs_hi = int(hi_m / res)
+                g_lo = max(abs_lo - frame_start, 0)
+                g_hi = min(abs_hi - frame_start, n_samples - 2)
+                if g_hi - g_lo < 3:
+                    continue
+                gate = row[g_lo:g_hi]
+                base = np.median(gate) + 1e-12
+                idx = int(np.argmax(gate))
+                if gate[idx] / base <= snr_min:
+                    continue
+                peak_local = float(g_lo + idx)
+                j = int(peak_local)
+                if g_lo < j < g_hi - 1:
+                    y_0, y_1, y_2 = row[j - 1], row[j], row[j + 1]
+                    den = y_0 - 2 * y_1 + y_2
+                    if den < 0 and abs((y_0 - y_2) / (2 * den)) < 1:
+                        peak_local += (y_0 - y_2) / (2 * den)
+                loops_idx.append(row_index)
+                bins.append(frame_start + peak_local)
+        return np.asarray(loops_idx), np.asarray(bins)
+
     for lo_m, hi_m in BALL_GATES_M:
         if max_range_m is not None:
             hi_m = min(hi_m, max_range_m)

@@ -322,7 +322,7 @@
 <body>
   <div class="page">
     <header>
-      <p class="eyebrow">OpenFlight · Field report · Updated July 18, 2026</p>
+      <p class="eyebrow">OpenFlight · Field report · Updated July 21, 2026</p>
       <h1>How we measure launch angle with a 60&nbsp;GHz radar</h1>
       <p class="dek">A plain-language guide to the OPS243 + TI IWR6843 pipeline, the late-flight algorithm we call LCMF-v1, what two TrackMan sessions taught us, and how we plan to improve coverage without hiding quality.</p>
       <div class="meta">
@@ -788,70 +788,122 @@
       <section id="roadmap">
         <div class="reading">
           <p class="section-label">Firmware roadmap</p>
-          <h2>How the same radar could see faster balls and add aim</h2>
-          <p>The current Variant B firmware is a strong vertical-launch baseline, but it is not the final use of the chip. Every upgrade spends from the same fixed on-chip memory budget: more transmitters, more chirps, more range samples, and more frames all compete for space and time. The goal is therefore not “collect everything.” It is <strong>preserve the useful complex antenna data while wasting fewer bytes on empty range and unhelpful moments</strong>.</p>
+          <h2>We stopped saving the empty parts of the radar movie</h2>
+          <p>The original roadmap asked whether the chip could calculate range on-board, retain only the useful evidence, add the third transmitter for aim, and still preserve a rolling history around impact. The answer is now mostly yes. The latest firmware computes the complete range picture for every chirp, then stores a smaller moving crop that follows the part of the hitting area where the club and ball can physically appear.</p>
 
           <div class="callout">
-            <p><strong>Antenna-name clarification:</strong> today we use TI-labeled <strong>TX1 + TX3</strong> to form the eight-element vertical array. The physically third, currently unused transmitter is <strong>TX2</strong>; its sideways antenna position supplies the second axis needed for horizontal launch direction, or aim.</p>
+            <p><strong>The movie analogy is literal enough to be useful:</strong> imagine every radar frame as a wide picture from the radar to the net. We still develop the whole picture, but save only a horizontal crop. The crop slides away from the golfer as time advances. Unlike resizing or video compression, the complex antenna values inside the crop are unchanged.</p>
+          </div>
+
+          <div class="callout">
+            <p><strong>Antenna-name clarification:</strong> TI-labeled <strong>TX1 + TX3</strong> form the eight-element vertical array. The sideways <strong>TX2</strong> supplies the second axis for horizontal launch direction. The new capture now records all three transmitters; vertical launch still uses the proven TX1/TX3 pair while TX2 remains an experimental aim channel.</p>
           </div>
         </div>
 
+        <figure>
+          <img src="assets/iwr6843-moving-range-crop.svg" alt="Eighteen radar movie frames showing a 53-bin stored range crop moving from the tee toward late ball flight, followed by an L3 memory budget bar.">
+          <figcaption><b>The planned 18-frame capture.</b> Six dense pre-impact frames keep the near-tee corridor, six early-flight frames shift outward, and six late-flight frames finish just beyond the home net distance. One frame may already be armed when impact arrives, so firmware records the actual crop used by every frame rather than asking the Pi to assume the schedule.</figcaption>
+        </figure>
+
         <div class="roadmap-grid">
           <article class="roadmap-card">
-            <span class="tag teal">Priority 1</span>
-            <h3>Denser clean frames for driver</h3>
-            <p>A fast driver can reach a close net roughly 40 ms after impact, leaving only a few late-flight frames at the current 6 ms spacing. The strongest next capture experiment is <strong>24 fine-range frames at roughly 4–5 ms spacing</strong>, made possible by reducing the vertical burst from 16 to 8 loops.</p>
-            <p>This doubles the number of looks without coarsening the current 4.7 cm range bins. It also gives up about half the snapshots per frame, so it must be A/B tested against Variant B. The earlier D2 test already warned us that more weak or coarse frames are not automatically better.</p>
+            <span class="tag teal">Hardware proven</span>
+            <h3>Develop the full range picture</h3>
+            <p>The Hardware Accelerator, or HWA, performs a 128-point range FFT for every chirp. That preserves the existing 4.7 cm range resolution while moving repetitive math off the CPU.</p>
+            <p>Real ADC tests, corner reflectors, and ball captures confirmed that the HWA can process the live signal and preserve the complex phase and amplitude needed for angle estimation.</p>
           </article>
 
           <article class="roadmap-card">
-            <span class="tag teal">Priority 2</span>
-            <h3>Keep only the useful range corridor</h3>
-            <p>The raw dump stores every range sample even though the ball occupies a narrow corridor. A firmware range FFT followed by conservative range gating or compression could retain fine-resolution complex values near the golfer and ball while discarding empty bins.</p>
-            <p>That memory can buy deeper vertical bursts, denser frames, or a longer post-impact window, while a smaller payload reduces the current 7.6-second blind period. The Pi should still perform tracking and LCMF so raw-enough evidence remains inspectable.</p>
+            <span class="tag teal">Replay supported</span>
+            <h3>Store a moving 53-bin crop</h3>
+            <p>Instead of saving all 128 bins, EDMA copies 53 complex bins from the HWA into L3. The target crop moves through bins 20–72, 32–84, and 47–99 as the ball leaves the tee.</p>
+            <p>A geometry replay of 196 TrackMan-recorded trajectories, from sand wedge through driver, retained every modeled ball point that the previous fixed 80-bin capture could have retained. Hardware ball validation is next.</p>
           </article>
 
           <article class="roadmap-card">
-            <span class="tag">Aim axis</span>
-            <h3>Add sparse TX2 looks</h3>
-            <p>Simply firing all three transmitters on every loop would increase each frame's chirp data by 50%, reduce the number of frames that fit, and complicate fast-ball timing. That is the wrong first trade for a vertical estimator that benefits from dense late flight.</p>
-            <p>The preferred design is a high-rate <strong>TX1 + TX3 vertical stream</strong> with occasional <strong>TX2 aim looks</strong>, either as a small interleaved group or a lower-rate subframe. Aim changes slowly enough that it should not consume the same cadence as vertical launch. TX2 will need its own channel calibration and TrackMan- or camera-paired horizontal validation.</p>
+            <span class="tag teal">Hardware proven</span>
+            <h3>Freeze on a clean frame boundary</h3>
+            <p>The ring continuously overwrites old history, like the OPS speed buffer. Impact tells the Pi to request a freeze; firmware then records a deliberate number of post-impact frames before stopping on a completed HWA/EDMA boundary.</p>
+            <p>Repeated clap, corner-reflector, and ball tests proved that the ring can freeze, dump, rearm, and capture again without relying on a seven-second host-side delay.</p>
           </article>
 
           <article class="roadmap-card">
-            <span class="tag">Timing</span>
-            <h3>Make the impact window intentional</h3>
-            <p>The present host delay lets a continuously rolling ring fill with post-impact flight before it freezes. A stronger firmware contract would record the impact reference and deliberately allocate a small pre-impact block plus a known number of post-impact frames.</p>
-            <p>A later experiment can test a split window: a few downswing frames, a short impact dead zone, then dense late flight. That may preserve future club-delivery evidence without letting impact clutter consume the ball budget. Driver should first use a continuous dense window because it has the least time to spare.</p>
+            <span class="tag">Built · TrackMan next</span>
+            <h3>Reinvest the saved memory</h3>
+            <p>The next candidate records <strong>3 TX, 12 loops, 18 frames, and 4 ms spacing</strong>. That is 20% more per-transmitter looks, 50% more frames, and a denser view of the club approaching impact.</p>
+            <p>The linker proves it uses 549,504 of 786,432 L3 bytes, leaving 236,928 bytes for safety and future capture modes. The host pipeline passes the exact 18-frame geometry test; home and TrackMan shots remain the real proof.</p>
           </article>
         </div>
 
         <div class="reading">
-          <h3>Other improvements still on the plan</h3>
+          <h3>Where the L3 budget went</h3>
+          <p>The first reduction proved the idea with a fixed 80-bin crop. The moving 53-bin version goes further, then spends part of the savings on better time resolution rather than merely producing the smallest file.</p>
           <div class="table-wrap"><table>
-            <thead><tr><th>Improvement</th><th>Why it helps</th><th>Current recommendation</th></tr></thead>
+            <thead><tr><th>Capture design</th><th>Geometry</th><th>L3 ring</th><th>Meaning</th></tr></thead>
             <tbody>
-              <tr><td>Club-aware capture presets</td><td>A selected driver can favor cadence and immediate post-impact coverage; slower irons can favor deeper per-frame evidence.</td><td>Useful after one fast-ball A/B. Keep LCMF rules and calibration global.</td></tr>
-              <tr><td>Capture metadata</td><td>Exact impact-to-frame timing, firmware/config identity, tilt, height, TX order, and geometry prevent silent calibration mistakes.</td><td>Make these mandatory in every combined session record.</td></tr>
-              <tr><td>Per-unit array calibration</td><td>TX2 aim and a future custom board need phase/gain calibration across both antenna axes.</td><td>Extend the corner-reflector routine before trusting horizontal angles.</td></tr>
-              <tr><td>Two-lane radar confidence</td><td>Strict reads and relaxed recovered reads should not look identical in the UI.</td><td>Add a two-dot measured lane before broadly relaxing coverage thresholds.</td></tr>
-              <tr><td>Quality telemetry</td><td>Frame coverage, component spread, seam error, RMS, tracked speed agreement, and SNR can explain no-reads and support calibrated confidence.</td><td>Log now; set thresholds only after independent truth.</td></tr>
-              <tr><td>Club delivery</td><td>Pre-impact frames may support attack angle and club path even though club speed remains an OPS-based calibrated estimate.</td><td>Research output, not a reason to weaken ball-angle capture.</td></tr>
-              <tr><td>Outdoor range mode</td><td>The current roughly 6 m unambiguous corridor is designed for a net. Range use needs a longer-distance waveform.</td><td>Deferred preset; protect the indoor 1° goal first.</td></tr>
+              <tr><td>Original vertical baseline</td><td>2 TX · 16 loops · 12 frames · 128 samples</td><td>786,432 B</td><td>Proven TrackMan evidence, but no room for TX2 or more frames.</td></tr>
+              <tr><td>Raw three-TX proof</td><td>3 TX · 10 loops · 12 frames · 128 samples</td><td>737,280 B</td><td>Added aim, but spent almost the entire ring.</td></tr>
+              <tr><td>Fixed range snapshot</td><td>3 TX · 10 loops · 12 frames · 80 bins</td><td>460,800 B</td><td>Hardware proof that the chip can store FFT output instead of raw ADC.</td></tr>
+              <tr><td>Moving range crop</td><td>3 TX · 10 loops · 12 frames · 53 bins</td><td>305,280 B</td><td>Smallest current ring while retaining the modeled flight corridor.</td></tr>
+              <tr><td>Next TrackMan candidate</td><td>3 TX · 12 loops · 18 frames · 53 bins</td><td>549,504 B</td><td>Reinvests memory in stronger, denser club and ball evidence.</td></tr>
             </tbody>
           </table></div>
 
-          <h3>Recommended build order</h3>
+          <h3>Four words that make the firmware easier to follow</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Word</th><th>Plain-language meaning</th></tr></thead>
+            <tbody>
+              <tr><td>Frame</td><td>One radar movie frame containing a short burst of measurements from every active antenna.</td></tr>
+              <tr><td>Loop</td><td>One pass through TX1, TX2, and TX3. More loops provide more looks inside one frame.</td></tr>
+              <tr><td>Range bin</td><td>One approximately 4.7 cm distance slice between the radar and the net.</td></tr>
+              <tr><td>Complex I/Q</td><td>The amplitude and phase evidence retained for tracking speed and angle. The crop preserves both.</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>What is proven, and what is not</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Finding</th><th>Status</th><th>Evidence</th></tr></thead>
+            <tbody>
+              <tr><td>On-chip range FFT preserves usable complex antenna evidence</td><td><span class="tag teal">Hardware proven</span></td><td>HWA self-tests, real ADC tests, corner reflectors, and ball captures.</td></tr>
+              <tr><td>Selected bins can continuously fill and rearm a compact L3 ring</td><td><span class="tag teal">Hardware proven</span></td><td>Repeated boundary-frozen captures without short dumps.</td></tr>
+              <tr><td>All three transmitters retain detectable vertical and horizontal motion</td><td><span class="tag teal">Outdoor proven</span></td><td>Vertical launch remained plausible and intentional left/right groups separated. Horizontal accuracy still lacks TrackMan truth.</td></tr>
+              <tr><td>The 53-bin schedule covers normal launch-monitor trajectories</td><td><span class="tag">Replay supported</span></td><td>196 TrackMan trajectories modeled through the proposed early, middle, and late windows.</td></tr>
+              <tr><td>12 loops and 18 four-millisecond frames fit and decode correctly</td><td><span class="tag">Built and tested</span></td><td>Firmware linker map plus an exact-geometry, three-TX, end-to-end host regression.</td></tr>
+              <tr><td>The new firmware maintains sub-1° launch-angle MAE</td><td><span class="tag">TrackMan pending</span></td><td>Must be measured against the proven 16-loop baseline in the same session.</td></tr>
+              <tr><td>Denser frames improve driver, club path, and attack angle</td><td><span class="tag">TrackMan pending</span></td><td>The extra pre-impact points are physically promising, but improvement has not been scored.</td></tr>
+            </tbody>
+          </table></div>
+
+          <div class="callout">
+            <p><strong>What cropping could miss:</strong> a badly entered tee or net distance, unusual trigger timing, an extreme mishit, or an unexpected reflection could place useful energy outside the saved corridor. That is why the three windows are 2.48 m wide, overlap heavily, and record their actual starting bin in every frame. Runtime tee/net-aware presets come only after the fixed schedule passes TrackMan.</p>
+          </div>
+
+          <h3>What remains</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Work</th><th>Question it answers</th><th>Next proof</th></tr></thead>
+            <tbody>
+              <tr><td>Home-net smoke test</td><td>Does the 18-frame ring repeatedly freeze, transfer, decode, and rearm on real golf shots?</td><td>10–15 mixed shots before the TrackMan session.</td></tr>
+              <tr><td>TrackMan A/B</td><td>Does 12-loop/18-frame capture preserve MAE while improving coverage?</td><td>20 proven-baseline shots and 60 new-firmware shots, with geometry held fixed.</td></tr>
+              <tr><td>Driver recovery</td><td>Do 4 ms frames expose the real fast ball before a close net?</td><td>Compare tracked TI speed with OPS and TrackMan; reject slow ghost tracks.</td></tr>
+              <tr><td>Horizontal launch</td><td>Does TX2 measure degrees, not merely left/right sign?</td><td>TrackMan launch-direction MAE, bias, and coverage.</td></tr>
+              <tr><td>Club delivery</td><td>Do six dense pre-impact frames improve club path and attack angle?</td><td>Score against TrackMan club data without changing the ball estimator.</td></tr>
+              <tr><td>Sparse swing history</td><td>Can a second low-cost ring retain club-parallel-to-club-parallel motion?</td><td>First prove the dense frames consistently identify the club head.</td></tr>
+              <tr><td>Club and room presets</td><td>Should driver favor cadence while wedges favor deeper evidence, and should the crop follow net distance?</td><td>Only after one global configuration establishes an unbiased baseline.</td></tr>
+              <tr><td>Production calibration</td><td>Can multiple boards share one estimator?</td><td>Per-unit phase/gain calibration, enclosure tests, and eventual custom-PCB validation.</td></tr>
+            </tbody>
+          </table></div>
+
+          <h3>Recommended validation order</h3>
           <ol>
-            <li>Score frozen Variant B + LCMF-v1 at the next TrackMan session before changing the evidence baseline.</li>
-            <li>Replay existing raw captures with fewer loops to measure how much vertical evidence an 8-loop frame would lose.</li>
-            <li>Build and A/B a fine-range, 8-loop, 24-frame fast-ball firmware against Variant B, especially on driver.</li>
-            <li>Add range-selective storage, then use the recovered budget for both stronger vertical frames and sparse TX2 aim looks.</li>
-            <li>Calibrate and validate horizontal aim independently before combining it with club path or spin-axis calculations.</li>
+            <li>Prove repeated 549,542-byte captures at home with vertical and horizontal outputs visible.</li>
+            <li>Run the 80-shot same-day TrackMan A/B without moving the radar between firmware blocks.</li>
+            <li>Score vertical and horizontal coverage, bias, MAE, P50, P75, and P90 before changing thresholds.</li>
+            <li>Test 14 loops only if 12 loops show a quality or coverage limitation worth spending another 91,584 bytes.</li>
+            <li>Use the remaining L3 budget for club-aware presets or sparse swing history only after ball-angle performance is protected.</li>
           </ol>
 
           <div class="callout">
-            <p><strong>Bottom line:</strong> the chip has enough antenna geometry for vertical launch and aim, but not enough memory to collect both axes at maximum depth all the time. The best path is smarter scheduling and storage, not a hidden calibration trick or a more complicated TrackMan fit.</p>
+            <p><strong>Bottom line:</strong> the chip did not need more memory; it needed a better editor. On-chip HWA processing and frame-aware cropping let us keep the radar evidence that can affect the answer, discard distance slices the ball cannot occupy, and spend the recovered budget on a denser club-and-ball movie. TrackMan now decides whether that engineering improvement becomes a product improvement.</p>
           </div>
         </div>
       </section>
@@ -859,8 +911,8 @@
     </main>
 
     <footer>
-      OpenFlight · DIY launch monitor · report updated 2026-07-18<br>
-      Sources: two indoor TrackMan validation sessions, LCMF-v1 candidate, setup-variable replay, and production server integration.<br>
+      OpenFlight · DIY launch monitor · report updated 2026-07-21<br>
+      Sources: two indoor TrackMan validation sessions, LCMF-v1 candidate, setup-variable replay, HWA range-snapshot firmware, and production server integration.<br>
       Reproducible artifacts: <span class="mono">artifacts/report_20260718/combined_lcmf_summary.csv</span>, <span class="mono">artifacts/report_20260718/combined_lcmf_results.csv</span>, <span class="mono">scripts/analysis/tm0714/render_lcmf_report_figures.py</span>
     </footer>
   </div>
