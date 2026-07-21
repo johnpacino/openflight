@@ -12,7 +12,9 @@
  * HWA_CHAINED_SNAPSHOT_RING replaces that raw path with TI's production data
  * flow: the DFE triggers range FFTs directly in HWA and HWA param completion
  * triggers EDMA copies of selected range bins into the compact L3 ring. The CPU
- * only rearms the 12-frame hardware chain during inter-frame idle time.
+ * rearms one frame at a time during inter-frame idle time. Completed frames
+ * advance through the compact L3 ring so a trigger can preserve deterministic
+ * pre-impact history plus a fixed post-impact tail.
  *
  * Chirp order filled == chirp order fired == TDM (chirp c -> tx=c%N_TX,
  * loop=c/N_TX), matching iwr6843_l3dump.
@@ -95,6 +97,23 @@
 #if (SNAPSHOT_BIN_START + SNAPSHOT_BINS) > N_SAMPLES
 #error "SNAPSHOT_BIN_START + SNAPSHOT_BINS must be <= N_SAMPLES"
 #endif
+#ifdef SNAPSHOT_DYNAMIC_WINDOWS
+#ifndef HWA_CHAINED_SNAPSHOT_RING
+#error "SNAPSHOT_DYNAMIC_WINDOWS requires HWA_CHAINED_SNAPSHOT_RING"
+#endif
+#ifndef SNAPSHOT_MIDDLE_BIN_START
+#define SNAPSHOT_MIDDLE_BIN_START 32
+#endif
+#ifndef SNAPSHOT_LATE_BIN_START
+#define SNAPSHOT_LATE_BIN_START 47
+#endif
+#if (SNAPSHOT_MIDDLE_BIN_START + SNAPSHOT_BINS) > N_SAMPLES
+#error "middle snapshot window exceeds the range FFT"
+#endif
+#if (SNAPSHOT_LATE_BIN_START + SNAPSHOT_BINS) > N_SAMPLES
+#error "late snapshot window exceeds the range FFT"
+#endif
+#endif
 #ifdef LIVE_SNAPSHOT_RING
 #ifndef SNAPSHOT_DUMP
 #error "LIVE_SNAPSHOT_RING requires SNAPSHOT_DUMP"
@@ -134,6 +153,14 @@
 #ifndef RING_FRAMES
 #define RING_FRAMES  6
 #endif
+#ifndef HWA_POST_TRIGGER_FRAMES
+#define HWA_POST_TRIGGER_FRAMES 8U
+#endif
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+#if HWA_POST_TRIGGER_FRAMES >= RING_FRAMES
+#error "HWA_POST_TRIGGER_FRAMES must leave at least one pre-trigger frame"
+#endif
+#endif
 #define RING_CHIRPS  (RING_FRAMES * CHIRPS_PER_FRAME)
 #if defined(LIVE_SNAPSHOT_RING) || defined(HWA_CHAINED_SNAPSHOT_RING)
 #define RING_FRAME_COMPLEX SNAPSHOT_FRAME_COMPLEX
@@ -144,6 +171,11 @@
 #pragma DATA_SECTION(g_ring, ".l3ring")
 #pragma DATA_ALIGN(g_ring, 8)
 static int16_t g_ring[RING_FRAMES][RING_FRAME_COMPLEX * 2];
+
+#ifdef SNAPSHOT_DYNAMIC_WINDOWS
+/* Stored in ring-slot order and emitted directly before the v4 IQ payload. */
+static uint8_t gFrameBinStart[RING_FRAMES];
+#endif
 
 #ifdef LIVE_SNAPSHOT_RING
 /* Two raw frame scratch buffers let EDMA keep chirping while the snapshot task
@@ -208,11 +240,9 @@ static uint32_t      gCpuClock = 200U * 1000000U;
 static volatile uint8_t  gCaptureActive;
 static uint16_t gFramePeriodUs;         /* from the accepted frameCfg -> header */
 static volatile uint32_t gNumFrame;     /* frame-start ISR count (liveness) */
-static volatile uint32_t gRingFrame;    /* frames since last EDMA arm — the ring
-                                         * realigns to slot 0 on every arm, so
-                                         * slot(frame k) = k % RING_FRAMES and
-                                         * the OLDEST slot at freeze is
-                                         * gRingFrame % RING_FRAMES (once wrapped) */
+static volatile uint32_t gRingFrame;    /* completed snapshot frames since the
+                                         * last dump; next write/oldest slot is
+                                         * gRingFrame % RING_FRAMES once full */
 static volatile uint32_t gNumWrap;      /* EDMA ring-wrap count */
 static volatile uint32_t gCalibStatus;  /* RL_RF_AE_INITCALIBSTATUS payload */
 static volatile uint32_t gRfFaults;     /* CPU/ESM/analog fault events */
@@ -224,7 +254,7 @@ static volatile uint32_t gSnapshotErrors;
 static volatile uint8_t  gSnapshotBusy;
 #endif
 #ifdef HWA_CHAINED_SNAPSHOT_RING
-static volatile uint32_t gHwaRingDone;
+static volatile uint32_t gHwaFrameDone;
 static volatile uint32_t gHwaOutputDone;
 static volatile uint32_t gHwaRearms;
 static volatile uint32_t gHwaRearmErrors;
@@ -233,6 +263,8 @@ static volatile uint8_t  gHwaOutputSeen;
 static volatile uint8_t  gHwaRearmPending;
 static volatile uint8_t  gHwaRearmBusy;
 static volatile uint8_t  gHwaFreezeRequested;
+static volatile uint32_t gHwaFreezeRequestFrame;
+static volatile uint32_t gHwaFreezeTargetFrame;
 static volatile uint32_t gHwaFreezeRequests;
 static volatile uint32_t gHwaFreezeCompletions;
 static volatile uint32_t gHwaFreezeTimeouts;
@@ -497,7 +529,7 @@ static void l3_hwaMaybeQueueRearm(void)
 
     key = Hwi_disable();
     if (gCaptureActive && gHwaDoneSeen && gHwaOutputSeen && !gHwaRearmPending) {
-        if (gHwaFreezeRequested) {
+        if (gHwaFreezeRequested && gRingFrame >= gHwaFreezeTargetFrame) {
             gCaptureActive = 0U;
             gHwaFreezeRequested = 0U;
             gHwaFreezeCompletions++;
@@ -518,7 +550,7 @@ static void l3_hwaMaybeQueueRearm(void)
 static void l3_hwaChainDoneCB(void *arg)
 {
     (void)arg;
-    gHwaRingDone++;
+    gHwaFrameDone++;
     gHwaDoneSeen = 1U;
     l3_hwaMaybeQueueRearm();
 }
@@ -528,7 +560,10 @@ static void l3_hwaOutputDoneCB(uintptr_t arg, uint8_t tcCode)
     (void)arg;
     (void)tcCode;
     gHwaOutputDone++;
-    gNumWrap++;
+    gRingFrame++;
+    if ((gRingFrame % RING_FRAMES) == 0U) {
+        gNumWrap++;
+    }
     gHwaOutputSeen = 1U;
     l3_hwaMaybeQueueRearm();
 }
@@ -577,9 +612,8 @@ static int32_t l3_configHwaProcessParam(uint8_t paramIdx, uint8_t outChannel,
     paramCfg.source.srcScale = 0U;
     paramCfg.source.bpmEnable = HWA_FEATURE_BIT_DISABLE;
 
-    /* RX-major output makes the compact ring byte-for-byte compatible with the
-     * existing sample_fmt=1 host parser. EDMA then crops the same 80 bins from
-     * each of the four 128-bin RX blocks. */
+    /* RX-major output keeps each compact frame contiguous. EDMA crops the
+     * configured window from each of the four 128-bin RX blocks. */
     paramCfg.dest.dstAddr = dstAddr;
     paramCfg.dest.dstAcnt = N_SAMPLES - 1U;
     paramCfg.dest.dstAIdx = HWA_COMPLEX16_BYTES;
@@ -638,7 +672,7 @@ static int32_t l3_configHwaOutputEdma(uint8_t channel, uint16_t shadow,
     param->destinationAddress = SOC_translateAddress(destination, SOC_TranslateAddr_Dir_TO_EDMA, NULL);
     param->aCount = (uint16_t)(SNAPSHOT_BINS * HWA_COMPLEX16_BYTES);
     param->bCount = (uint16_t)N_RX;
-    param->cCount = (uint16_t)(RING_CHIRPS / 2U);
+    param->cCount = (uint16_t)(CHIRPS_PER_FRAME / 2U);
     param->bCountReload = (uint16_t)N_RX;
     param->sourceBindex = (int16_t)(N_SAMPLES * HWA_COMPLEX16_BYTES);
     param->destinationBindex = (int16_t)(SNAPSHOT_BINS * HWA_COMPLEX16_BYTES);
@@ -735,7 +769,7 @@ static int32_t l3_configHwaCommon(void)
                            HWA_COMMONCONFIG_MASK_PARAMSTOPIDX |
                            HWA_COMMONCONFIG_MASK_FFT1DENABLE |
                            HWA_COMMONCONFIG_MASK_INTERFERENCETHRESHOLD;
-    commonCfg.numLoops = RING_CHIRPS / 2U;
+    commonCfg.numLoops = CHIRPS_PER_FRAME / 2U;
     commonCfg.paramStartIdx = L3_HWA_PARAM_DUMMY_PING;
     commonCfg.paramStopIdx = L3_HWA_PARAM_FFT_PONG;
     commonCfg.fftConfig.fft1DEnable = HWA_FEATURE_BIT_ENABLE;
@@ -743,17 +777,62 @@ static int32_t l3_configHwaCommon(void)
     return HWA_configCommon(gHwaHandle, &commonCfg);
 }
 
+static uint32_t l3_snapshotBinStartForNextFrame(void)
+{
+#ifdef SNAPSHOT_DYNAMIC_WINDOWS
+    uint32_t completedAfterRequest;
+
+    if (!gHwaFreezeRequested) {
+        return SNAPSHOT_BIN_START;
+    }
+    completedAfterRequest = gRingFrame - gHwaFreezeRequestFrame;
+    if (completedAfterRequest < (HWA_POST_TRIGGER_FRAMES / 2U)) {
+        return SNAPSHOT_MIDDLE_BIN_START;
+    }
+    return SNAPSHOT_LATE_BIN_START;
+#else
+    return SNAPSHOT_BIN_START;
+#endif
+}
+
+static int32_t l3_configHwaFrameOutput(uint32_t ringSlot)
+{
+    uint32_t binStart = l3_snapshotBinStartForNextFrame();
+    uint32_t pingSource = SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS +
+                          binStart * HWA_COMPLEX16_BYTES;
+    uint32_t pongSource = SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS + HWA_MEM_STRIDE +
+                          binStart * HWA_COMPLEX16_BYTES;
+    uint32_t destination = (uint32_t)&g_ring[ringSlot % RING_FRAMES][0];
+
+#ifdef SNAPSHOT_DYNAMIC_WINDOWS
+    gFrameBinStart[ringSlot % RING_FRAMES] = (uint8_t)binStart;
+#endif
+
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PING_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PONG_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    if (l3_configHwaOutputEdma(L3_HWA_OUT_PING_CHANNEL, L3_HWA_OUT_PING_SHADOW,
+                              pingSource, destination, 0U) != 0 ||
+        l3_configHwaOutputEdma(L3_HWA_OUT_PONG_CHANNEL, L3_HWA_OUT_PONG_SHADOW,
+                              pongSource, destination + SNAPSHOT_CHIRP_BYTES,
+                              1U) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static void l3_drainHwaRearmSemaphore(void)
 {
     if (gHwaRearmSemaphore != NULL) {
         while (Semaphore_pend(gHwaRearmSemaphore, BIOS_NO_WAIT)) {
-            /* A completed ring may have posted immediately before capture was
+            /* A completed frame may have posted immediately before capture was
              * frozen. It must not reconfigure the freshly armed chain. */
         }
     }
 }
 
-static int32_t l3_restartCompletedHwaRing(void)
+static int32_t l3_restartCompletedHwaFrame(void)
 {
     uintptr_t key;
     int32_t errCode;
@@ -767,6 +846,9 @@ static int32_t l3_restartCompletedHwaRing(void)
     Hwi_restore(key);
     errCode = l3_configHwaCommon();
     if (errCode == 0) {
+        errCode = l3_configHwaFrameOutput(gRingFrame % RING_FRAMES);
+    }
+    if (errCode == 0) {
         errCode = HWA_enableDoneInterrupt(gHwaHandle, l3_hwaChainDoneCB, NULL);
     }
     if (errCode == 0) {
@@ -775,7 +857,7 @@ static int32_t l3_restartCompletedHwaRing(void)
     return errCode;
 }
 
-static int32_t l3_freezeHwaAtRingBoundary(void)
+static int32_t l3_freezeHwaAfterPostFrames(void)
 {
     uintptr_t key;
 
@@ -787,9 +869,11 @@ static int32_t l3_freezeHwaAtRingBoundary(void)
     }
     key = Hwi_disable();
     gHwaFreezeRequested = 1U;
+    gHwaFreezeRequestFrame = gRingFrame;
+    gHwaFreezeTargetFrame = gRingFrame + HWA_POST_TRIGGER_FRAMES;
     gHwaFreezeRequests++;
     Hwi_restore(key);
-    /* One 12-frame ring is 72 ms. Allow margin for a rearm already in flight. */
+    /* Allow the configured post-trigger frames plus scheduling/stop margin. */
     if (!Semaphore_pend(gHwaFreezeSemaphore, 250U)) {
         key = Hwi_disable();
         gHwaFreezeRequested = 0U;
@@ -806,10 +890,6 @@ static int32_t l3_armHwaChain(void)
     uint16_t mem2Offset = (uint16_t)(SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS -
                                      SOC_XWR68XX_MSS_HWA_MEM0_BASE_ADDRESS);
     uint16_t mem3Offset = (uint16_t)(mem2Offset + HWA_MEM_STRIDE);
-    uint32_t pingSource = SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS +
-                          SNAPSHOT_BIN_START * HWA_COMPLEX16_BYTES;
-    uint32_t pongSource = SOC_XWR68XX_MSS_HWA_MEM2_BASE_ADDRESS + HWA_MEM_STRIDE +
-                          SNAPSHOT_BIN_START * HWA_COMPLEX16_BYTES;
     int32_t errCode;
 
     if (!gHwaOpened || gHwaHandle == NULL) {
@@ -825,6 +905,9 @@ static int32_t l3_armHwaChain(void)
     gHwaDoneSeen = 0U;
     gHwaOutputSeen = 0U;
     gHwaRearmPending = 0U;
+#ifdef SNAPSHOT_DYNAMIC_WINDOWS
+    memset((void *)gFrameBinStart, SNAPSHOT_BIN_START, sizeof(gFrameBinStart));
+#endif
     (void)HWA_disableDoneInterrupt(gHwaHandle);
     (void)HWA_disableParamSetInterrupt(gHwaHandle, L3_HWA_PARAM_FFT_PING,
                                       HWA_PARAMDONE_INTERRUPT_TYPE_CPU |
@@ -870,13 +953,7 @@ static int32_t l3_armHwaChain(void)
         return errCode;
     }
 
-    if (l3_configHwaOutputEdma(L3_HWA_OUT_PING_CHANNEL, L3_HWA_OUT_PING_SHADOW,
-                              pingSource, (uint32_t)&g_ring[0][0], 0U) != 0 ||
-        l3_configHwaOutputEdma(L3_HWA_OUT_PONG_CHANNEL, L3_HWA_OUT_PONG_SHADOW,
-                              pongSource,
-                              (uint32_t)&g_ring[0][SNAPSHOT_CHIRP_COMPLEX * 2U],
-                              1U) != 0 ||
-        l3_configHwaSignatureEdma() != 0) {
+    if (l3_configHwaFrameOutput(0U) != 0 || l3_configHwaSignatureEdma() != 0) {
         return -1;
     }
     errCode = HWA_enableDoneInterrupt(gHwaHandle, l3_hwaChainDoneCB, NULL);
@@ -907,7 +984,7 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
                 continue;
             }
 
-            errCode = l3_restartCompletedHwaRing();
+            errCode = l3_restartCompletedHwaFrame();
             if (errCode == 0) {
                 gHwaRearms++;
             } else {
@@ -933,8 +1010,14 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
     h->n_rx             = N_RX;
 #ifdef SNAPSHOT_DUMP
     h->n_samples        = SNAPSHOT_BINS;
+#ifdef SNAPSHOT_DYNAMIC_WINDOWS
+    h->version          = L3_DUMP_VERSION_WINDOWED;
+    h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ16_WINDOWED;
+    h->_pad             = 0U;
+#else
     h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ16;
     h->_pad             = SNAPSHOT_BIN_START;
+#endif
 #else
     h->n_samples        = SAVE_SAMPLES;
     h->sample_fmt       = L3_SAMPLE_INT16_IQ;
@@ -972,7 +1055,7 @@ static void l3_frameStartISR(uintptr_t arg)
 {
     (void)arg;
     gNumFrame++;
-#if !defined(LIVE_SNAPSHOT_RING)
+#if !defined(LIVE_SNAPSHOT_RING) && !defined(HWA_CHAINED_SNAPSHOT_RING)
     gRingFrame++;
 #endif
 }
@@ -992,10 +1075,9 @@ static int32_t l3_startFrontEnd(void)
     return MMWave_start(gMMWaveHandle, &calibrationCfg, &errCode);
 }
 
-/* CLI "l3dump": finish the active HWA/EDMA ring, stop RF, stream the static
- * ring, then restart through the same lightweight path used between healthy
- * rings. Freezing mid-ring left stale DFE/DMA state and wedged the CLI after
- * the first otherwise-valid dump. */
+/* CLI "l3dump": record the current circular position, retain the configured
+ * post-trigger frames, stop at that completed frame boundary, stream the ring,
+ * then restart from slot zero. */
 int32_t l3_cli_dump(int32_t argc, char *argv[])
 {
     l3_dump_header_t h;
@@ -1008,8 +1090,8 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
     }
 
 #ifdef HWA_CHAINED_SNAPSHOT_RING
-    if (l3_freezeHwaAtRingBoundary() != 0) {
-        CLI_write("Error: HWA ring-boundary freeze timed out\n");
+    if (l3_freezeHwaAfterPostFrames() != 0) {
+        CLI_write("Error: HWA post-trigger frame freeze timed out\n");
         return -1;
     }
 #endif
@@ -1029,6 +1111,9 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
                    (gRingFrame >= RING_FRAMES)
                        ? (uint16_t)(gRingFrame % RING_FRAMES) : 0U);
     UART_writePolling(gDataUart, (uint8_t *)&h, sizeof(h));
+#ifdef SNAPSHOT_DYNAMIC_WINDOWS
+    UART_writePolling(gDataUart, gFrameBinStart, sizeof(gFrameBinStart));
+#endif
 #ifdef SNAPSHOT_DUMP
 #if defined(LIVE_SNAPSHOT_RING) || defined(HWA_CHAINED_SNAPSHOT_RING)
     for (i = 0; i < RING_FRAMES; i++) {
@@ -1059,11 +1144,11 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 #endif
 
 #ifdef HWA_CHAINED_SNAPSHOT_RING
-    /* The completed EDMA paramsets have self-reloaded. Reuse them rather than
-     * rebuilding HWA/EDMA from the partially consumed state that caused the
-     * repeat-dump deadlock. */
-    if (l3_restartCompletedHwaRing() < 0) {
-        CLI_write("Error: completed HWA ring restart failed\n");
+    gRingFrame = 0U;
+    gHwaFreezeRequestFrame = 0U;
+    gHwaFreezeTargetFrame = 0U;
+    if (l3_restartCompletedHwaFrame() < 0) {
+        CLI_write("Error: completed HWA frame restart failed\n");
         gCaptureActive = 0U;
         return -1;
     }
@@ -1075,7 +1160,9 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
         return -1;
     }
 #endif
+#ifndef HWA_CHAINED_SNAPSHOT_RING
     gRingFrame = 0U;
+#endif
 #ifdef LIVE_SNAPSHOT_RING
     gRawFrameReadyMask = 0U;
     gRawFrameDrops     = 0U;
@@ -1110,12 +1197,12 @@ static int32_t l3_cli_stats(int32_t argc, char *argv[])
 #else
 #ifdef HWA_CHAINED_SNAPSHOT_RING
     CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u "
-              "hwa_rings=%u hwa_out=%u hwa_rearms=%u hwa_rearm_err=%u "
+              "hwa_frames=%u hwa_out=%u hwa_rearms=%u hwa_rearm_err=%u "
               "hwa_wait=0x%x freeze_req=%u freeze_done=%u freeze_to=%u "
               "freeze_restart=%u\n",
               (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
               (unsigned)gCalibStatus, (unsigned)gRfFaults,
-              (unsigned)gHwaRingDone, (unsigned)gHwaOutputDone,
+              (unsigned)gHwaFrameDone, (unsigned)gHwaOutputDone,
               (unsigned)gHwaRearms, (unsigned)gHwaRearmErrors,
               (unsigned)((gHwaDoneSeen ? 1U : 0U) |
                          (gHwaOutputSeen ? 2U : 0U)),
@@ -1584,7 +1671,7 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     gSnapshotBusy      = 0U;
 #endif
 #ifdef HWA_CHAINED_SNAPSHOT_RING
-    gHwaRingDone       = 0U;
+    gHwaFrameDone      = 0U;
     gHwaOutputDone     = 0U;
     gHwaRearms         = 0U;
     gHwaRearmErrors    = 0U;
@@ -1593,6 +1680,8 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
     gHwaRearmPending   = 0U;
     gHwaRearmBusy      = 0U;
     gHwaFreezeRequested = 0U;
+    gHwaFreezeRequestFrame = 0U;
+    gHwaFreezeTargetFrame = 0U;
     gHwaFreezeRequests = 0U;
     gHwaFreezeCompletions = 0U;
     gHwaFreezeTimeouts = 0U;

@@ -69,9 +69,9 @@ def measure_tdm_sign(mti: np.ndarray, track: BallTrack, geo: Geometry) -> int:
             t_s = geo.loop_time(frame, loop)
             b_0 = int(round(track.bin_at(t_s)))
             b_1 = int(round(track.bin_at(t_s + geo.loop_period_s)))
-            b_0_local = geo.local_bin(b_0)
-            b_1_local = geo.local_bin(b_1)
-            if geo.contains_bin(b_0) and geo.contains_bin(b_1):
+            b_0_local = geo.local_bin(b_0, frame)
+            b_1_local = geo.local_bin(b_1, frame)
+            if geo.contains_bin(b_0, frame=frame) and geo.contains_bin(b_1, frame=frame):
                 acc += np.vdot(
                     mti[frame, 0, loop, :, b_0_local],
                     mti[frame, 0, loop + 1, :, b_1_local],
@@ -180,8 +180,8 @@ def snapshot_series(
                 loop = start + off
                 t_s = geo.loop_time(frame, loop)
                 rbin = int(round(track.bin_at(t_s)))
-                local_bin = geo.local_bin(rbin)
-                if not geo.contains_bin(rbin, margin=1):
+                local_bin = geo.local_bin(rbin, frame)
+                if not geo.contains_bin(rbin, margin=1, frame=frame):
                     break
                 snap = _snapshot(mti, frame, loop, local_bin, tdm_phase, cal, tx_order)
                 acc += snap * np.exp(-1j * loop_phase * off)

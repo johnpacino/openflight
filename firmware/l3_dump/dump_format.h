@@ -4,9 +4,13 @@
  * struct.Struct("<4sHHHBBHBBHH")). Little-endian. 20-byte header, then payload:
  *   raw fmt:
  *     for each frame, each chirp, each rx: n_samples * (int16 I, int16 Q).
- *   range-bin fmt:
+ *   range-bin fmt 1:
  *     for each frame, each chirp, each rx: n_samples selected range bins *
  *     (int16 I, int16 Q), where _pad carries the first range-bin index.
+ *   range-bin fmt 2 (version 4+):
+ *     n_frames uint8 start-bin values immediately follow this header, then
+ *     the same frame/chirp/rx/IQ payload. Each frame can therefore retain a
+ *     different contiguous range window without making the decoder guess.
  * Chirp order is TDM-interleaved: chirp c -> tx = c % n_tx, loop = c / n_tx.
  */
 #ifndef L3_DUMP_FORMAT_H
@@ -17,8 +21,10 @@
 #define L3_DUMP_MAGIC       "ILD1"
 #define L3_DUMP_VERSION     3   /* v2: trigger_frame = oldest ring slot;
                                  * v3: frame_period_us populated */
+#define L3_DUMP_VERSION_WINDOWED 4
 #define L3_SAMPLE_INT16_IQ  0
 #define L3_SAMPLE_RANGE_FFT_IQ16 1
+#define L3_SAMPLE_RANGE_FFT_IQ16_WINDOWED 2
 
 typedef struct __attribute__((packed)) {
     char     magic[4];          /* "ILD1" */

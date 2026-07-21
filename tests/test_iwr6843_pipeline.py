@@ -16,16 +16,24 @@ import pytest
 
 from openflight.iwr6843 import Calibration, estimate_lcmf_v1, process_dump
 from openflight.iwr6843.dump import (
+    HEADER,
     SAMPLE_RANGE_FFT_IQ16,
+    SAMPLE_RANGE_FFT_IQ16_WINDOWED,
     pack_dump,
     parse_dump,
     parse_header,
+    payload_nbytes,
     project_tx_pair,
 )
-from openflight.iwr6843.lcmf import ANGLE_CORRECTION_DEG, TX2_LOOP_PERIOD_S, TX2_VERTICAL_TDM_TAU_S
+from openflight.iwr6843.lcmf import (
+    ANGLE_CORRECTION_DEG,
+    TX2_LOOP_PERIOD_S,
+    TX2_VERTICAL_TDM_TAU_S,
+    _tx2_horizontal_proxy,
+)
 from openflight.iwr6843.music import LAM, steer
-from openflight.iwr6843.shot import geometry_from_header
-from openflight.iwr6843.tracking import LOOP_PRI_S, RANGE_SPAN_M
+from openflight.iwr6843.shot import ShotMeasurement, geometry_from_header
+from openflight.iwr6843.tracking import LOOP_PRI_S, RANGE_SPAN_M, BallTrack
 
 TAU_S = 45e-6
 RADAR_HEIGHT_M = 0.152
@@ -39,6 +47,7 @@ def synth_shot(
     tilt_deg=10.4,
     n_frames=12,
     n_loops=16,
+    n_tx=2,
     n_samples=128,
     frame_period_us=6000,
     trigger_frame=3,
@@ -59,14 +68,18 @@ def synth_shot(
     """
     rng = np.random.default_rng(seed)
     res = RANGE_SPAN_M / n_samples
-    cpf = 2 * n_loops
+    if n_tx not in (2, 3):
+        raise ValueError(f"unsupported TX count: {n_tx}")
+    cpf = n_tx * n_loops
+    loop_period_s = LOOP_PRI_S if n_tx == 2 else TX2_LOOP_PERIOD_S
+    tdm_tau_s = TAU_S if n_tx == 2 else TX2_VERTICAL_TDM_TAU_S
     cube = np.zeros((n_frames, cpf, 4, n_samples), dtype=complex)
     samples = np.arange(n_samples)
     tan_la = np.tan(np.radians(launch_deg))
     for slot in range(n_frames):
         t_slot = ((slot - trigger_frame) % n_frames) * frame_period_us / 1e6
         for loop in range(n_loops):
-            t_s = t_slot + loop * LOOP_PRI_S
+            t_s = t_slot + loop * loop_period_s
             disp = speed_ms * t_s + 0.5 * accel_ms2 * t_s * t_s
             v_inst = speed_ms + accel_ms2 * t_s
             x_m = tee_m + disp
@@ -82,7 +95,7 @@ def synth_shot(
                 phys = phys + image_gain * steer(theta_img, 8)
             chip = phys[::-1].copy()  # physical -> chip order
             doppler = np.exp(1j * 4 * np.pi * disp / LAM)
-            tdm = np.exp(1j * 4 * np.pi * v_inst * TAU_S / LAM)
+            tdm = np.exp(1j * 4 * np.pi * v_inst * tdm_tau_s / LAM)
             if tx_order == "normal":
                 chirp0, chirp1 = chip[:4], chip[4:] * tdm
             elif tx_order == "reversed":
@@ -90,11 +103,12 @@ def synth_shot(
             else:
                 raise ValueError(f"unsupported TX order: {tx_order}")
             for rx in range(4):
-                cube[slot, 2 * loop, rx] = amp * doppler * chirp0[rx] * tone
-                cube[slot, 2 * loop + 1, rx] = amp * doppler * chirp1[rx] * tone
+                chirp_base = n_tx * loop
+                cube[slot, chirp_base, rx] = amp * doppler * chirp0[rx] * tone
+                cube[slot, chirp_base + n_tx - 1, rx] = amp * doppler * chirp1[rx] * tone
     cube += rng.standard_normal(cube.shape) * noise + 1j * rng.standard_normal(cube.shape) * noise
     return pack_dump(
-        cube, n_tx=2, trigger_frame=trigger_frame, version=3, frame_period_us=frame_period_us
+        cube, n_tx=n_tx, trigger_frame=trigger_frame, version=3, frame_period_us=frame_period_us
     )
 
 
@@ -110,6 +124,30 @@ def range_snapshot_dump(raw: bytes, *, start_bin: int = 20, n_bins: int = 80) ->
         frame_period_us=meta["frame_period_us"],
         sample_fmt=SAMPLE_RANGE_FFT_IQ16,
         range_bin_start=start_bin,
+    )
+
+
+def windowed_range_snapshot_dump(
+    raw: bytes, *, starts_chronological: tuple[int, ...], n_bins: int = 53
+) -> bytes:
+    """Convert raw ADC into v4 per-frame range windows."""
+    meta, cube = parse_dump(raw)
+    rfft = np.fft.fft(cube, axis=-1)
+    starts_memory = tuple(
+        starts_chronological[(slot - meta["trigger_frame"]) % meta["n_frames"]]
+        for slot in range(meta["n_frames"])
+    )
+    cropped = np.stack(
+        [frame[..., start : start + n_bins] for frame, start in zip(rfft, starts_memory)]
+    )
+    return pack_dump(
+        cropped,
+        n_tx=meta["n_tx"],
+        trigger_frame=meta["trigger_frame"],
+        version=4,
+        frame_period_us=meta["frame_period_us"],
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+        range_bin_starts=starts_memory,
     )
 
 
@@ -179,6 +217,94 @@ def test_range_snapshot_tx_projection_preserves_absolute_bins():
     assert geo.local_bin(34) == 14
     assert geo.contains_bin(34)
     assert not geo.contains_bin(110)
+
+
+def test_windowed_snapshot_round_trip_and_size():
+    raw = synth_shot(n_loops=10, trigger_frame=3)
+    starts = (20,) * 4 + (32,) * 4 + (47,) * 4
+    snapshot = windowed_range_snapshot_dump(raw, starts_chronological=starts)
+
+    header = parse_header(snapshot)
+    meta, cube = parse_dump(snapshot)
+
+    assert header["version"] == 4
+    assert header["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_WINDOWED
+    assert header["frame_metadata_nbytes"] == 12
+    assert len(snapshot) == HEADER.size + payload_nbytes(header)
+    assert cube.shape == (12, 20, 4, 53)
+    assert tuple(meta["range_bin_starts"][(3 + index) % 12] for index in range(12)) == starts
+
+
+def test_windowed_snapshot_recovers_speed_and_launch_angle(cal):
+    truth_v, truth_la = 45.0, 18.0
+    starts = (20,) * 4 + (32,) * 4 + (47,) * 4
+    raw = windowed_range_snapshot_dump(
+        synth_shot(
+            speed_ms=truth_v,
+            launch_deg=truth_la,
+            n_loops=10,
+            trigger_frame=3,
+        ),
+        starts_chronological=starts,
+    )
+
+    shot = process_dump(raw, cal, coherent_loops=1, two_ray=False)
+
+    assert shot.ball_found
+    assert shot.track.speed_ms == pytest.approx(truth_v, rel=0.02)
+    assert shot.fits["tee"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
+    assert shot.geometry.range_bin_starts is not None
+
+
+def test_windowed_12_loop_18_frame_server_geometry(cal):
+    """The TrackMan test firmware is decoded entirely from its v4 header."""
+    truth_v, truth_la = 45.0, 18.0
+    raw_3tx = synth_shot(
+        speed_ms=truth_v,
+        launch_deg=truth_la,
+        n_frames=18,
+        n_loops=12,
+        n_tx=3,
+        frame_period_us=4000,
+        trigger_frame=6,
+    )
+    starts = (20,) * 6 + (32,) * 6 + (47,) * 6
+    raw = windowed_range_snapshot_dump(raw_3tx, starts_chronological=starts)
+
+    shot = process_dump(raw, cal, coherent_loops=1, two_ray=False)
+
+    assert shot.ball_found
+    assert shot.geometry.n_frames == 18
+    assert shot.geometry.n_loops == 12
+    assert shot.geometry.frame_period_s == pytest.approx(0.004)
+    assert len(shot.geometry.range_bin_starts or ()) == 18
+    assert shot.track.speed_ms == pytest.approx(truth_v, rel=0.02)
+    assert shot.fits["tee"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
+
+
+def test_windowed_snapshot_tx_projection_preserves_frame_starts():
+    rng = np.random.default_rng(23)
+    starts = (20, 20, 20, 20, 32, 32, 32, 32, 47, 47, 47, 47)
+    cube = rng.standard_normal((12, 30, 4, 53)) + 1j * rng.standard_normal((12, 30, 4, 53))
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        trigger_frame=4,
+        version=4,
+        frame_period_us=6000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+        range_bin_starts=starts,
+    )
+
+    projected = project_tx_pair(raw, (0, 2))
+    meta, parsed = parse_dump(projected)
+    geo = geometry_from_header(meta, loop_period_s=TX2_LOOP_PERIOD_S)
+
+    assert parsed.shape == (12, 20, 4, 53)
+    assert meta["range_bin_starts"] == starts
+    assert geo.local_bin(52, frame=8) == 5
+    assert geo.contains_bin(52, margin=1, frame=8)
+    assert not geo.contains_bin(40, frame=8)
 
 
 def test_reversed_tx_order_recovers_same_speed_and_angle(cal):
@@ -596,3 +722,47 @@ def test_lcmf_v1_uses_tx2_effective_timing_on_three_tx_capture(cal):
     assert not result.accepted
     assert result.effective_tdm_tau_s == pytest.approx(TX2_VERTICAL_TDM_TAU_S)
     assert result.effective_loop_period_s == pytest.approx(TX2_LOOP_PERIOD_S)
+
+
+def test_tx2_horizontal_uses_tail_of_ball_track_not_fixed_ring_tail():
+    """Boundary-frozen blocks place impact anywhere, so physical slots 9-11 are not special."""
+    n_frames, n_loops, n_tx, n_rx, n_bins = 12, 10, 3, 4, 80
+    start_bin = 20
+    cube = np.zeros((n_frames, n_loops * n_tx, n_rx, n_bins), dtype=complex)
+    track = BallTrack(
+        speed_ms=45.0,
+        slope_bins=960.0,
+        intercept_bins=31.0,
+        rms_bins=0.2,
+        n_inliers=40,
+        t_first=0.012,
+        t_last=0.031,
+        low_confidence=False,
+    )
+    shot = ShotMeasurement(geometry=None, ball_found=True, track=track)
+
+    for frame in range(n_frames):
+        for loop in range(n_loops):
+            time_s = frame * 0.006 + loop * TX2_LOOP_PERIOD_S
+            if not track.t_first <= time_s <= track.t_last:
+                continue
+            local_bin = int(round(track.bin_at(time_s))) - start_bin
+            common = np.exp(1j * 0.7 * loop)
+            cube[frame, loop * n_tx, :, local_bin] = common
+            cube[frame, loop * n_tx + 1, :, local_bin] = common * np.exp(0.25j)
+            cube[frame, loop * n_tx + 2, :, local_bin] = common
+
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=3,
+        frame_period_us=6000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16,
+        range_bin_start=start_bin,
+    )
+
+    angle_deg, coherence, status = _tx2_horizontal_proxy(raw, shot, tdm_sign=1)
+
+    assert angle_deg is not None
+    assert coherence is not None and coherence > 0.25
+    assert status == "hlcmf_v0_accepted"
