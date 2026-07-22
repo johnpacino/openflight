@@ -379,8 +379,7 @@ def test_capture_wrapper_infers_reversed_config():
         requested = "normal"
         if requested != resolved:
             raise ValueError(
-                f"--iwr6843-tx-order {requested} conflicts with "
-                "iwr6843_l3dump_vBR.cfg (reversed)"
+                f"--iwr6843-tx-order {requested} conflicts with iwr6843_l3dump_vBR.cfg (reversed)"
             )
 
 
@@ -708,6 +707,19 @@ def test_lcmf_v1_rejects_empty_capture_without_inventing_angle(cal):
     assert not result.accepted
     assert result.angle_deg is None
     assert result.status == "rejected_by_ball_tracker"
+
+
+def test_lcmf_v1_reports_rejected_track_quality(cal):
+    """A detected but thin track must not be mislabeled as a TDM-sign failure."""
+    raw = synth_shot(n_frames=3, trigger_frame=0, tee_m=2.3)
+
+    result = estimate_lcmf_v1(raw, cal, ball_speed_mph=100.0, club="9i")
+
+    assert not result.accepted
+    assert result.angle_deg is None
+    assert result.track_inliers is not None
+    assert result.tracker_quality == "reject"
+    assert result.status == "rejected_track_quality"
 
 
 def test_lcmf_v1_uses_tx2_effective_timing_on_three_tx_capture(cal):

@@ -588,6 +588,13 @@ def estimate_lcmf_v1(
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
+    if shot.quality == "reject":
+        return _result_from_track(
+            "rejected_track_quality",
+            shot,
+            effective_tdm_tau_s=tdm_tau_s,
+            effective_loop_period_s=loop_period_s,
+        )
     if shot.tdm_sign_used not in (-1, 1):
         return _result_from_track(
             "rejected_missing_tdm_sign",
