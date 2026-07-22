@@ -252,9 +252,9 @@ build-tx2-hwa-window53-12l18f-native:
 	$(BUILD_ENV) $(MAKE) -C "$(L3_DIR)" cleanApp
 	$(BUILD_ENV) $(MAKE) -C "$(L3_DIR)" bin L3_VARIANT_DEFS="--define=N_TX=3 --define=LOOPS=12 --define=RING_FRAMES=18 --define=HWA_POST_TRIGGER_FRAMES=12 --define=ENABLE_HWA_SMOKE=1 --define=SNAPSHOT_DUMP=1 --define=HWA_CHAINED_SNAPSHOT_RING=1 --define=SNAPSHOT_DYNAMIC_WINDOWS=1 --define=SNAPSHOT_BIN_START=20 --define=SNAPSHOT_MIDDLE_BIN_START=32 --define=SNAPSHOT_LATE_BIN_START=47 --define=SNAPSHOT_BINS=53"
 	mkdir -p "$(BUILD_ARTIFACT_DIR)"
-	cp "$(L3_DIR)/l3_dump.bin" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v1.bin"
-	cp "$(L3_DIR)/l3_dump_mss.xer4f" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v1_mss.xer4f"
-	cp "$(L3_DIR)/l3_dump_mss.map" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v1_mss.map"
+	cp "$(L3_DIR)/l3_dump.bin" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v2.bin"
+	cp "$(L3_DIR)/l3_dump_mss.xer4f" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v2_mss.xer4f"
+	cp "$(L3_DIR)/l3_dump_mss.map" "$(BUILD_ARTIFACT_DIR)/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v2_mss.map"
 
 build-debian-base:
 	$(DOCKER) build --platform "$(PLATFORM)" --target base -t "$(IMAGE)-base" -f Dockerfile.debian .

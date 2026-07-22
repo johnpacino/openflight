@@ -412,9 +412,9 @@ The ring advances one completed frame at a time. When the Pi sends `l3dump`,
 the firmware records the request, retains eight additional frames, freezes at
 that completed-frame boundary, rotates the circular ring into chronological
 order, and streams it. With a full 12-frame ring this targets approximately
-four pre-impact and eight impact/post-impact frames. The Pi should therefore
-use `--iwr6843-freeze-delay-ms 0`; the post-trigger delay belongs in firmware,
-not on the host.
+four pre-impact and eight impact/post-impact frames. The production server
+always requests the ring immediately at the sound edge; post-trigger frame
+placement belongs in firmware, not in a host-side delay.
 
 Build this variant in the x86 Debian environment with:
 
@@ -454,5 +454,9 @@ config/iwr6843_l3dump_vTX2_window53_12l18f.cfg
 The flashable artifact is:
 
 ```text
-firmware/build_artifacts/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v1.bin
+firmware/build_artifacts/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v2.bin
 ```
+
+Version 2 keeps the same radar geometry and stored frame format as version 1.
+It fixes repeated application startup by stopping the RF front end only after
+the active HWA frame reaches a safe boundary, before disabling HWA and EDMA.

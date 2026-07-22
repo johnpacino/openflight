@@ -884,6 +884,42 @@ static int32_t l3_freezeHwaAfterPostFrames(void)
     return 0;
 }
 
+/* Stop only after the current HWA output has completed. Tearing down HWA/EDMA
+ * before MMWave_stop leaves the RF and rearm state machines out of sync, which
+ * makes the next sensorStart hang until the board is power-cycled. */
+static int32_t l3_stopCaptureAtBoundary(void)
+{
+    int32_t errCode;
+
+    if (!gCaptureActive) {
+        return 0;
+    }
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    if (l3_freezeHwaAfterPostFrames() != 0) {
+        CLI_write("Error: HWA post-trigger frame freeze timed out\n");
+        return -1;
+    }
+#endif
+    if (MMWave_stop(gMMWaveHandle, &errCode) < 0) {
+        CLI_write("Error: MMWave_stop failed (%d)\n", errCode);
+        return -1;
+    }
+    Task_sleep(10);
+#ifdef HWA_CHAINED_SNAPSHOT_RING
+    (void)HWA_enable(gHwaHandle, 0U);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PING_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PONG_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_SIGNATURE_CHANNEL,
+                              EDMA3_CHANNEL_TYPE_DMA);
+#else
+    (void)EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
+#endif
+    gCaptureActive = 0U;
+    return 0;
+}
+
 static int32_t l3_armHwaChain(void)
 {
     HWA_ParamConfig dummyCfg;
@@ -1082,27 +1118,16 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 {
     l3_dump_header_t h;
     uint32_t         i;
-    int32_t          errCode;
     (void)argc; (void)argv;
 
     if (!gCaptureActive) {
         return -1;
     }
 
-#ifdef HWA_CHAINED_SNAPSHOT_RING
-    if (l3_freezeHwaAfterPostFrames() != 0) {
-        CLI_write("Error: HWA post-trigger frame freeze timed out\n");
+    /* Halt chirping only after HWA and both output EDMAs completed naturally. */
+    if (l3_stopCaptureAtBoundary() != 0) {
         return -1;
     }
-#endif
-    /* Halt chirping only after HWA and both output EDMAs completed naturally. */
-    (void)MMWave_stop(gMMWaveHandle, &errCode);
-    Task_sleep(10);
-#ifdef HWA_CHAINED_SNAPSHOT_RING
-    (void)HWA_enable(gHwaHandle, 0U);
-#else
-    EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
-#endif
 
     /* Oldest slot = time-order start (best-effort: a frame-start ISR racing
      * the stop can skew this by one; the host cross-checks with its own
@@ -1703,25 +1728,14 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
 
 static int32_t l3_cli_sensorStop(int32_t argc, char *argv[])
 {
-    int32_t errCode;
     (void)argc; (void)argv;
-    gCaptureActive = 0U;
-#ifdef HWA_CHAINED_SNAPSHOT_RING
-    (void)HWA_enable(gHwaHandle, 0U);
-    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PING_CHANNEL,
-                              EDMA3_CHANNEL_TYPE_DMA);
-    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_OUT_PONG_CHANNEL,
-                              EDMA3_CHANNEL_TYPE_DMA);
-    (void)EDMA_disableChannel(gEdmaHandle, L3_HWA_SIGNATURE_CHANNEL,
-                              EDMA3_CHANNEL_TYPE_DMA);
-#else
-    (void)EDMA_disableChannel(gEdmaHandle, L3_EDMA_CHANNEL, EDMA3_CHANNEL_TYPE_DMA);
-#endif
+    if (!gCaptureActive) {
+        return 0;
+    }
 #ifdef LIVE_SNAPSHOT_RING
     gRawFrameReadyMask = 0U;
 #endif
-    MMWave_stop(gMMWaveHandle, &errCode);
-    return 0;
+    return l3_stopCaptureAtBoundary();
 }
 
 /* System init task: UART, mmWave control, EDMA + ADCBUF + frame-start ISR, CLI. */

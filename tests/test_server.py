@@ -94,8 +94,8 @@ class TestShutdownCleanup:
 class TestIWR6843ShotIntegration:
     """TI angle processing must enrich, never suppress, an OPS shot."""
 
-    def test_init_iwr6843_passes_explicit_freeze_delay_to_monitor(self, monkeypatch, tmp_path):
-        """Boundary-freeze snapshot firmware must be able to request the active ring immediately."""
+    def test_init_iwr6843_has_no_host_freeze_delay(self, monkeypatch, tmp_path):
+        """Production capture must always request the firmware-frozen boundary ring immediately."""
         captured = {}
         calibration = Calibration.identity()
 
@@ -103,9 +103,9 @@ class TestIWR6843ShotIntegration:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
                 self.port = "/dev/ttyUSB0"
-                self.freeze_delay_s = kwargs["freeze_delay_s"]
 
-            def start(self):
+            def start(self, *, armed=True):
+                captured["armed"] = armed
                 return None
 
             def stop(self):
@@ -131,10 +131,10 @@ class TestIWR6843ShotIntegration:
             net_range_m=4.6,
             tx_order="auto",
             capture_timeout_s=12.0,
-            freeze_delay_s=0.0,
         )
 
-        assert captured["freeze_delay_s"] == 0.0
+        assert "freeze_delay_s" not in captured
+        assert captured["armed"] is False
         server_module.iwr6843_runtime = None
 
     def test_accepted_lcmf_angle_is_applied_to_existing_shot_contract(self, monkeypatch):
