@@ -993,7 +993,6 @@ def init_iwr6843(
     net_range_m: float | None,
     tx_order: str,
     capture_timeout_s: float,
-    freeze_delay_s: float = 0.05,
     tilt_deg: float | None = None,
     radar_height_m: float | None = None,
     ball_height_m: float = 0.04,
@@ -1026,9 +1025,10 @@ def init_iwr6843(
             output_dir=output_dir,
             port=port,
             gpio_pin=trigger_pin,
-            freeze_delay_s=freeze_delay_s,
         )
-        capture_monitor.start()
+        # OPS initialization can pulse the shared sound gate. Configure TI now,
+        # but do not accept edges until the OPS trigger path is fully running.
+        capture_monitor.start(armed=False)
         iwr6843_runtime = IWR6843Runtime(
             capture_monitor=capture_monitor,
             calibration=calibration,
@@ -1050,15 +1050,14 @@ def init_iwr6843(
             "radar_height_m": calibration.radar_height_m,
             "ball_height_m": calibration.tee_ball_height_m,
             "capture_timeout_s": capture_timeout_s,
-            "freeze_delay_ms": round(1000.0 * capture_monitor.freeze_delay_s, 3),
+            "freeze_delay_ms": 0.0,
             "output_dir": str(Path(output_dir).expanduser()),
         }
         logger.info(
             "[SERVER] IWR6843 initialized "
-            "(port=%s, BCM%d, estimator=LCMF-v1, freeze delay=%.0f ms)",
+            "(port=%s, BCM%d, estimator=LCMF-v1, firmware boundary freeze)",
             capture_monitor.port,
             trigger_pin,
-            1000.0 * capture_monitor.freeze_delay_s,
         )
         return True
     except Exception as error:  # pylint: disable=broad-exception-caught
@@ -2517,6 +2516,8 @@ def start_monitor(
             live_callback=on_live_reading,
             diagnostic_callback=on_trigger_diagnostic,
         )
+        if iwr6843_runtime is not None:
+            iwr6843_runtime.capture_monitor.arm()
     else:
         monitor.start(shot_callback=on_shot_detected, live_callback=on_live_reading)
 
@@ -2935,15 +2936,6 @@ def main():
         help="Maximum seconds an OPS shot waits for its TI UART dump (default: 12)",
     )
     parser.add_argument(
-        "--iwr6843-freeze-delay-ms",
-        type=float,
-        default=50.0,
-        help=(
-            "Delay after the sound edge before requesting a TI ring freeze "
-            "(default: 50; use 0 for boundary-frozen HWA snapshot firmware)"
-        ),
-    )
-    parser.add_argument(
         "--iwr6843-output-dir",
         default=None,
         help="Raw TI dump directory (default: <session-log-dir>/iwr6843)",
@@ -3129,9 +3121,6 @@ def main():
         parser.error("--iwr6843 already owns BCM GPIO; use the default --trigger sound")
     if args.iwr6843 and (args.iwr6843_tee_m <= 0 or args.iwr6843_net_m <= 0):
         parser.error("--iwr6843-tee-m and --iwr6843-net-m must be positive")
-    if args.iwr6843_freeze_delay_ms < 0:
-        parser.error("--iwr6843-freeze-delay-ms must be nonnegative")
-
     global experimental_kld7_radc_tuning
     global experimental_kld7_raw_radc_logging
     global active_kld7_radc_tuning
@@ -3252,7 +3241,6 @@ def main():
             net_range_m=args.iwr6843_net_m,
             tx_order=args.iwr6843_tx_order,
             capture_timeout_s=args.iwr6843_capture_timeout,
-            freeze_delay_s=args.iwr6843_freeze_delay_ms / 1000.0,
             tilt_deg=args.iwr6843_tilt_deg,
             radar_height_m=args.iwr6843_radar_height_m,
             ball_height_m=args.iwr6843_ball_height_m,

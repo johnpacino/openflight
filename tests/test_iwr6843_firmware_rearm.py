@@ -17,14 +17,14 @@ def _function_source(source: str, name: str, next_name: str) -> str:
     return source[start:end]
 
 
-def test_hwa_dump_freezes_only_after_requested_post_trigger_frames():
+def test_hwa_dump_stops_at_boundary_before_streaming():
     source = FIRMWARE.read_text(encoding="utf-8")
     dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
 
-    freeze = dump.index("l3_freezeHwaAfterPostFrames")
-    stop = dump.index("MMWave_stop")
+    stop = dump.index("l3_stopCaptureAtBoundary")
+    stream = dump.index("UART_writePolling")
 
-    assert freeze < stop
+    assert stop < stream
 
 
 def test_hwa_chain_processes_and_rearms_one_frame_at_a_time():
@@ -67,6 +67,30 @@ def test_freeze_request_keeps_rearming_until_post_trigger_target():
     assert "gRingFrame >= gHwaFreezeTargetFrame" in queue
     assert "Semaphore_post(gHwaFreezeSemaphore)" in queue
     assert "gHwaFreezeTargetFrame = gRingFrame + HWA_POST_TRIGGER_FRAMES" in freeze
+
+
+def test_sensor_stop_uses_completed_frame_boundary_before_teardown():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    stop_helper = _function_source(
+        source,
+        "static int32_t l3_stopCaptureAtBoundary",
+        "static int32_t l3_armHwaChain",
+    )
+    sensor_stop = _function_source(
+        source,
+        "static int32_t l3_cli_sensorStop",
+        "static void l3_initTask",
+    )
+
+    freeze = stop_helper.index("l3_freezeHwaAfterPostFrames")
+    rf_stop = stop_helper.index("MMWave_stop")
+    hwa_disable = stop_helper.index("HWA_enable(gHwaHandle, 0U)")
+    inactive = stop_helper.index("gCaptureActive = 0U")
+
+    assert freeze < rf_stop < hwa_disable < inactive
+    assert "if (MMWave_stop(gMMWaveHandle, &errCode) < 0)" in stop_helper
+    assert "if (!gCaptureActive)" in sensor_stop
+    assert "return l3_stopCaptureAtBoundary()" in sensor_stop
 
 
 def test_dump_header_rotates_from_oldest_completed_frame():
@@ -126,7 +150,7 @@ def test_window53_12_loop_18_frame_build_uses_balanced_geometry():
     assert "--define=SNAPSHOT_MIDDLE_BIN_START=32" in target
     assert "--define=SNAPSHOT_LATE_BIN_START=47" in target
     assert "--define=SNAPSHOT_BINS=53" in target
-    assert "l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v1.bin" in target
+    assert "l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v2.bin" in target
 
 
 def test_window53_12_loop_18_frame_config_matches_firmware_geometry():

@@ -33,7 +33,6 @@ IWR6843_RADAR_HEIGHT_M=""
 IWR6843_BALL_HEIGHT_M=""
 IWR6843_TX_ORDER=""
 IWR6843_CAPTURE_TIMEOUT=""
-IWR6843_FREEZE_DELAY_MS=""
 IWR6843_OUTPUT_DIR=""
 KLD7=false
 KLD7_PORT=""
@@ -173,10 +172,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --iwr6843-capture-timeout)
             IWR6843_CAPTURE_TIMEOUT="$2"
-            shift 2
-            ;;
-        --iwr6843-freeze-delay-ms)
-            IWR6843_FREEZE_DELAY_MS="$2"
             shift 2
             ;;
         --iwr6843-output-dir)
@@ -449,7 +444,6 @@ if [ "$IWR6843" = true ]; then
     [ -n "$IWR6843_BALL_HEIGHT_M" ] && SERVER_CMD="$SERVER_CMD --iwr6843-ball-height-m $IWR6843_BALL_HEIGHT_M"
     [ -n "$IWR6843_TX_ORDER" ] && SERVER_CMD="$SERVER_CMD --iwr6843-tx-order $IWR6843_TX_ORDER"
     [ -n "$IWR6843_CAPTURE_TIMEOUT" ] && SERVER_CMD="$SERVER_CMD --iwr6843-capture-timeout $IWR6843_CAPTURE_TIMEOUT"
-    [ -n "$IWR6843_FREEZE_DELAY_MS" ] && SERVER_CMD="$SERVER_CMD --iwr6843-freeze-delay-ms $IWR6843_FREEZE_DELAY_MS"
     [ -n "$IWR6843_OUTPUT_DIR" ] && SERVER_CMD="$SERVER_CMD --iwr6843-output-dir $IWR6843_OUTPUT_DIR"
 fi
 

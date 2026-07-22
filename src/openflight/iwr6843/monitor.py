@@ -17,7 +17,7 @@ from openflight.iwr6843.dump import HEADER, parse_header, payload_nbytes
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_FREEZE_DELAY_S = 0.05
+_GRACEFUL_DUMP_SHUTDOWN_S = 8.0
 
 
 def tx_order_from_config(config_path: str | Path) -> str:
@@ -34,10 +34,7 @@ def tx_order_from_config(config_path: str | Path) -> str:
         return "reversed"
     if masks == ["1", "2", "4"]:
         return "normal"
-    raise ValueError(
-        "IWR6843 config must contain chirp TX masks 1/4, 4/1, or 1/2/4, "
-        f"got {masks}"
-    )
+    raise ValueError(f"IWR6843 config must contain chirp TX masks 1/4, 4/1, or 1/2/4, got {masks}")
 
 
 @dataclass(frozen=True)
@@ -76,19 +73,16 @@ class IWR6843CaptureMonitor:
         radar: IWR6843Radar | None = None,
         button_factory: Callable | None = None,
         match_tolerance_s: float = 0.75,
-        freeze_delay_s: float = DEFAULT_FREEZE_DELAY_S,
     ):
-        if freeze_delay_s < 0:
-            raise ValueError("freeze_delay_s must be nonnegative")
         self.config_path = Path(config_path)
         self.output_dir = Path(output_dir).expanduser()
         self.gpio_pin = gpio_pin
         self.match_tolerance_s = match_tolerance_s
-        self.freeze_delay_s = freeze_delay_s
         self.radar = radar or IWR6843Radar(port=port)
         self._button_factory = button_factory
         self._button = None
         self._running = False
+        self._armed = False
         self._capture_active = False
         self._sequence = 0
         self._last_edge_timestamp = 0.0
@@ -102,8 +96,8 @@ class IWR6843CaptureMonitor:
         """Connected TI serial port."""
         return self.radar.port
 
-    def start(self) -> None:
-        """Configure the radar, register GPIO17, and arm capture."""
+    def start(self, *, armed: bool = True) -> None:
+        """Configure the radar and GPIO, optionally arming trigger capture."""
         if self._running:
             return
         if not self.config_path.is_file():
@@ -121,13 +115,14 @@ class IWR6843CaptureMonitor:
             # which previously cost the first 50 ms of ball flight.
             self._button = button_factory(self.gpio_pin, pull_up=False, bounce_time=None)
             self._running = True
-            self._button.when_pressed = self.notify_trigger
             self._worker = threading.Thread(
                 target=self._capture_loop,
                 name="iwr6843-capture",
                 daemon=True,
             )
             self._worker.start()
+            if armed:
+                self.arm()
         except Exception:
             self._running = False
             if self._button is not None:
@@ -136,15 +131,28 @@ class IWR6843CaptureMonitor:
             self.radar.close()
             raise
         logger.info(
-            "[IWR6843] Armed on BCM%d using %s (%s)",
+            "[IWR6843] Configured on BCM%d using %s (%s%s)",
             self.gpio_pin,
             self.port,
             self.config_path.name,
+            ", armed" if self._armed else ", waiting for OPS",
         )
+
+    def arm(self) -> None:
+        """Accept GPIO edges after the OPS trigger path is fully initialized."""
+        if not self._running:
+            raise RuntimeError("cannot arm an IWR6843 monitor that is not running")
+        if self._armed:
+            return
+        # Attach while logically disarmed so a line already high from OPS
+        # startup cannot synchronously create a false capture.
+        self._button.when_pressed = self.notify_trigger
+        self._armed = True
+        logger.info("[IWR6843] Armed on BCM%d", self.gpio_pin)
 
     def notify_trigger(self, timestamp: float | None = None) -> bool:
         """Queue a GPIO edge without doing serial work in the callback."""
-        if not self._running:
+        if not self._running or not self._armed:
             return False
         edge_timestamp = time.time() if timestamp is None else float(timestamp)
         with self._condition:
@@ -189,13 +197,9 @@ class IWR6843CaptureMonitor:
             error = None
             try:
                 logger.info(
-                    "[IWR6843] Trigger #%d: waiting %.0f ms for late flight",
+                    "[IWR6843] Trigger #%d: dumping firmware-frozen L3 ring",
                     sequence,
-                    1000.0 * self.freeze_delay_s,
                 )
-                if self.freeze_delay_s:
-                    time.sleep(self.freeze_delay_s)
-                logger.info("[IWR6843] Trigger #%d: dumping L3 ring", sequence)
                 raw = self.radar.read_dump()
                 self._validate_dump(raw)
                 path = self._capture_path(sequence, edge_timestamp)
@@ -282,26 +286,35 @@ class IWR6843CaptureMonitor:
         """Release GPIO, serial transport, and worker resources."""
         if not self._running:
             return
+        self._armed = False
         self._running = False
         if self._button is not None:
+            self._button.when_pressed = None
             self._button.close()
             self._button = None
-        # Closing serial interrupts an in-flight read_dump before worker join.
         try:
-            self.radar.close()
-        finally:
-            try:
-                self._events.put_nowait(None)
-            except queue.Full:
-                pass
-            if self._worker is not None:
+            self._events.put_nowait(None)
+        except queue.Full:
+            pass
+        if self._worker is not None:
+            # Keep UART open long enough for a normal 550 KiB dump to finish.
+            # Closing it first strands the firmware in an abandoned transfer.
+            self._worker.join(timeout=_GRACEFUL_DUMP_SHUTDOWN_S)
+            if self._worker.is_alive():
+                logger.warning(
+                    "[IWR6843] Active dump did not finish during shutdown; forcing serial close"
+                )
+                self.radar.close()
                 self._worker.join(timeout=2.0)
-                self._worker = None
+            else:
+                self.radar.close()
+            self._worker = None
+        else:
+            self.radar.close()
         logger.info("[IWR6843] Capture monitor stopped")
 
 
 __all__ = [
-    "DEFAULT_FREEZE_DELAY_S",
     "IWR6843Capture",
     "IWR6843CaptureMonitor",
     "tx_order_from_config",

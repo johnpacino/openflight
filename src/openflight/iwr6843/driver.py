@@ -11,9 +11,11 @@ Gotchas baked in (each cost a debugging session):
 - The CP2105 can stall a stream for seconds (cp210x -110 control timeouts)
   and resume; the reader waits out gaps up to ``stall_tolerance_s``.
 """
+
 from __future__ import annotations
 
 import glob
+import logging
 import time
 
 import serial
@@ -22,6 +24,8 @@ from openflight.iwr6843.dump import HEADER, MAGIC, parse_header, payload_nbytes
 
 BAUD = 1_041_667
 _PORT_GLOBS = ("/dev/ttyUSB*", "/dev/tty.SLAB_USBtoUART*")
+
+logger = logging.getLogger(__name__)
 
 
 def open_port(port: str, baud: int = BAUD, timeout: float = 0.3) -> serial.Serial:
@@ -41,8 +45,7 @@ class IWR6843Radar:
         if port is None:
             port = self.detect_port(baud)
             if port is None:
-                raise RuntimeError(
-                    "no IWR6843 CLI found — board on, flashed, single-port fw?")
+                raise RuntimeError("no IWR6843 CLI found — board on, flashed, single-port fw?")
         self.port = port
         self.ser = open_port(port, baud)
 
@@ -82,13 +85,63 @@ class IWR6843Radar:
                 break
         return resp.decode(errors="replace")
 
+    def drain_stale_output(
+        self,
+        *,
+        max_wait_s: float = 10.0,
+        initial_quiet_s: float = 0.25,
+        stream_quiet_s: float = 4.25,
+    ) -> int:
+        """Drain an abandoned binary dump before sending configuration commands.
+
+        If a host process exits during ``l3dump``, the firmware can still be
+        writing the old payload through the CP2105. Commands sent into that
+        stream are not safe to associate with their responses. Once bytes are
+        observed, tolerate the bridge's known multi-second stalls before
+        declaring the stream quiet.
+        """
+        drained = 0
+        saw_data = False
+        start = time.monotonic()
+        last_data = start
+        while time.monotonic() - start < max_wait_s:
+            waiting = self.ser.in_waiting
+            if waiting:
+                chunk = self.ser.read(min(waiting, 4096))
+                if chunk:
+                    drained += len(chunk)
+                    saw_data = True
+                    last_data = time.monotonic()
+                    continue
+            quiet_s = stream_quiet_s if saw_data else initial_quiet_s
+            if time.monotonic() - last_data >= quiet_s:
+                break
+            time.sleep(0.01)
+        if drained:
+            logger.warning(
+                "[IWR6843] Drained %d stale UART bytes before configuration",
+                drained,
+            )
+        return drained
+
+    @staticmethod
+    def _require_done(command: str, response: str) -> None:
+        if "Error" in response:
+            raise RuntimeError(f"config rejected: {command!r}: {response.strip()}")
+        if "Done" not in response:
+            raise RuntimeError(
+                f"IWR6843 did not acknowledge {command!r}; "
+                "the firmware may be wedged (press RESET and retry)"
+            )
+
     def send_config(self, cfg_path: str) -> None:
         """sensorStop, then stream the cfg (ends in sensorStart); raise on Error.
 
         The firmware's geometry guard rejects a cfg whose loops/samples don't
         match the flashed build — that surfaces here as RuntimeError.
         """
-        self.cmd("sensorStop", 3.0)
+        self.drain_stale_output()
+        self._require_done("sensorStop", self.cmd("sensorStop", 3.0))
         with open(cfg_path, encoding="utf-8") as cfg:
             for rawline in cfg:
                 line = rawline.strip()
@@ -96,11 +149,13 @@ class IWR6843Radar:
                     continue
                 window = 6.0 if line.startswith("sensorStart") else 1.5
                 resp = self.cmd(line, window)
-                if "Error" in resp:
-                    raise RuntimeError(f"config rejected: {line!r}: {resp.strip()}")
+                self._require_done(line, resp)
+        health = self.stats()
+        self._require_done("stats", health)
+        if "active=1" not in health:
+            raise RuntimeError(f"IWR6843 did not enter active capture mode: {health.strip()}")
 
-    def read_dump(self, timeout_s: float = 40.0,
-                  stall_tolerance_s: float = 4.0) -> bytes:
+    def read_dump(self, timeout_s: float = 40.0, stall_tolerance_s: float = 4.0) -> bytes:
         """Fire `l3dump` and return one complete dump (best effort on stalls).
 
         Syncs on the ILD1 magic past the CLI echo and sizes the read from the

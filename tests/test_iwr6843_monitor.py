@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import numpy as np
@@ -80,7 +81,7 @@ def test_capture_monitor_matches_gpio_edge_to_ops_impact(tmp_path):
     assert radar.closed
 
 
-def test_capture_monitor_waits_for_late_flight_before_freezing_ring(tmp_path):
+def test_capture_monitor_can_configure_before_arming_gpio(tmp_path):
     config = tmp_path / "radar.cfg"
     config.write_text("sensorStart\n", encoding="utf-8")
     radar = FakeRadar(_raw_dump())
@@ -89,19 +90,62 @@ def test_capture_monitor_waits_for_late_flight_before_freezing_ring(tmp_path):
         output_dir=tmp_path / "dumps",
         radar=radar,
         button_factory=FakeButton,
-        freeze_delay_s=0.05,
+    )
+    monitor.start(armed=False)
+
+    edge = time.time()
+    assert not monitor.notify_trigger(edge)
+    assert monitor._button.when_pressed is None  # pylint: disable=protected-access
+
+    monitor.arm()
+    assert monitor._button.when_pressed == monitor.notify_trigger  # pylint: disable=protected-access
+    assert monitor.notify_trigger(edge)
+    assert monitor.capture_for_shot(edge, timeout_s=1.0).valid
+    monitor.stop()
+
+
+def test_capture_monitor_finishes_active_dump_before_closing_serial(tmp_path):
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+
+    class BlockingRadar(FakeRadar):
+        def __init__(self, raw):
+            super().__init__(raw)
+            self.read_started = threading.Event()
+            self.release_read = threading.Event()
+            self.closed_before_read_finished = False
+
+        def read_dump(self):
+            self.read_started.set()
+            self.release_read.wait(timeout=1.0)
+            return self.raw
+
+        def close(self):
+            self.closed_before_read_finished = not self.release_read.is_set()
+            # Unblock the old close-before-join implementation so this test fails fast.
+            self.release_read.set()
+            super().close()
+
+    radar = BlockingRadar(_raw_dump())
+    monitor = IWR6843CaptureMonitor(
+        config_path=config,
+        output_dir=tmp_path / "dumps",
+        radar=radar,
+        button_factory=FakeButton,
     )
     monitor.start()
+    assert monitor.notify_trigger(time.time())
+    assert radar.read_started.wait(timeout=0.5)
 
-    notified_at = time.monotonic()
-    edge = time.time()
-    assert monitor.notify_trigger(edge)
-    capture = monitor.capture_for_shot(edge, timeout_s=1.0)
+    stopper = threading.Thread(target=monitor.stop)
+    stopper.start()
+    time.sleep(0.05)
+    radar.release_read.set()
+    stopper.join(timeout=1.0)
 
-    assert capture is not None and capture.valid
-    assert radar.read_started_at is not None
-    assert radar.read_started_at - notified_at >= 0.045
-    monitor.stop()
+    assert not stopper.is_alive()
+    assert not radar.closed_before_read_finished
+    assert radar.closed
 
 
 def test_capture_monitor_discards_stale_false_trigger(tmp_path):
