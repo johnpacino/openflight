@@ -50,7 +50,7 @@ angle and experimental club path.
 
 > **⚠️ The K-LD7 angle radars are deprecated.** The supported angle radar is now the **TI IWR6843**. Don't buy K-LD7s for a new build; their software support remains for existing builds only. See the [full parts list](docs/PARTS.md) for details and links.
 
-> **The IWR6843 needs custom firmware** — the stock TI demo doesn't expose the raw radar cube OpenFlight needs. A validated prebuilt image ships in `firmware/releases/`, so flashing it doesn't require the TI toolchain. See the [IWR6843 Operator Guide](docs/iwr6843/README.md).
+> **The IWR6843 needs custom firmware** — the stock TI demo doesn't expose the raw radar cube OpenFlight needs. A validated prebuilt image ships in `firmware/releases/` and flashing it needs no TI toolchain. Building a *new* firmware version does: it needs Docker and TI's license-gated installers, covered in the [Firmware Developer Guide](firmware/README.md). See the [IWR6843 Operator Guide](docs/iwr6843/README.md) to wire and flash.
 
 ## Getting Started
 
@@ -311,7 +311,7 @@ uv run pytest tests/ -v
 - **[IWR6843 Operator Guide](docs/iwr6843/README.md)** — Wire, flash, mount, aim, and calibrate the angle radar
 - **[LIS3DH Inclinometer Setup](docs/inclinometer/README.md)**: Add enclosure-level compensation to IWR6843 tilt
 - **[OPS243 USB → GPIO UART Migration](docs/ops243-uart-migration.md)** — Required before adding the IWR6843
-- **[IWR6843 Firmware Developer Guide](firmware/README.md)** — Build the firmware from source (not needed to flash the prebuilt image)
+- **[IWR6843 Firmware Developer Guide](firmware/README.md)** — Build the firmware from source; needs Docker plus TI's installers (not needed to flash the prebuilt image)
 - **[Simulator Connectors](docs/simulator/README.md)** — Stream shots to GSPro, OpenGolfSim, and others
 - **[Cloud Sync](docs/cloud-sync.md)** — Push filtered sessions to FlightWeb
 - **[Rolling Buffer & Spin Detection](docs/rolling_buffer_spin_detection.md)** — Production capture and experimental spin details

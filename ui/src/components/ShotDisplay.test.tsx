@@ -37,4 +37,63 @@ describe('ShotDisplay', () => {
     expect(html).toContain('experimental');
     expect(html).not.toContain('metric-card__confidence-dots');
   });
+
+  // The IWR6843 supplies these three: club path and horizontal launch from the
+  // TX2 baseline, attack angle from the vertical array. Each card is
+  // conditional on its value being non-null, because the radar rejects a
+  // measurement far more often than it produces one -- so both branches need
+  // pinning, or a card can silently stop rendering.
+  describe('radar angle cards', () => {
+    const withAngles: Shot = {
+      ...experimentalShot,
+      club_angle_deg: -4.3,
+      club_path_deg: 2.6,
+      launch_angle_horizontal: -1.8,
+      launch_angle_confidence: 0.83,
+      angle_source: 'radar',
+    };
+
+    it('renders club path with an explicit sign', () => {
+      const html = renderToString(<ShotDisplay shot={withAngles} />);
+
+      expect(html).toContain('Club Path');
+      expect(html).toContain('+2.6');
+    });
+
+    it('renders a negative club path without a spurious plus', () => {
+      const html = renderToString(
+        <ShotDisplay shot={{ ...withAngles, club_path_deg: -2.6 }} />,
+      );
+
+      expect(html).toContain('Club Path');
+      expect(html).toContain('-2.6');
+      expect(html).not.toContain('+-2.6');
+    });
+
+    it('renders horizontal launch and attack angle', () => {
+      const html = renderToString(<ShotDisplay shot={withAngles} />);
+
+      expect(html).toContain('H. Launch');
+      expect(html).toContain('-1.8');
+      expect(html).toContain('Club AoA');
+      expect(html).toContain('-4.3');
+    });
+
+    it('omits each card when the radar produced no measurement', () => {
+      const html = renderToString(
+        <ShotDisplay
+          shot={{
+            ...withAngles,
+            club_path_deg: null,
+            launch_angle_horizontal: null,
+            club_angle_deg: null,
+          }}
+        />,
+      );
+
+      expect(html).not.toContain('Club Path');
+      expect(html).not.toContain('H. Launch');
+      expect(html).not.toContain('Club AoA');
+    });
+  });
 });

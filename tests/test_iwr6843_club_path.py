@@ -15,15 +15,31 @@ import math
 import numpy as np
 import pytest
 
-from openflight.iwr6843 import club, doa
+from openflight.iwr6843 import club, doa, tracking
 from openflight.iwr6843.calibration import Calibration
-from openflight.iwr6843.dump import SAMPLE_RANGE_FFT_IQ16, pack_dump
-from openflight.iwr6843.shot import TX2_LOOP_PERIOD_S
+from openflight.iwr6843.dump import SAMPLE_RANGE_FFT_IQ16, pack_dump, parse_dump
+from openflight.iwr6843.shot import (
+    TX2_LOOP_PERIOD_S,
+    geometry_from_header,
+    is_range_snapshot,
+    project_tx_pair,
+)
 
 FRAME_PERIOD_S = 4e-3
+# The fixture's club crosses the tee at this instant; estimate_club_path is
+# told the impact time rather than inferring it from a ring slot.
+IMPACT_S = club.PRE_IMPACT_FRAMES * FRAME_PERIOD_S
+# The fixture's club speed and the OPS club speed handed to the estimator must
+# agree, or the projection gate rejects the fixture rather than the defect
+# under test. The synthetic club travels almost straight down the boresight, so
+# its projection factor is ~cos(path_deg), i.e. ~1.0.
+CLUB_SPEED_MS = 22.0
+OPS_CLUB_MPH = CLUB_SPEED_MS * 2.23694
 
 
-def _synth_club(path_deg, *, club_speed_ms=22.0, tee_range_m=1.372, n_samples=128):
+def _synth_club(
+    path_deg, *, club_speed_ms=CLUB_SPEED_MS, tee_range_m=1.372, n_samples=128, t_impact_s=None
+):
     """A club head on a straight line through the tee at the moment of impact.
 
     Built in Cartesian space, not by asserting an azimuth rate directly:
@@ -51,9 +67,11 @@ def _synth_club(path_deg, *, club_speed_ms=22.0, tee_range_m=1.372, n_samples=12
     A real target survives MTI because it keeps moving sub-bin during the
     burst, which is precisely this phase term.
 
-    impact happens at slot-order club.PRE_IMPACT_FRAMES (see
-    club.pre_impact_window_s), i.e. t_impact = PRE_IMPACT_FRAMES *
-    frame_period_s from the oldest retained frame.
+    Impact happens at ``t_impact_s`` from the oldest retained frame,
+    defaulting to IMPACT_S. It is a free parameter because impact's real
+    position in the ring varies shot to shot (the freeze is requested by a
+    UART command), which is exactly what estimate_club_path must be told
+    rather than assume.
 
     The dump MUST declare sample_fmt=SAMPLE_RANGE_FFT_IQ16. Writing an
     amplitude spike at a range bin produces range-domain data, and this
@@ -64,7 +82,7 @@ def _synth_club(path_deg, *, club_speed_ms=22.0, tee_range_m=1.372, n_samples=12
     """
     n_frames, loops, n_rx, n_tx = 18, 12, 4, 3
     res = 6.0 / n_samples
-    t_impact = club.PRE_IMPACT_FRAMES * FRAME_PERIOD_S
+    t_impact = IMPACT_S if t_impact_s is None else t_impact_s
     path_rad = math.radians(path_deg)
     v_x = club_speed_ms * math.cos(path_rad)
     v_y = club_speed_ms * math.sin(path_rad)
@@ -119,7 +137,7 @@ def test_recovers_known_path(path_deg):
     angles.
     """
     result = club.estimate_club_path(
-        _synth_club(path_deg), _cal(), ops_club_speed_mph=74.0, tdm_sign=1
+        _synth_club(path_deg), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
     assert result.status == "accepted", result.status
     assert result.path_deg == pytest.approx(path_deg, abs=0.4)
@@ -128,27 +146,27 @@ def test_recovers_known_path(path_deg):
 def test_sign_convention_is_in_to_out_positive():
     """A club moving rightward relative to the target line reads positive."""
     out_in = club.estimate_club_path(
-        _synth_club(-6.0), _cal(), ops_club_speed_mph=74.0, tdm_sign=1
+        _synth_club(-6.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
     in_out = club.estimate_club_path(
-        _synth_club(6.0), _cal(), ops_club_speed_mph=74.0, tdm_sign=1
+        _synth_club(6.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
     assert in_out.path_deg > 0 > out_in.path_deg
 
 
 def test_aim_offset_is_added():
     without = club.estimate_club_path(
-        _synth_club(0.0), _cal(), ops_club_speed_mph=74.0, tdm_sign=1
+        _synth_club(0.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
     with_offset = club.estimate_club_path(
-        _synth_club(0.0), _cal(), ops_club_speed_mph=74.0, tdm_sign=1, aim_offset_deg=2.0
+        _synth_club(0.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1, aim_offset_deg=2.0
     )
     assert with_offset.path_deg == pytest.approx(without.path_deg + 2.0, abs=0.01)
 
 
 def test_result_serialises():
     result = club.estimate_club_path(
-        _synth_club(3.0), _cal(), ops_club_speed_mph=74.0, tdm_sign=1
+        _synth_club(3.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
     payload = result.to_dict()
     assert payload["status"] == "accepted"
@@ -172,7 +190,7 @@ def test_two_tx_dump_is_rejected():
     cube[:, :, :, 30] = 1000.0
     raw = pack_dump(cube, n_tx=2, version=3, frame_period_us=4000,
                     sample_fmt=SAMPLE_RANGE_FFT_IQ16)
-    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=74.0)
+    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S)
     assert result.status == "rejected_requires_three_tx"
     assert result.path_deg is None
 
@@ -181,7 +199,7 @@ def test_empty_dump_reports_no_club_track():
     cube = np.zeros((18, 36, 4, 128), dtype=complex)
     raw = pack_dump(cube, n_tx=3, version=3, frame_period_us=4000,
                     sample_fmt=SAMPLE_RANGE_FFT_IQ16)
-    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=74.0)
+    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S)
     assert result.status == "rejected_no_club_track"
     assert result.path_deg is None
 
@@ -189,7 +207,7 @@ def test_empty_dump_reports_no_club_track():
 def test_club_speed_mismatch_is_rejected():
     """A 22 m/s radial track cannot belong to a 20 mph club."""
     result = club.estimate_club_path(
-        _synth_club(0.0), _cal(), ops_club_speed_mph=20.0, tdm_sign=1
+        _synth_club(0.0), _cal(), ops_club_speed_mph=20.0, impact_t_s=IMPACT_S, tdm_sign=1
     )
     assert result.status == "rejected_club_speed_mismatch"
     assert result.path_deg is None
@@ -199,7 +217,7 @@ def test_club_speed_mismatch_is_rejected():
 def test_rejections_carry_their_evidence():
     """A threshold that rejects a value must record the value it rejected."""
     result = club.estimate_club_path(
-        _synth_club(0.0), _cal(), ops_club_speed_mph=20.0, tdm_sign=1
+        _synth_club(0.0), _cal(), ops_club_speed_mph=20.0, impact_t_s=IMPACT_S, tdm_sign=1
     )
     payload = result.to_dict()
     assert payload["range_rate_ms"] is not None
@@ -207,19 +225,120 @@ def test_rejections_carry_their_evidence():
 
 
 def test_short_ring_reports_no_pre_impact_frames():
-    """A ring with no pre-impact window cannot produce club path."""
+    """Impact beyond the end of the ring cannot produce club path.
+
+    A 4-frame ring spans 16 ms, so an impact at IMPACT_S (24 ms) is not in
+    this capture at all and no approach history can be extracted from it.
+    """
     cube = np.zeros((4, 36, 4, 128), dtype=complex)
     cube[:, :, :, 30] = 1000.0
     raw = pack_dump(cube, n_tx=3, version=3, frame_period_us=4000,
                     sample_fmt=SAMPLE_RANGE_FFT_IQ16)
-    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=74.0)
+    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S)
     assert result.status == "rejected_no_pre_impact_frames"
+
+
+def test_impact_at_ring_start_reports_no_pre_impact_frames():
+    """Impact at slot 0 means no approach history was retained."""
+    result = club.estimate_club_path(
+        _synth_club(0.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=0.0, tdm_sign=1
+    )
+    assert result.status == "rejected_no_pre_impact_frames"
+    assert result.path_deg is None
+
+
+def test_missing_impact_time_is_rejected():
+    """Without a located impact there is nothing to anchor the window to.
+
+    The caller derives this from the ball's own range walk
+    (shot.impact_time_s). When the ball tracker produced nothing usable, club
+    path must decline rather than fall back to a fixed ring slot -- guessing
+    the slot is the defect this whole change exists to remove.
+    """
+    result = club.estimate_club_path(
+        _synth_club(0.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=None, tdm_sign=1
+    )
+    assert result.status == "rejected_no_impact_time"
+    assert result.path_deg is None
+
+
+@pytest.mark.parametrize("t_impact_s", [0.0134, 0.020, 0.030])
+def test_recovers_path_wherever_impact_lands(t_impact_s):
+    """The window must follow impact, not sit at a fixed ring slot.
+
+    0.0134 s is the median impact instant measured across the 2026-07-25
+    sessions -- a case the slot-anchored window got wrong on every real shot.
+    """
+    result = club.estimate_club_path(
+        _synth_club(5.0, t_impact_s=t_impact_s),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=t_impact_s,
+        tdm_sign=1,
+    )
+    assert result.status == "accepted", result.to_dict()
+    assert result.path_deg == pytest.approx(5.0, abs=0.5)
+
+
+def test_early_impact_starves_the_fit_rather_than_guessing():
+    """An impact too early in the ring leaves too few frames, and says so.
+
+    This is the residual limit that only more pre-trigger frames can fix, and
+    the reason RING_FRAMES moved 18 -> 25 (see the 2026-07-27 design doc). On
+    the old ring, impact at 10 ms leaves 3 frames against CLUB_MIN_FRAMES=4.
+    The estimator must decline and record the count it had, not stretch the
+    window past impact to manufacture one.
+    """
+    result = club.estimate_club_path(
+        _synth_club(5.0, t_impact_s=0.010),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=0.010,
+        tdm_sign=1,
+    )
+    assert result.status == "rejected_insufficient_snapshots"
+    assert result.path_deg is None
+    assert result.n_frames == 3, "the frame count that failed must be recorded"
+    assert result.n_snapshots > 0
+
+
+def test_window_handed_to_the_tracker_ends_at_impact(monkeypatch):
+    """The search window must never extend past impact.
+
+    Asserted on the window itself rather than on the recovered angle: this
+    fixture models unbroken straight-line motion, so post-impact samples lie
+    on the same line and a straddling window would still fit them. Real clubs
+    decelerate and the ball appears, which is what made the slot-anchored
+    window read the follow-through -- a synthetic fixture cannot reproduce
+    that, so pin the contract that prevents it instead.
+    """
+    seen: list[tuple[float, float]] = []
+    real_find_club = club.find_club
+
+    def spy(mti, geo, *, tee_range_m, window_s):
+        seen.append(window_s)
+        return real_find_club(mti, geo, tee_range_m=tee_range_m, window_s=window_s)
+
+    monkeypatch.setattr(club, "find_club", spy)
+    impact_s = 0.030  # far enough in that the window start is not clamped to 0
+    club.estimate_club_path(
+        _synth_club(5.0, t_impact_s=impact_s),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=impact_s,
+        tdm_sign=1,
+    )
+
+    assert seen, "find_club was never called"
+    lo, hi = seen[0]
+    assert hi == pytest.approx(impact_s), "window must end at impact"
+    assert lo == pytest.approx(impact_s - club.PRE_IMPACT_FRAMES * FRAME_PERIOD_S)
 
 
 def test_insufficient_snapshots_is_rejected(monkeypatch):
     monkeypatch.setattr(club, "CLUB_MIN_SNAPSHOTS", 10_000)
     result = club.estimate_club_path(
-        _synth_club(0.0), _cal(), ops_club_speed_mph=74.0, tdm_sign=1
+        _synth_club(0.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
     assert result.status == "rejected_insufficient_snapshots"
     assert result.n_snapshots > 0, "the count that failed must be recorded"
@@ -228,22 +347,23 @@ def test_insufficient_snapshots_is_rejected(monkeypatch):
 def test_azimuth_fit_residual_is_rejected(monkeypatch):
     monkeypatch.setattr(club, "CLUB_MAX_AZIMUTH_FIT_RESIDUAL_DEG", 1e-9)
     result = club.estimate_club_path(
-        _synth_club(4.0), _cal(), ops_club_speed_mph=74.0, tdm_sign=1
+        _synth_club(4.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
     assert result.status == "rejected_azimuth_fit"
     assert result.fit_residual_deg is not None
 
 
-def test_phase_wrap_is_rejected(monkeypatch):
-    """The true azimuth swing is ~0.04 rad; anything near a wrap is a bad track."""
-    monkeypatch.setattr(club, "CLUB_MAX_PHASE_SWING_RAD", 1e-6)
+def test_phase_span_is_rejected(monkeypatch):
+    """An azimuth swing beyond what a clubhead can travel is a broken track."""
+    monkeypatch.setattr(club, "CLUB_MAX_PHASE_SPAN_RAD", 1e-9)
     result = club.estimate_club_path(
-        _synth_club(4.0), _cal(), ops_club_speed_mph=74.0, tdm_sign=1
+        _synth_club(4.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
-    assert result.status == "rejected_phase_wrap"
+    assert result.status == "rejected_phase_span"
+    assert result.phase_span_rad is not None, "the span that failed must be recorded"
 
 
-def test_club_search_does_not_fit_the_ball(monkeypatch):
+def test_club_search_does_not_fit_the_ball():
     """A fast late mover must not be reported as club path.
 
     The ball's radial speed (40 m/s) sits inside CLUB_SPEED_BOUNDS_MS, so
@@ -262,7 +382,7 @@ def test_club_search_does_not_fit_the_ball(monkeypatch):
                 cube[frame, loop * n_tx : (loop + 1) * n_tx, :, bin_at] = 1000.0
     raw = pack_dump(cube, n_tx=n_tx, version=3, frame_period_us=4000, trigger_frame=0,
                     sample_fmt=SAMPLE_RANGE_FFT_IQ16)
-    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=74.0, tdm_sign=1)
+    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1)
     assert result.status != "accepted", (
         f"fitted a post-impact mover as club path: {result.to_dict()}"
     )
@@ -271,13 +391,16 @@ def test_club_search_does_not_fit_the_ball(monkeypatch):
         f"only appears after it), got {result.status}: {result.to_dict()}"
     )
 
-    # Prove it's the time window doing the excluding, not a broken fixture:
-    # widen the pre-impact window far enough to cover the ball's launch and
-    # confirm this exact mover IS findable once the window permits it.
-    monkeypatch.setattr(club, "PRE_IMPACT_FRAMES", n_frames - 2)
-    widened = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=74.0, tdm_sign=1)
-    assert widened.range_rate_ms is not None, (
-        "the ball's mover should be findable once the window covers its "
-        f"launch time, proving the window (not the fixture) excludes it; "
-        f"got {widened.to_dict()}"
+    # Prove the fixture is sound and it really is the club search excluding
+    # this mover, not a dud dump: the same cube yields a clean 40 m/s track
+    # once the gate and window are widened to admit it.
+    meta, cube = parse_dump(project_tx_pair(raw, (0, 2)))
+    geo = geometry_from_header(meta, loop_period_s=TX2_LOOP_PERIOD_S)
+    mti = tracking.mti_filter(cube, range_domain=is_range_snapshot(meta), geometry=geo)
+    wide = tracking.find_ball(
+        mti, geo, gates_m=((1.0, 5.0),), speed_bounds_ms=(20.0, 90.0), min_ball_ms=20.0
+    )
+    assert wide is not None and wide.speed_ms == pytest.approx(40.0, abs=3.0), (
+        "the fixture's mover must be trackable with gates that admit it, "
+        f"proving the club search (not a broken dump) excluded it; got {wide}"
     )
