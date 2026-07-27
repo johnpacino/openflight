@@ -33,7 +33,9 @@ class IWR6843Runtime:
     calibration: Calibration
     net_range_m: float | None
     tx_order: str = "normal"
-    capture_timeout_s: float = 12.0
+    # A 25-frame ring is 763,200 bytes; the UART link is saturated at
+    # 1,041,667 baud (measured 103,038 B/s), so one dump takes 7.4 s.
+    capture_timeout_s: float = 16.0
     azimuth_offset_deg: float = 0.0
     tdm_sign_policy: str = "positive"
 
@@ -73,6 +75,12 @@ class IWR6843Runtime:
                 capture.raw,
                 self.calibration,
                 ops_club_speed_mph=club_speed_mph,
+                # Where impact sits in the ring, from the ball's own range
+                # walk. The freeze is requested by a UART command, so the
+                # trigger frame lands late by a variable 2-4 frames and the
+                # slot cannot be assumed; None means the ball tracker gave
+                # nothing to anchor to and club path declines.
+                impact_t_s=getattr(measurement, "impact_t_s", None),
                 aim_offset_deg=self.azimuth_offset_deg,
                 tdm_sign=policy_sign if fallback else ball_sign,
             )

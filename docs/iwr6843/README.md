@@ -25,27 +25,37 @@ For firmware development, architecture, and build instructions, see
 Use these files together. Mixing a firmware binary and config from different
 variants will fail startup or produce the wrong capture geometry.
 
+> **v3 (25-frame) is the current image.** `..._18frames_4ms_v2.bin` is kept for
+> rollback but captures 18 frames (549,542-byte dumps), not the geometry below.
+> Rebuilding v3 from source needs Docker plus the TI installers -- see
+> [`firmware/README.md`](../../firmware/README.md).
+
 | Component | Current file or value |
 |---|---|
-| Firmware | `firmware/releases/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_temperature_report_20260731.bin` |
+| Firmware | `firmware/releases/l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin` |
 | Radar config | `config/iwr6843_l3dump_vTX2_window53_12l18f.cfg` |
 | Reference array calibration | `config/iwr6843_calibration_reference.json` |
 | Transmitters / receivers | 3 TX / 4 RX |
-| Capture | 12 loops, 18 frames, 4 ms frame spacing |
-| Trigger split | 6 pre-trigger frames, 12 post-trigger frames |
+| Capture | 12 loops, 25 frames, 4 ms frame spacing (13 pre-trigger, 12 post) |
 | Saved range data | 53 complex range bins per frame with moving early/middle/late windows |
-| Complete dump size | 549,566 bytes, including header, temperature report, and per-frame window metadata |
+| Complete dump size | 763,245 bytes, including header and per-frame window metadata |
 
-The validated firmware SHA-256 is:
+The v3 firmware SHA-256 is:
 
 ```text
-8a87593954fd5ae2b7adf709c78626f81a87b8988b8dc28f2b2be7b5c99eac12
+b7c5a6828853b695f0d12c3a6f0c22d15ef8fa5f3f1639473d1c165102b109aa
 ```
 
-On the Pi, verify the checked-in image with:
+Verify it on the Pi before flashing:
 
 ```bash
-sha256sum firmware/releases/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_temperature_report_20260731.bin
+sha256sum firmware/releases/l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin
+```
+
+For reference, the checked-in v2 (18-frame) rollback image is:
+
+```text
+3045bb2f087b40c228bf1dd5190cf3fac6dbde50682c7927e86714314b0e7fcb  l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_v2.bin
 ```
 
 Release filenames track build identity, while the dump header carries the wire
@@ -345,7 +355,7 @@ command will ask for another RESET after it opens the UART.
 
 ```bash
 uv run python firmware/flash_iwr6843.py \
-  firmware/releases/l3_dump_vTX2_hwa_window53_12loops_18frames_4ms_temperature_report_20260731.bin \
+  firmware/releases/l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin \
   --port /dev/ttyUSB0
 ```
 
@@ -751,11 +761,11 @@ until power, ports, firmware, config, and geometry are verified.
 |---|---|---|
 | `no IWR6843 CLI found` | Wrong USB interface, board still in flash mode, missing functional RESET, stale serial owner, or unstable power | Set functional switches, press RESET, verify interface `00`, stop serial processes, then retry with explicit `--iwr6843-port` |
 | `GPIO busy` | Another kiosk, calibration, or shot-test process owns BCM17 | Stop the old process; use `pgrep -af` and `sudo fuser -v /dev/gpiochip*` to locate it |
-| Config rejected at startup | Flashed firmware and `.cfg` geometry do not match | Flash the current release image and use `iwr6843_l3dump_vTX2_window53_12l18f.cfg` together |
+| Config rejected at startup | Flashed firmware and `.cfg` geometry do not match | Flash the v3 image and use `iwr6843_l3dump_vTX2_window53_12l18f.cfg` together |
 | Bootloader probe returns no response | Wrong CP2105 port or RESET occurred before the script opened UART | Use Enhanced/UARTA, rerun the probe, type `READY`, then RESET only when prompted |
 | Flash fails after `Erasing existing SFLASH` | Transfer was interrupted after the old image was erased | Leave the board in flash mode and rerun the complete flash; the ROM bootloader is still available |
 | Server starts only after unplugging TI | Board was not reset cleanly, a prior dump was still streaming, or USB/power wedged | Stop the old process, press RESET in functional mode, wait for the port, then reconnect USB only if needed |
-| `short IWR6843 dump` | Interrupted UART transfer, process shutdown during dump, or wrong firmware format | Let the active dump finish, restart, and confirm the expected 549,566-byte capture |
+| `short IWR6843 dump` | Interrupted UART transfer, process shutdown during dump, or wrong firmware format | Let the active dump finish, restart, and confirm the expected 763,245-byte capture |
 | Clap produces `rejected_by_ball_tracker` | A clap has no moving ball range track | Expected for trigger testing; confirm the dump completed, then hit a ball |
 | `rejected_track_quality` | A ball-like track was found but it was too thin, noisy, inconsistent, or net-contaminated | Verify geometry and aim; inspect the debug dump before relaxing acceptance gates |
 | `rejected_missing_tdm_sign` | The ball track was usable, but the TX timing evidence did not resolve a trustworthy correction sign | Keep the estimated UI angle, inspect the debug dump, and verify signal quality before changing gates |

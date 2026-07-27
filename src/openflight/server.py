@@ -3579,8 +3579,12 @@ def main():
     parser.add_argument(
         "--iwr6843-capture-timeout",
         type=float,
-        default=12.0,
-        help="Maximum seconds an OPS shot waits for its TI UART dump (default: 12)",
+        default=16.0,
+        help=(
+            "Maximum seconds an OPS shot waits for its TI UART dump "
+            "(default: 16). A 25-frame ring is 763,200 bytes, which takes "
+            "7.4 s at the saturated 1,041,667 baud link."
+        ),
     )
     parser.add_argument(
         "--iwr6843-output-dir",

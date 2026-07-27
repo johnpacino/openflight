@@ -248,7 +248,7 @@ class IWR6843CaptureMonitor:
         self,
         impact_timestamp: float | None,
         *,
-        timeout_s: float = 12.0,
+        timeout_s: float = 16.0,
     ) -> IWR6843Capture | None:
         """Consume the capture nearest an OPS impact timestamp."""
         deadline = time.monotonic() + timeout_s
