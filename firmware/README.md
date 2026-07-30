@@ -5,64 +5,67 @@ movie around impact in the chip's on-board L3 RAM. The firmware continuously
 processes chirps, stores selected complex range bins in a circular frame ring,
 and streams that ring to the Raspberry Pi after the shared sound trigger.
 
-Most builders do **not** need to compile firmware. A validated flashable image is
-checked into the repository. Build the firmware only when changing capture
-geometry, range windows, HWA/EDMA processing, or the binary dump contract.
+Most builders do **not** need to compile firmware. A flashable test image is
+checked into the repository. Build the firmware only when changing the hardware
+envelope, HWA/EDMA processing, or the binary dump contract; normal capture
+tuning now happens in the runtime `.cfg`.
 
 For hardware wiring, mounting, geometry, calibration, and normal OpenFlight
 startup, use the [IWR6843 Operator Guide](../docs/iwr6843/README.md).
 
-## Current Validated Release
+## Current Configurable Test Release
 
 Use this firmware and runtime configuration together:
 
 | Component | Current value |
 |---|---|
-| Flash image | `firmware/releases/l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin` |
-| Runtime config | `config/iwr6843_l3dump_vTX2_window53_12l18f.cfg` |
+| Flash image | `firmware/releases/l3_dump_vTX2_configurable_v5.bin` |
+| Runtime config | `config/iwr6843_l3dump_vTX2_configurable.cfg` |
 | Reference calibration | `config/iwr6843_calibration_reference.json` |
 | Build target | `make -C firmware docker-build` (any host) |
-| Flash image size | 339,588 bytes |
-| Flash SHA-256 | `b7c5a6828853b695f0d12c3a6f0c22d15ef8fa5f3f1639473d1c165102b109aa` |
-| Dump format | Version 4, windowed complex range-FFT snapshots |
-| Complete dump size | 763,245 bytes |
+| Flash image size | 341,956 bytes |
+| Flash SHA-256 | `dad4058b1e29272e0557ced7f3ae295d208e8b364fd1ca9b836996629afb2ee3` |
+| Dump format | Version 5, variable-width complex range-FFT snapshots |
+| Default complete dump size | 783,444 bytes |
 
 Verify the image before flashing:
 
 ```bash
-sha256sum firmware/releases/l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin
+sha256sum firmware/releases/l3_dump_vTX2_configurable_v5.bin
 ```
 
-The v3 image widens the capture ring from 18 to 25 frames, keeping the
-12-frame post-trigger tail, so the pre-trigger allocation grows from 6 frames
-to 13. That history is what club path is measured from, and the freeze is
-requested by a UART CLI command, so the trigger frame lands late by a variable
-2-4 frames: on the 2026-07-25 captures only 2-4 pre-impact frames survived out
-of the 6 allocated. It inherits v2's startup/shutdown fix, which stops the RF
-front end only after the active HWA frame reaches a safe boundary.
+The v5 image separates storage into a narrow circular pre-impact ring and a
+wider sequential post-impact buffer. The checked-in config requests 32 bins
+before the trigger, 53 bins afterward, 16 post-trigger frames, 12 loops, and
+3 ms frame spacing. Firmware computes how many pre-trigger frames fit safely:
+the default is 16 pre plus 16 post, or 32 frames spanning 96 ms.
+
+This release has passed the container build and host decoder tests but has not
+yet repeated the source-of-truth TrackMan validation that established the
+earlier fixed-window result. Keep the prior v3 image available for rollback
+until that validation is complete.
 
 Building the firmware needs the TI mmWave SDK and ARM codegen tools, which ship
 as **Linux x86_64 installers only**, so it cannot be built directly on an Apple
 Silicon Mac or on the Pi. Use `make -C firmware docker-build` (see
 [Prerequisites For Building](#prerequisites-for-building)); the target drops the
-image into `firmware/releases/` and prints its hash. The v2 image remains
-available for rollback. Other experimental images and configs remain available
-through Git history rather than appearing as supported setup choices.
+image into `firmware/releases/` and prints its hash. Keep the previously
+validated v3 image available for rollback until v5 completes source-of-truth
+testing. Other experimental images and configs remain available through Git
+history rather than appearing as supported setup choices.
 
 The linked image is verifiable independently of the hash: the map file must show
-`.l3ring` at `0x000ba540` (763,200 bytes) inside a `0x000c0000` L3_RAM region,
-leaving `0x00005ac0` (23,232 bytes) free.
+`.l3ring` at `0x51000000` with size `0x000c0000`. The firmware reserves all
+768 KiB as an arena, then rejects any runtime plan that would exceed it.
 
 ```bash
 grep -E "l3ring|L3_RAM" firmware/iwr6843/l3_dump_mss.map
 ```
 
-Note that the ring depth is a firmware compile-time constant
-(`RING_FRAMES`), not a field in the runtime `.cfg`. `sensorStart` validates
-only the TX count, ADC sample count, and loop count, so
-`iwr6843_l3dump_vTX2_window53_12l18f.cfg` is correct for both the 18-frame and
-25-frame builds; the `18f` in its name records the build it was first
-validated against, not a constraint.
+The loop count and cadence come from `frameCfg`. `captureCfg` supplies the
+pre/post window widths, start bins, and post-trigger frame count. The firmware
+uses all remaining L3 for pre-trigger frames and prints the resolved plan during
+`sensorStart`; invalid or oversized plans fail before RF capture begins.
 
 ## What The Current Firmware Captures
 
@@ -74,12 +77,23 @@ validated against, not a constraint.
 | Receivers | 4 |
 | Loops per frame | 12 |
 | Chirps per frame | 36 (`3 TX x 12 loops`) |
-| Frames in the ring | 25 |
-| Frame spacing | 4 ms |
-| Frames before trigger | 13 |
-| Frames after trigger | 12 |
+| Frames in the default plan | 32 |
+| Frame spacing | 3 ms |
+| Frames before/around trigger | 16 |
+| Frames after trigger | 16 |
 | Acquired ADC samples per chirp | 128 |
-| Stored range bins per chirp/RX | 53 complex bins |
+| Stored pre-trigger bins per chirp/RX | 32 complex bins |
+| Stored post-trigger bins per chirp/RX | 53 complex bins |
+
+The storage command is:
+
+```text
+captureCfg 20 32 32 53 47 16
+```
+
+Its fields are `preStart preBins postStart postBins lateStart postFrames`.
+The first half of the post frames uses `postStart`; the second half uses
+`lateStart`. All windows must remain within the 128-bin range FFT.
 
 All three transmitters are retained. The outer transmitter pair is used by the
 vertical launch estimator, while the remaining transmitter provides the
@@ -92,62 +106,63 @@ the four receivers sample every chirp simultaneously.
 RF chirp
   -> ADCBUF
   -> HWA 128-point range FFT
-  -> EDMA copies 53 selected complex bins
-  -> 25-frame circular ring in L3 RAM
+  -> EDMA copies the configured complex range window
+  -> narrow circular pre-trigger ring in L3 RAM
   -> Pi sends "l3dump" at the sound-trigger edge
-  -> firmware keeps 12 completed post-trigger frames
+  -> firmware fills the configured wider post-trigger buffer
   -> freeze at a completed-frame boundary
-  -> stream header, frame-window metadata, and IQ payload over UARTA
-  -> restart the frame ring for the next shot
+  -> stream header, per-frame window metadata, and variable-width IQ over UARTA
+  -> restart the pre-trigger ring for the next shot
 ```
 
 HWA performs the range FFT before storage, but the saved bins remain complex
 I/Q. That phase information is required for vertical and horizontal direction
 of arrival; this is not a magnitude-only detection list.
 
-### Dynamic Range Windows
+### Configurable Range Windows
 
-The firmware stores 53 contiguous bins per frame but moves that window outward
-as the ball travels away from the radar:
+The default plan stores a narrow tee/club corridor in the rolling ring and
+switches to the proven 53-bin ball-flight window after the trigger:
 
 | Time region | Frames | Start bin | Stored bins | Purpose |
 |---|---:|---:|---:|---|
-| Rolling history plus active trigger frame | 14 | 20 | 20-72 | Keep thirteen pre-trigger frames and the frame already active when the request arrives |
-| Middle post-trigger flight | 5 | 32 | 32-84 | Follow the ball away from the tee |
-| Late post-trigger flight | 6 | 47 | 47-99 | Retain farther flight and the net-side region |
+| Rolling history plus active trigger frame | 16 | 20 | 20-51 | Preserve more approach history without spending ball-flight width |
+| Middle post-trigger flight | 8 | 32 | 32-84 | Follow the ball away from the tee |
+| Late post-trigger flight | 8 | 47 | 47-99 | Retain farther flight and the net-side region |
 
-Each frame's start bin is written into the dump. The host therefore knows the
-absolute range represented by every local bin and never has to infer which
-window the firmware used.
+Each frame's start bin and valid bin count are written into the v5 dump. The
+host therefore knows the absolute range represented by every local bin and
+does not treat absent pre-trigger bins as measured zeros.
 
 ### L3 Memory Budget
 
 The IWR6843 provides 768 KiB (786,432 bytes) of L3 RAM for the capture ring. The
-current payload is:
+default stored payload is:
 
 ```text
-3 TX x 12 loops x 25 frames x 4 RX x 53 bins x 4 bytes
-= 763,200 bytes
+(16 pre frames x 32 bins + 16 post frames x 53 bins)
+  x 3 TX x 12 loops x 4 RX x 4 bytes
+= 783,360 bytes
 ```
 
-That is 97% of the region. At 30,528 bytes per frame, 25 frames is the ceiling:
-a 26th would need 793,728 bytes and fail to link. `.l3scratch` is allocated
-only by `LIVE_SNAPSHOT_RING` builds, so the production
-`HWA_CHAINED_SNAPSHOT_RING` build has the whole region for the ring.
+The linker reserves the full 786,432-byte region as a flat arena. At
+`sensorStart`, the planner reserves the requested post frames and converts all
+remaining whole-frame space into a circular pre-trigger ring. The default plan
+leaves 3,072 bytes unused because another 18,432-byte pre frame cannot fit.
 
-The transfer adds a 20-byte header and 25 one-byte frame-window entries:
+The transfer adds a 20-byte header and 32 two-byte frame descriptors:
 
 ```text
-763,200 + 20 + 25 = 763,245 bytes
+783,360 + 20 + 64 = 783,444 bytes
 ```
 
 At the saturated 1,041,667-baud link (measured 103,038 bytes/s) one dump takes
-about 7.4 seconds, up from 5.3. The radar is blind for that whole window, which
+about 7.6 seconds. The radar is blind for that whole window, which
 is why `--iwr6843-capture-timeout` defaults to 16 seconds.
 
 For comparison, retaining all 128 complex range bins with the same TX, loop,
-and frame counts would require 1,843,200 bytes. On-chip range FFT plus selected
-range windows is what makes the denser 25-frame capture fit.
+and 32-frame count would require 2,359,296 bytes. On-chip range FFT plus
+selected range windows is what makes the denser capture fit.
 
 ## Firmware And Host Contract
 
@@ -156,11 +171,12 @@ The wire format is defined in two places that must stay synchronized:
 - Firmware: [`iwr6843/dump_format.h`](iwr6843/dump_format.h)
 - Host parser: [`../src/openflight/iwr6843/dump.py`](../src/openflight/iwr6843/dump.py)
 
-The current version 4 transfer contains:
+The current version 5 transfer contains:
 
 1. A packed 20-byte little-endian `l3_dump_header_t`.
-2. One unsigned start-bin byte for each frame.
-3. Complex int16 samples ordered by frame, chirp, RX, and local range bin.
+2. One unsigned `(start bin, valid bin count)` byte pair for each frame.
+3. Only each frame's declared valid complex int16 range bins, ordered by frame,
+   chirp, RX, and local range bin.
 4. Each complex sample in TI's native imaginary-then-real order.
 
 The header carries:
@@ -172,9 +188,9 @@ The header carries:
 | `n_frames` | Number of ring frames |
 | `chirps_per_frame` | `n_tx x loops` |
 | `n_tx`, `n_rx` | Virtual-array geometry |
-| `n_samples` | Stored bins per chirp/RX for snapshot formats |
-| `sample_fmt` | Raw ADC, fixed range snapshot, or windowed range snapshot |
-| `trigger_frame` | Oldest circular-ring slot for chronological rotation |
+| `n_samples` | Raw ADC count or maximum stored frame width |
+| `sample_fmt` | Raw ADC, fixed snapshot, fixed-width window, or variable-width window |
+| `trigger_frame` | Oldest circular slot for legacy formats; zero for chronological v5 dumps |
 | `frame_period_us` | Frame spacing used by trajectory fitting |
 
 Changing the header, sample order, frame metadata, or sample format requires a
@@ -191,9 +207,9 @@ matching host-parser change and regression tests in the same commit.
 | `firmware/iwr6843/mss_linker.cmd` | Places the ring and optional scratch buffers in L3 RAM |
 | `firmware/Makefile` | Toolchain setup, installer fetch, container and production build targets |
 | `firmware/Dockerfile` | x86_64 build environment, so macOS/arm64 hosts can build |
-| `firmware/releases/` | The single checked-in, validated flash image |
+| `firmware/releases/` | Checked-in test image and validated rollback image |
 | `firmware/flash_iwr6843.py` | Pi-compatible IWR6843 ROM bootloader client |
-| `config/iwr6843_l3dump_vTX2_window53_12l18f.cfg` | Runtime RF configuration matching the current firmware |
+| `config/iwr6843_l3dump_vTX2_configurable.cfg` | Runtime RF and L3 storage plan |
 | `src/openflight/iwr6843/dump.py` | Python decoder and executable format reference |
 
 ## Where To Build, Flash, And Run
@@ -394,7 +410,7 @@ The target performs the application build, generates the flashable TI
 meta-image, and copies the production image into `firmware/releases/`:
 
 ```text
-firmware/releases/l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin
+firmware/releases/l3_dump_vTX2_configurable_v5.bin
 ```
 
 Generated `.xer4f`, `.map`, and intermediate `.bin` files stay under
@@ -426,9 +442,10 @@ make -C firmware build-native \
 
 ## Supported Build Target
 
-`build-native` defines the one supported firmware configuration: 3 TX,
-12 loops, 25 frames, 4 ms spacing, dynamic 53-bin windows. Reach it one of two
-ways:
+`build-native` defines the hardware envelope: 3 TX, 4 RX, 128-point range FFT,
+complex IQ16 snapshots, a maximum of 16 loops, and the configurable L3 planner.
+The `.cfg` chooses loops, cadence, window positions/widths, and post-frame
+count. Reach the same build through either path:
 
 | Target | Host | Notes |
 |---|---|---|
@@ -487,7 +504,7 @@ Leave the board in flash mode and run:
 
 ```bash
 uv run python firmware/flash_iwr6843.py \
-  firmware/releases/l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin \
+  firmware/releases/l3_dump_vTX2_configurable_v5.bin \
   --port /dev/ttyUSB0
 ```
 
@@ -501,7 +518,7 @@ Expected completion:
 Erasing existing SFLASH...
 Opening firmware image...
 Writing firmware...
-Writing: 100% (339,588/339,588 bytes)
+Writing: 100% (341,956/341,956 bytes)
 Closing and verifying firmware...
 
 Flash verified by the IWR6843 ROM bootloader.
@@ -551,54 +568,54 @@ is:
 ```bash
 make -C firmware fetch-installers   # once; names the two manual downloads
 make -C firmware docker-image       # once; slow
-# edit the defines in firmware/Makefile's build-native target
+# edit firmware only when changing the hardware envelope or dump contract
 uv run pytest tests/test_iwr6843_firmware_rearm.py
 make -C firmware docker-build
 ```
 
-Run the tests *before* the build: they compute the L3 budget from the build
-definition, so an over-large ring fails in a second rather than after a long
-emulated compile.
+Run the tests *before* the build: they verify the planner contract and default
+L3 budget before the longer emulated compile.
 
-The following values are compile-time firmware geometry and must match the RF
-config or dump parser:
+The build fixes only the hardware envelope and maximums:
 
 | Firmware define | Matching runtime concept |
 |---|---|
 | `N_TX` | Number of `chirpCfg` TX masks and TDM chirps per loop |
-| `LOOPS` | Loop count in `frameCfg` |
-| `RING_FRAMES` | Number of frames carried in the dump |
-| `HWA_POST_TRIGGER_FRAMES` | Post-trigger tail; must be less than `RING_FRAMES` |
 | `N_SAMPLES` | ADC samples in `profileCfg` |
-| `SNAPSHOT_BINS` | Complex range bins retained per chirp/RX |
-| `SNAPSHOT_BIN_START` | Rolling pre-trigger range-window start |
-| `SNAPSHOT_MIDDLE_BIN_START` | First post-trigger range-window start |
-| `SNAPSHOT_LATE_BIN_START` | Final post-trigger range-window start |
+| `L3_MAX_LOOPS` | Largest loop count accepted from `frameCfg` |
+| `L3_MAX_CAPTURE_FRAMES` | Maximum number of frame descriptors |
+| `L3_CAPTURE_BYTES` | L3 arena available to the planner |
 
-Before increasing loops, frames, transmitters, or bins, calculate the ring:
+The checked-in `.cfg` controls:
+
+| Runtime field | Purpose |
+|---|---|
+| `frameCfg numLoops` | TDM loops per frame |
+| `frameCfg framePeriodicity` | Time between frame starts |
+| `captureCfg preStart preBins` | Circular pre-trigger range window |
+| `captureCfg postStart postBins` | First-half post-trigger range window |
+| `captureCfg lateStart` | Second-half post-trigger start; uses `postBins` width |
+| `captureCfg postFrames` | Reserved sequential post-trigger frames |
+
+At `sensorStart`, firmware first reserves the post buffer, then turns every
+remaining whole-frame allocation into pre-trigger ring slots:
 
 ```text
-ring bytes = TX x loops x frames x RX x saved bins x 4
+bytes per bin = TX x loops x RX x 4
+post bytes    = postFrames x postBins x bytes per bin
+pre frames    = floor((786,432 - post bytes) / (preBins x bytes per bin))
 ```
 
-The result must fit within 786,432 L3 bytes along with any variant-specific L3
-scratch sections. The linker places `.l3ring` and `.l3scratch` in `L3_RAM` and
-fails the build if they overflow -- but a link error only appears to whoever
-runs the toolchain, so `tests/test_iwr6843_firmware_rearm.py` also computes the
-budget from the build definition and reports the maximum frame count for the
-current shape. At 3 TX x 12 loops x 53 bins that is 30,528 bytes per frame and a
-25-frame ceiling.
-
-Changing `RING_FRAMES` or `HWA_POST_TRIGGER_FRAMES` also changes the pre-trigger
-allocation, which is what club path is measured from. A test asserts the split
-still leaves more than `club.CLUB_MIN_FRAMES` after the 2-4 frames the UART
-trigger path costs; see
+The planner rejects odd loops, loops outside 2-16, windows outside the 128-bin
+FFT, plans with no pre-trigger frame, and post reservations too large for L3 or
+the 64-frame descriptor table. A test asserts the default split still leaves
+enough pre-trigger history for club work after trigger latency; see
 `docs/superpowers/specs/2026-07-27-iwr6843-preimpact-ring-design.md`.
 
-Changing `RING_FRAMES` changes the dump size and therefore the transfer time:
-the UART link is saturated at 1,041,667 baud (103,038 bytes/s measured), so the
-25-frame ring takes about 7.4 s per shot, during which the radar is blind. Keep
-`--iwr6843-capture-timeout` comfortably above it.
+Changing loops or widths changes the resolved frame count and transfer size.
+The UART link is saturated at 1,041,667 baud (103,038 bytes/s measured), so the
+default 783,444-byte dump takes about 7.6 seconds, during which the radar is
+blind. Keep `--iwr6843-capture-timeout` comfortably above it.
 
 Do not reuse application objects after changing compile-time geometry. The
 named targets in `firmware/Makefile` remove application objects before each
@@ -628,8 +645,9 @@ consumers of the frame count, which is the thing a ring change moves.
 
 Also check:
 
-1. The `.cfg` matches all compile-time capture geometry.
-2. The map file keeps `.l3ring` and `.l3scratch` inside L3.
+1. The `.cfg` uses the expected TX/sample hardware envelope and a legal capture
+   plan.
+2. The map file keeps `.l3ring` inside L3 at exactly `0x000c0000` bytes.
 3. The first static capture has the expected version, dimensions, frame period,
    per-frame window table, and total byte count.
 4. Repeated dump/rearm cycles work without resetting the board.
@@ -649,8 +667,8 @@ Also check:
 | Probe receives no ROM response | Wrong CP2105 interface or RESET timing | Use Enhanced/UARTA, type `READY`, then RESET only when prompted |
 | Flash fails after erase | Image transfer was interrupted | Leave flash mode enabled and rerun the full flash command; the ROM bootloader remains available |
 | No CLI after flashing | Board remains in flash mode or was not reset | Restore functional switches and press RESET |
-| Server rejects the config | Firmware and `.cfg` geometry differ | Use the current v3 binary and `iwr6843_l3dump_vTX2_window53_12l18f.cfg` together |
-| Dump is not 763,245 bytes | Wrong firmware format, interrupted UART transfer, or stale process | Verify SHA-256, use Enhanced/UARTA, stop serial owners, reset, and retry |
+| Server rejects the config | Wrong firmware/config pair, invalid loop count, or an L3 plan that does not fit | Use the v5 binary and `iwr6843_l3dump_vTX2_configurable.cfg`; read the `Capture plan` or `Error` line |
+| Default dump is not 783,444 bytes | The pre-ring was not full, the config was changed, the UART transfer was interrupted, or the wrong firmware is flashed | Check the v5 frame descriptors and resolved plan before treating the size difference as corruption |
 | First run works but restart hangs | Retired v1 image or incomplete shutdown | Flash the current image and reset in functional mode |
 | `docker-build` says the image does not exist | `docker-image` has not been run | `make -C firmware docker-image` (needs all five installers) |
 | Container build fails "cannot execute 32-bit i386 binaries" | Docker Desktop is using its Rosetta backend | Turn off **Use Rosetta for x86_64/amd64 emulation** so QEMU handles i386 |

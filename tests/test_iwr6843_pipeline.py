@@ -16,12 +16,14 @@ from openflight.iwr6843 import Calibration, estimate_lcmf_v1, lcmf, process_dump
 from openflight.iwr6843.dump import (
     HEADER,
     SAMPLE_RANGE_FFT_IQ16,
+    SAMPLE_RANGE_FFT_IQ16_VARIABLE,
     SAMPLE_RANGE_FFT_IQ16_WINDOWED,
     pack_dump,
     parse_dump,
     parse_header,
     payload_nbytes,
     project_tx_pair,
+    select_tdm_loops,
 )
 from openflight.iwr6843.lcmf import (
     ANGLE_CORRECTION_DEG,
@@ -233,6 +235,138 @@ def test_windowed_snapshot_round_trip_and_size():
     assert tuple(meta["range_bin_starts"][(3 + index) % 12] for index in range(12)) == starts
 
 
+def test_variable_width_snapshot_round_trip_and_size():
+    """Version 5 packs only each frame's declared valid range bins."""
+    rng = np.random.default_rng(24)
+    counts = (4, 4, 7, 7)
+    starts = (20, 20, 32, 47)
+    cube = rng.standard_normal((4, 6, 4, 7)) + 1j * rng.standard_normal((4, 6, 4, 7))
+
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=5,
+        frame_period_us=3000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+    )
+    header = parse_header(raw)
+    meta, parsed = parse_dump(raw)
+
+    assert header["frame_metadata_nbytes"] == 8
+    assert len(raw) == HEADER.size + payload_nbytes(header, raw)
+    assert meta["range_bin_starts"] == starts
+    assert meta["range_bin_counts"] == counts
+    assert parsed.shape == cube.shape
+    geometry = geometry_from_header(meta)
+    assert geometry.frame_bin_count(0) == 4
+    assert geometry.contains_bin(23, frame=0)
+    assert not geometry.contains_bin(24, frame=0)
+    assert geometry.frame_bin_count(3) == 7
+    assert geometry.contains_bin(53, frame=3)
+    np.testing.assert_allclose(parsed[:2, ..., :4], np.round(cube[:2, ..., :4]), atol=1)
+    np.testing.assert_array_equal(parsed[:2, ..., 4:], 0)
+    np.testing.assert_allclose(parsed[2:, ..., :7], np.round(cube[2:, ..., :7]), atol=1)
+
+
+def test_variable_width_snapshot_requires_frame_table_to_size_payload():
+    cube = np.ones((2, 6, 4, 7), dtype=complex)
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=5,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        range_bin_starts=(20, 32),
+        range_bin_counts=(4, 7),
+    )
+    header = parse_header(raw)
+
+    with pytest.raises(ValueError, match="frame metadata"):
+        payload_nbytes(header)
+
+
+def test_select_tdm_loops_preserves_variable_frame_metadata():
+    """A 10-loop ablation must alter only the per-frame chirp count."""
+    n_frames, n_loops, n_tx, n_rx, n_samples = 4, 12, 3, 4, 7
+    starts = (20, 20, 32, 47)
+    counts = (4, 4, 7, 7)
+    cube = np.arange(
+        n_frames * n_loops * n_tx * n_rx * n_samples,
+        dtype=np.float64,
+    ).reshape(n_frames, n_loops * n_tx, n_rx, n_samples)
+    raw = pack_dump(
+        cube,
+        n_tx=n_tx,
+        version=5,
+        frame_period_us=3000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+    )
+
+    selected_raw = select_tdm_loops(raw, start=1, count=10)
+    meta, selected = parse_dump(selected_raw)
+    expected = cube.reshape(n_frames, n_loops, n_tx, n_rx, n_samples)[:, 1:11].reshape(
+        n_frames, 10 * n_tx, n_rx, n_samples
+    )
+
+    assert meta["chirps_per_frame"] == 30
+    assert meta["range_bin_starts"] == starts
+    assert meta["range_bin_counts"] == counts
+    np.testing.assert_array_equal(selected[:2, ..., :4], expected[:2, ..., :4])
+    np.testing.assert_array_equal(selected[2:, ..., :7], expected[2:, ..., :7])
+
+
+@pytest.mark.parametrize(
+    ("start", "count"),
+    [(-1, 10), (0, 0), (3, 10)],
+)
+def test_select_tdm_loops_rejects_invalid_selection(start, count):
+    cube = np.ones((2, 36, 4, 8), dtype=complex)
+    raw = pack_dump(cube, n_tx=3)
+
+    with pytest.raises(ValueError, match="loop selection"):
+        select_tdm_loops(raw, start=start, count=count)
+
+
+def test_variable_width_snapshot_recovers_ball_track_and_launch(cal):
+    truth_v, truth_la = 45.0, 18.0
+    raw = synth_shot(
+        speed_ms=truth_v,
+        launch_deg=truth_la,
+        n_frames=18,
+        n_loops=12,
+        n_tx=3,
+        frame_period_us=3000,
+        trigger_frame=0,
+    )
+    meta, cube = parse_dump(raw)
+    rfft = np.fft.fft(cube, axis=-1)
+    starts = (20,) * 6 + (32,) * 6 + (47,) * 6
+    counts = (32,) * 6 + (53,) * 12
+    cropped = np.zeros((*rfft.shape[:-1], 53), dtype=complex)
+    for frame, (start, count) in enumerate(zip(starts, counts)):
+        cropped[frame, ..., :count] = rfft[frame, ..., start : start + count]
+    snapshot = pack_dump(
+        cropped,
+        n_tx=3,
+        version=5,
+        frame_period_us=3000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+    )
+
+    shot = process_dump(snapshot, cal, coherent_loops=1, two_ray=False)
+
+    assert shot.ball_found
+    assert shot.track.speed_ms == pytest.approx(truth_v, rel=0.03)
+    assert shot.fits["tee"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
+    assert shot.geometry.n_loops == 12
+    assert shot.geometry.frame_period_s == pytest.approx(0.003)
+
+
 def test_windowed_snapshot_recovers_speed_and_launch_angle(cal):
     truth_v, truth_la = 45.0, 18.0
     starts = (20,) * 4 + (32,) * 4 + (47,) * 4
@@ -348,7 +482,7 @@ def test_tx_orders_canonicalize_to_same_physical_array():
 def test_production_config_uses_normal_three_tx_order():
     from openflight.iwr6843.monitor import tx_order_from_config
 
-    assert tx_order_from_config("config/iwr6843_l3dump_vTX2_window53_12l18f.cfg") == "normal"
+    assert tx_order_from_config("config/iwr6843_l3dump_vTX2_configurable.cfg") == "normal"
 
 
 def test_invalid_tx_order_is_rejected_before_processing(cal):

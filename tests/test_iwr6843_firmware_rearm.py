@@ -7,9 +7,7 @@ from pathlib import Path
 
 FIRMWARE = Path(__file__).parents[1] / "firmware" / "iwr6843" / "l3_dump.c"
 FIRMWARE_MAKEFILE = Path(__file__).parents[1] / "firmware" / "Makefile"
-WINDOW53_12L18F_CONFIG = (
-    Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_window53_12l18f.cfg"
-)
+CONFIGURABLE_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_configurable.cfg"
 
 
 def _function_source(source: str, name: str, next_name: str) -> str:
@@ -37,8 +35,8 @@ def test_hwa_chain_processes_and_rearms_one_frame_at_a_time():
         "static int32_t l3_configHwaSignatureEdma",
     )
 
-    assert "commonCfg.numLoops = CHIRPS_PER_FRAME / 2U" in common
-    assert "param->cCount = (uint16_t)(CHIRPS_PER_FRAME / 2U)" in output
+    assert "gCapturePlan.chirpsPerFrame / 2U" in common
+    assert "gCapturePlan.chirpsPerFrame / 2U" in output
 
 
 def test_completed_frame_advances_circular_ring_slot():
@@ -50,7 +48,8 @@ def test_completed_frame_advances_circular_ring_slot():
     )
 
     assert "gRingFrame++" in callback
-    assert "gRingFrame % RING_FRAMES" in callback
+    assert "gPreFramesCaptured++" in callback
+    assert "gPostFramesCaptured++" in callback
 
 
 def test_freeze_request_keeps_rearming_until_post_trigger_target():
@@ -65,9 +64,9 @@ def test_freeze_request_keeps_rearming_until_post_trigger_target():
     )
 
     assert "gHwaFreezeRequested" in queue
-    assert "gRingFrame >= gHwaFreezeTargetFrame" in queue
+    assert "gPostFramesCaptured >= gCapturePlan.postFrames" in queue
     assert "Semaphore_post(gHwaFreezeSemaphore)" in queue
-    assert "gHwaFreezeTargetFrame = gRingFrame + HWA_POST_TRIGGER_FRAMES" in freeze
+    assert "gPostFramesCaptured = 0U" in freeze
 
 
 def test_sensor_stop_uses_completed_frame_boundary_before_teardown():
@@ -94,45 +93,49 @@ def test_sensor_stop_uses_completed_frame_boundary_before_teardown():
     assert "return l3_stopCaptureAtBoundary()" in sensor_stop
 
 
-def test_dump_header_rotates_from_oldest_completed_frame():
+def test_dump_streams_pre_ring_then_post_tail_in_chronological_order():
     source = FIRMWARE.read_text(encoding="utf-8")
     dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
 
-    assert "gRingFrame % RING_FRAMES" in dump
+    assert "oldestPre = " in dump
+    assert "(oldestPre + i) % gCapturePlan.preFrames" in dump
+    assert "gCapturePlan.preFrames + i" in dump
+    assert "L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE" in source
 
 
-def test_production_build_uses_balanced_geometry_and_single_release():
+def test_production_build_uses_configurable_capture_and_single_release():
     source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
     target = _function_source(source, "build-native:", "clean:")
 
     assert "--define=N_TX=3" in target
-    assert "--define=LOOPS=12" in target
-    assert "--define=RING_FRAMES=25" in target
-    assert "--define=HWA_POST_TRIGGER_FRAMES=12" in target
-    assert "--define=SNAPSHOT_DYNAMIC_WINDOWS=1" in target
-    assert "--define=SNAPSHOT_BIN_START=20" in target
-    assert "--define=SNAPSHOT_MIDDLE_BIN_START=32" in target
-    assert "--define=SNAPSHOT_LATE_BIN_START=47" in target
-    assert "--define=SNAPSHOT_BINS=53" in target
-    assert "RELEASE_NAME ?= l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin" in source
+    assert "--define=CONFIGURABLE_CAPTURE=1" in target
+    for fixed_geometry in (
+        "--define=LOOPS=",
+        "--define=RING_FRAMES=",
+        "--define=HWA_POST_TRIGGER_FRAMES=",
+        "--define=SNAPSHOT_BINS=",
+    ):
+        assert fixed_geometry not in target
+    assert "RELEASE_NAME ?= l3_dump_vTX2_configurable_v5.bin" in source
     assert '"$(RELEASE_DIR)/$(RELEASE_NAME)"' in target
     assert source.count("\nbuild-native:") == 1
 
 
-def test_window53_12_loop_18_frame_config_matches_firmware_geometry():
+def test_configurable_capture_config_requests_32_frames_at_3ms():
     lines = {
         line.strip()
-        for line in WINDOW53_12L18F_CONFIG.read_text(encoding="utf-8").splitlines()
+        for line in CONFIGURABLE_CONFIG.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("%")
     }
 
-    assert "frameCfg 0 2 12 0 4 1 0" in lines
+    assert "frameCfg 0 2 12 0 3 1 0" in lines
+    assert "captureCfg 20 32 32 53 47 16" in lines
     assert "chirpCfg 0 0 0 0 0 0 0 1" in lines
     assert "chirpCfg 1 1 0 0 0 0 0 2" in lines
     assert "chirpCfg 2 2 0 0 0 0 0 4" in lines
 
 
-def test_dynamic_window_start_is_recorded_per_ring_slot():
+def test_variable_window_start_and_count_are_recorded_per_frame():
     source = FIRMWARE.read_text(encoding="utf-8")
     output = _function_source(
         source,
@@ -141,11 +144,14 @@ def test_dynamic_window_start_is_recorded_per_ring_slot():
     )
     dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
 
-    assert "gFrameBinStart[ringSlot % RING_FRAMES]" in output
-    assert "UART_writePolling(gDataUart, gFrameBinStart" in dump
+    assert "gFrameOffset[ringSlot]" in output
+    assert "gCapturePlan.preBins" in output
+    assert "gCapturePlan.postBins" in output
+    assert "descriptor[0] = gFrameBinStart[slot]" in dump
+    assert "descriptor[1] = gFrameBinCount[slot]" in dump
 
 
-def test_ring_fits_in_l3_ram():
+def test_configurable_ring_uses_exact_l3_arena_and_plan_fits():
     """The capture ring must fit in the 768 KiB of L3 the linker gives it.
 
     Overflowing shows up as a link failure, which only bites whoever runs the
@@ -156,30 +162,50 @@ def test_ring_fits_in_l3_ram():
     the production target selects HWA_CHAINED_SNAPSHOT_RING, so the whole
     region is available to `g_ring`.
     """
-    source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
-    target = _function_source(source, "build-native:", "clean:")
-
-    def define(name: str) -> int:
-        match = re.search(rf"--define={name}=(\d+)", target)
-        assert match is not None, f"{name} is not set by the production build"
-        return int(match.group(1))
-
-    assert "--define=HWA_CHAINED_SNAPSHOT_RING=1" in target, (
-        "this budget assumes .l3scratch is unused; LIVE_SNAPSHOT_RING would "
-        "also allocate two raw frames there"
-    )
-
+    firmware = FIRMWARE.read_text(encoding="utf-8")
     l3_ram_bytes = 768 * 1024
-    bytes_per_frame = define("N_TX") * define("LOOPS") * 4 * define("SNAPSHOT_BINS") * 4
-    ring_bytes = bytes_per_frame * define("RING_FRAMES")
+    assert "#define L3_CAPTURE_BYTES       (6U * 128U * 1024U)" in firmware
+    assert "static uint8_t g_ring[L3_CAPTURE_BYTES]" in firmware
 
-    assert bytes_per_frame == 30_528, bytes_per_frame
-    assert ring_bytes == 763_200, ring_bytes
-    assert ring_bytes <= l3_ram_bytes, (
-        f"ring is {ring_bytes} bytes, over the {l3_ram_bytes}-byte L3 region; "
-        f"at {bytes_per_frame} bytes/frame the ceiling is "
-        f"{l3_ram_bytes // bytes_per_frame} frames"
+    pre_frame_bytes = 3 * 12 * 4 * 32 * 4
+    post_frame_bytes = 3 * 12 * 4 * 53 * 4
+    pre_frames = (l3_ram_bytes - 16 * post_frame_bytes) // pre_frame_bytes
+    used = pre_frames * pre_frame_bytes + 16 * post_frame_bytes
+
+    assert pre_frames == 16
+    assert used == 783_360
+    assert used <= l3_ram_bytes
+
+
+def test_same_capture_config_safely_replans_for_16_loops():
+    l3_ram_bytes = 768 * 1024
+    bytes_per_bin = 3 * 16 * 4 * 4
+    post_bytes = 16 * 53 * bytes_per_bin
+    pre_frame_bytes = 32 * bytes_per_bin
+
+    pre_frames = (l3_ram_bytes - post_bytes) // pre_frame_bytes
+    used = pre_frames * pre_frame_bytes + post_bytes
+
+    assert pre_frames == 5
+    assert used == 774_144
+    assert used <= l3_ram_bytes
+
+
+def test_capture_config_rejects_post_count_that_cannot_leave_a_pre_frame():
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+    capture_cfg = _function_source(
+        firmware,
+        "static int32_t l3_cli_captureCfg",
+        "#endif",
     )
+    planner = _function_source(
+        firmware,
+        "static int32_t l3_finalizeCapturePlan",
+        "/* captureCfg",
+    )
+
+    assert "values[5] >= L3_MAX_CAPTURE_FRAMES" in capture_cfg
+    assert "gCapturePlan.postFrames >= L3_MAX_CAPTURE_FRAMES" in planner
 
 
 def test_post_trigger_tail_leaves_room_for_approach_history():
@@ -192,13 +218,17 @@ def test_post_trigger_tail_leaves_room_for_approach_history():
     """
     from openflight.iwr6843.club import CLUB_MIN_FRAMES
 
-    source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
-    target = _function_source(source, "build-native:", "clean:")
-    ring = int(re.search(r"--define=RING_FRAMES=(\d+)", target).group(1))
-    post = int(re.search(r"--define=HWA_POST_TRIGGER_FRAMES=(\d+)", target).group(1))
+    lines = CONFIGURABLE_CONFIG.read_text(encoding="utf-8")
+    capture = re.search(r"^captureCfg \d+ (\d+) \d+ (\d+) \d+ (\d+)$", lines, re.MULTILINE)
+    frame = re.search(r"^frameCfg \d+ \d+ (\d+) ", lines, re.MULTILINE)
+    assert capture is not None and frame is not None
+    pre_bins, post_bins, post = map(int, capture.groups())
+    loops = int(frame.group(1))
+    bytes_per_bin = 3 * loops * 4 * 4
+    pre_trigger = (768 * 1024 - post * post_bins * bytes_per_bin) // (pre_bins * bytes_per_bin)
 
-    assert post < ring, "the firmware requires at least one pre-trigger frame"
-    pre_trigger = ring - post
+    assert post == 16
+    assert pre_trigger == 16
     worst_case_latency_frames = 4
     assert pre_trigger - worst_case_latency_frames > CLUB_MIN_FRAMES, (
         f"{pre_trigger} pre-trigger frames minus {worst_case_latency_frames} "
@@ -222,7 +252,7 @@ def test_build_native_fails_fast_on_a_wrong_host():
     )
 
     check = _function_source(source, "check-tools:", "build-native:")
-    assert 'uname -s' in check and 'uname -m' in check, "the host must be verified"
+    assert "uname -s" in check and "uname -m" in check, "the host must be verified"
     assert "MMWAVE_SDK_INSTALL_PATH" in check
     assert "R4F_CODEGEN_INSTALL_PATH" in check
     assert "XWR68XX_RADARSS_IMAGE_BIN" in check
@@ -285,13 +315,12 @@ def test_container_does_not_bake_the_license_gated_installers_into_layers():
 def test_docker_targets_pin_the_amd64_platform():
     source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
 
+    assert "DOCKER_IMAGE ?= openflight-iwr-sdk:latest" in source
     for target in ("docker-image:", "docker-build:", "docker-shell:"):
         assert f"\n{target}" in source, f"{target} is missing"
     # Three docker invocations, each explicitly amd64: the Dockerfile
     # deliberately does not pin the platform itself.
-    assert source.count("--platform linux/amd64") == 3, source.count(
-        "--platform linux/amd64"
-    )
+    assert source.count("--platform linux/amd64") == 3, source.count("--platform linux/amd64")
 
 
 def test_fetch_installers_separates_automatic_from_login_gated():
@@ -318,9 +347,7 @@ def test_fetch_installers_separates_automatic_from_login_gated():
         "ti_cgt_tms470_20.2.7.LTS_linux-x64_installer.bin",
     ):
         assert name in manual, f"{name} is login-gated"
-        assert name not in fetchable, (
-            f"{name} is login-gated; a scripted GET returns an HTML page"
-        )
+        assert name not in fetchable, f"{name} is login-gated; a scripted GET returns an HTML page"
 
     # Entries are name|url pairs and MUST stay single-quoted: unquoted, the
     # shell reads the '|' in `for entry in $(FETCHABLE_INSTALLERS)` as a pipe.

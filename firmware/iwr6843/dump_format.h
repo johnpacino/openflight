@@ -11,6 +11,10 @@
  *     n_frames uint8 start-bin values immediately follow this header, then
  *     the same frame/chirp/rx/IQ payload. Each frame can therefore retain a
  *     different contiguous range window without making the decoder guess.
+ *   range-bin fmt 3 (version 5+):
+ *     n_frames pairs of uint8 (start-bin, bin-count) follow this header.
+ *     Frame payloads then follow in order, each containing only its declared
+ *     bin count. n_samples is the maximum frame width, not a payload stride.
  * Chirp order is TDM-interleaved: chirp c -> tx = c % n_tx, loop = c / n_tx.
  */
 #ifndef L3_DUMP_FORMAT_H
@@ -22,9 +26,11 @@
 #define L3_DUMP_VERSION     3   /* v2: trigger_frame = oldest ring slot;
                                  * v3: frame_period_us populated */
 #define L3_DUMP_VERSION_WINDOWED 4
+#define L3_DUMP_VERSION_VARIABLE 5
 #define L3_SAMPLE_INT16_IQ  0
 #define L3_SAMPLE_RANGE_FFT_IQ16 1
 #define L3_SAMPLE_RANGE_FFT_IQ16_WINDOWED 2
+#define L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE 3
 
 typedef struct __attribute__((packed)) {
     char     magic[4];          /* "ILD1" */
@@ -33,8 +39,8 @@ typedef struct __attribute__((packed)) {
     uint16_t chirps_per_frame;  /* n_tx * loops */
     uint8_t  n_tx;
     uint8_t  n_rx;
-    uint16_t n_samples;         /* ADC samples per chirp */
-    uint8_t  sample_fmt;        /* L3_SAMPLE_INT16_IQ */
+    uint16_t n_samples;         /* raw ADC count, or max stored snapshot width */
+    uint8_t  sample_fmt;        /* one of L3_SAMPLE_* */
     uint8_t  _pad;              /* fmt 1: first range-bin index */
     uint16_t trigger_frame;     /* v2+: OLDEST ring slot = time-order start
                                  * (slots stream in memory order; rotate by
