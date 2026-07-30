@@ -8,9 +8,9 @@ SYSCONFIG_INSTALL_PATH ?= $(TI_ROOT)/sysconfig
 XWR68XX_RADARSS_IMAGE_BIN ?= $(TI_ROOT)/sdk/mmwave_sdk_03_06_02_00-LTS/firmware/radarss/xwr6xxx_radarss_rprc.bin
 FIRMWARE_DIR ?= iwr6843
 REPO_ROOT := $(abspath $(CURDIR)/..)
-DOCKER_IMAGE ?= openflight-iwr-sdk
+DOCKER_IMAGE ?= openflight-iwr-sdk:latest
 RELEASE_DIR ?= releases
-RELEASE_NAME ?= l3_dump_vTX2_hwa_window53_12loops_25frames_4ms_v3.bin
+RELEASE_NAME ?= l3_dump_vTX2_configurable_v5.bin
 
 SDK_INSTALLER := $(INSTALLER_DIR)/mmwave_sdk_03_06_02_00-LTS-Linux-x86-Install.bin
 R4F_INSTALLER := $(INSTALLER_DIR)/ti_cgt_tms470_20.2.7.LTS_linux-x64_installer.bin
@@ -145,7 +145,7 @@ check-tools:
 
 build-native: check-tools
 	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" cleanApp
-	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" bin L3_VARIANT_DEFS="--define=N_TX=3 --define=LOOPS=12 --define=RING_FRAMES=25 --define=HWA_POST_TRIGGER_FRAMES=12 --define=ENABLE_HWA_SMOKE=1 --define=SNAPSHOT_DUMP=1 --define=HWA_CHAINED_SNAPSHOT_RING=1 --define=SNAPSHOT_DYNAMIC_WINDOWS=1 --define=SNAPSHOT_BIN_START=20 --define=SNAPSHOT_MIDDLE_BIN_START=32 --define=SNAPSHOT_LATE_BIN_START=47 --define=SNAPSHOT_BINS=53"
+	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" bin L3_VARIANT_DEFS="--define=N_TX=3 --define=ENABLE_HWA_SMOKE=1 --define=SNAPSHOT_DUMP=1 --define=HWA_CHAINED_SNAPSHOT_RING=1 --define=CONFIGURABLE_CAPTURE=1"
 	mkdir -p "$(RELEASE_DIR)"
 	cp "$(FIRMWARE_DIR)/l3_dump.bin" "$(RELEASE_DIR)/$(RELEASE_NAME)"
 	sha256sum "$(RELEASE_DIR)/$(RELEASE_NAME)"

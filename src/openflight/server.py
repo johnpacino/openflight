@@ -3526,7 +3526,7 @@ def main():
     )
     parser.add_argument(
         "--iwr6843-config",
-        default="config/iwr6843_l3dump_vTX2_window53_12l18f.cfg",
+        default="config/iwr6843_l3dump_vTX2_configurable.cfg",
         help="TI RF config matching the flashed L3 firmware",
     )
     parser.add_argument(
