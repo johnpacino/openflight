@@ -19,6 +19,7 @@ from openflight.iwr6843.dump import (
     MAX_SUPPORTED_DUMP_VERSION,
     SAMPLE_RANGE_FFT_IQ16,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+    SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     SAMPLE_RANGE_FFT_IQ16_WINDOWED,
     TEMP_REPORT_KEYS,
     pack_dump,
@@ -60,6 +61,7 @@ def synth_shot(
     accel_ms2=0.0,
     seed=0,
     tx_order="normal",
+    frame_time_offsets_us=None,
 ):
     """Raw dump bytes for one synthetic ball flight (+ optional floor image).
 
@@ -79,8 +81,15 @@ def synth_shot(
     cube = np.zeros((n_frames, cpf, 4, n_samples), dtype=complex)
     samples = np.arange(n_samples)
     tan_la = np.tan(np.radians(launch_deg))
+    if frame_time_offsets_us is not None and len(frame_time_offsets_us) != n_frames:
+        raise ValueError("frame_time_offsets_us must match n_frames")
     for slot in range(n_frames):
-        t_slot = ((slot - trigger_frame) % n_frames) * frame_period_us / 1e6
+        slot_order = (slot - trigger_frame) % n_frames
+        t_slot = (
+            frame_time_offsets_us[slot_order] / 1e6
+            if frame_time_offsets_us is not None
+            else slot_order * frame_period_us / 1e6
+        )
         for loop in range(n_loops):
             t_s = t_slot + loop * loop_period_s
             disp = speed_ms * t_s + 0.5 * accel_ms2 * t_s * t_s
@@ -344,6 +353,41 @@ def test_variable_width_snapshot_requires_frame_table_to_size_payload():
         payload_nbytes(header)
 
 
+def test_timed_variable_snapshot_round_trip_and_geometry():
+    """Version 6 records dense pre frames and sparse post frames honestly."""
+    rng = np.random.default_rng(26)
+    counts = (4, 4, 7, 7, 7)
+    starts = (20, 20, 32, 32, 47)
+    offsets_us = (0, 2000, 4000, 6000, 10000)
+    cube = rng.standard_normal((5, 36, 4, 7)) + 1j * rng.standard_normal((5, 36, 4, 7))
+
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=6,
+        frame_period_us=2000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+        frame_time_offsets_us=offsets_us,
+    )
+    header = parse_header(raw)
+    meta, parsed = parse_dump(raw)
+    geometry = geometry_from_header(meta)
+
+    assert header["frame_metadata_nbytes"] == 20
+    assert len(raw) == HEADER.size + payload_nbytes(header, raw)
+    assert meta["range_bin_starts"] == starts
+    assert meta["range_bin_counts"] == counts
+    assert meta["frame_time_offsets_us"] == offsets_us
+    assert geometry.frame_period_s == pytest.approx(0.002)
+    assert geometry.loop_time(3, 0) == pytest.approx(0.006)
+    assert geometry.loop_time(4, 0) == pytest.approx(0.010)
+    assert geometry.capture_duration_s == pytest.approx(0.012)
+    np.testing.assert_allclose(parsed[:2, ..., :4], np.round(cube[:2, ..., :4]), atol=1)
+    np.testing.assert_allclose(parsed[2:, ..., :7], np.round(cube[2:, ..., :7]), atol=1)
+
+
 def test_select_tdm_loops_preserves_variable_frame_metadata():
     """A 10-loop ablation must alter only the per-frame chirp count."""
     n_frames, n_loops, n_tx, n_rx, n_samples = 4, 12, 3, 4, 7
@@ -374,6 +418,69 @@ def test_select_tdm_loops_preserves_variable_frame_metadata():
     assert meta["range_bin_counts"] == counts
     np.testing.assert_array_equal(selected[:2, ..., :4], expected[:2, ..., :4])
     np.testing.assert_array_equal(selected[2:, ..., :7], expected[2:, ..., :7])
+
+
+def test_tdm_projection_and_loop_selection_preserve_hybrid_timing():
+    n_frames, n_loops, n_tx, n_rx, n_samples = 4, 12, 3, 4, 7
+    starts = (20, 20, 32, 47)
+    counts = (4, 4, 7, 7)
+    offsets_us = (0, 2000, 4000, 8000)
+    cube = np.ones((n_frames, n_loops * n_tx, n_rx, n_samples), dtype=complex)
+    raw = pack_dump(
+        cube,
+        n_tx=n_tx,
+        version=6,
+        frame_period_us=2000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+        frame_time_offsets_us=offsets_us,
+    )
+
+    selected_meta, _ = parse_dump(select_tdm_loops(raw, start=1, count=10))
+    projected_meta, _ = parse_dump(project_tx_pair(raw, (0, 2)))
+
+    assert selected_meta["frame_time_offsets_us"] == offsets_us
+    assert projected_meta["frame_time_offsets_us"] == offsets_us
+
+
+def test_hybrid_timing_recovers_ball_speed_and_launch(cal):
+    truth_v, truth_la = 30.0, 18.0
+    offsets_us = tuple(range(0, 32_000, 2_000)) + tuple(range(32_000, 96_000, 4_000))
+    starts = (20,) * 16 + (32,) * 8 + (47,) * 8
+    counts = (32,) * 16 + (53,) * 16
+    raw = synth_shot(
+        speed_ms=truth_v,
+        launch_deg=truth_la,
+        n_frames=32,
+        n_loops=12,
+        n_tx=3,
+        frame_period_us=2000,
+        trigger_frame=0,
+        frame_time_offsets_us=offsets_us,
+    )
+    _meta, cube = parse_dump(raw)
+    rfft = np.fft.fft(cube, axis=-1)
+    cropped = np.zeros((*rfft.shape[:-1], 53), dtype=complex)
+    for frame, (start, count) in enumerate(zip(starts, counts)):
+        cropped[frame, ..., :count] = rfft[frame, ..., start : start + count]
+    snapshot = pack_dump(
+        cropped,
+        n_tx=3,
+        version=6,
+        frame_period_us=2000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+        frame_time_offsets_us=offsets_us,
+    )
+
+    shot = process_dump(snapshot, cal, coherent_loops=1, two_ray=False, club="SW")
+
+    assert shot.ball_found
+    assert shot.track.speed_ms == pytest.approx(truth_v, rel=0.03)
+    assert shot.fits["tee"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
+    assert shot.geometry.capture_duration_s == pytest.approx(0.094)
 
 
 @pytest.mark.parametrize(

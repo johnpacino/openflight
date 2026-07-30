@@ -183,6 +183,12 @@
 #define L3_DEFAULT_LATE_START  47U
 #define L3_DEFAULT_POST_BINS   53U
 #define L3_DEFAULT_POST_FRAMES 16U
+#ifdef HYBRID_CADENCE_CAPTURE
+#define L3_DEFAULT_POST_STRIDE 2U
+#else
+#define L3_DEFAULT_POST_STRIDE 1U
+#endif
+#define L3_MAX_POST_STRIDE     16U
 
 typedef struct {
     uint8_t preStart;
@@ -191,6 +197,7 @@ typedef struct {
     uint8_t postBins;
     uint8_t lateStart;
     uint8_t postFrames;
+    uint8_t postStride;
     uint8_t preFrames;
     uint8_t totalFrames;
     uint16_t loops;
@@ -211,10 +218,12 @@ static l3_capture_plan_t gCapturePlan = {
     L3_DEFAULT_POST_BINS,
     L3_DEFAULT_LATE_START,
     L3_DEFAULT_POST_FRAMES,
+    L3_DEFAULT_POST_STRIDE,
     0U, 0U, 0U, 0U, 0U, 0U, 0U
 };
 static uint8_t gFrameBinStart[L3_MAX_CAPTURE_FRAMES];
 static uint8_t gFrameBinCount[L3_MAX_CAPTURE_FRAMES];
+static uint16_t gFrameDeltaUs[L3_MAX_CAPTURE_FRAMES];
 static uint32_t gFrameOffset[L3_MAX_CAPTURE_FRAMES];
 #else
 #pragma DATA_SECTION(g_ring, ".l3ring")
@@ -322,8 +331,10 @@ static volatile uint32_t gHwaFreezeRestarts;
 #ifdef CONFIGURABLE_CAPTURE
 static volatile uint32_t gPreFramesCaptured;
 static volatile uint32_t gPostFramesCaptured;
+static volatile uint32_t gPostFramesObserved;
 static volatile uint8_t  gPostCaptureStarted;
 static volatile uint8_t  gActiveFrameIsPost;
+static volatile uint8_t  gActiveFrameShouldKeep;
 #endif
 #endif
 
@@ -380,7 +391,11 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
     }
     if (gCapturePlan.preBins == 0U || gCapturePlan.postBins == 0U ||
         gCapturePlan.postFrames == 0U ||
+        gCapturePlan.postStride == 0U ||
+        gCapturePlan.postStride > L3_MAX_POST_STRIDE ||
         gCapturePlan.postFrames >= L3_MAX_CAPTURE_FRAMES ||
+        gFramePeriodUs == 0U ||
+        ((uint32_t)gFramePeriodUs * gCapturePlan.postStride) > 0xFFFFU ||
         ((uint32_t)gCapturePlan.preStart + gCapturePlan.preBins) > N_SAMPLES ||
         ((uint32_t)gCapturePlan.postStart + gCapturePlan.postBins) > N_SAMPLES ||
         ((uint32_t)gCapturePlan.lateStart + gCapturePlan.postBins) > N_SAMPLES) {
@@ -425,6 +440,7 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
         gFrameOffset[frame] = frame * gCapturePlan.preFrameBytes;
         gFrameBinStart[frame] = gCapturePlan.preStart;
         gFrameBinCount[frame] = gCapturePlan.preBins;
+        gFrameDeltaUs[frame] = gFramePeriodUs;
     }
     for (frame = 0U; frame < gCapturePlan.postFrames; frame++) {
         uint32_t slot = preFrames + frame;
@@ -434,51 +450,65 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
             (frame < (gCapturePlan.postFrames / 2U))
                 ? gCapturePlan.postStart : gCapturePlan.lateStart;
         gFrameBinCount[slot] = gCapturePlan.postBins;
+        gFrameDeltaUs[slot] =
+            (frame == 0U)
+                ? gFramePeriodUs
+                : (uint16_t)(gFramePeriodUs * gCapturePlan.postStride);
     }
 
-    CLI_write("Capture plan: loops=%u pre=%ux%u post=%ux%u frames=%u "
-              "bytes=%u/%u starts=%u/%u/%u\n",
+    CLI_write("Capture plan: loops=%u pre=%ux%u@%uus post=%ux%u@%uus "
+              "frames=%u bytes=%u/%u starts=%u/%u/%u stride=%u\n",
               (unsigned)gCapturePlan.loops,
               (unsigned)gCapturePlan.preFrames,
               (unsigned)gCapturePlan.preBins,
+              (unsigned)gFramePeriodUs,
               (unsigned)gCapturePlan.postFrames,
               (unsigned)gCapturePlan.postBins,
+              (unsigned)(gFramePeriodUs * gCapturePlan.postStride),
               (unsigned)gCapturePlan.totalFrames,
               (unsigned)gCapturePlan.usedBytes,
               (unsigned)L3_CAPTURE_BYTES,
               (unsigned)gCapturePlan.preStart,
               (unsigned)gCapturePlan.postStart,
-              (unsigned)gCapturePlan.lateStart);
+              (unsigned)gCapturePlan.lateStart,
+              (unsigned)gCapturePlan.postStride);
     return 0;
 }
 
 /* captureCfg <preStart> <preBins> <postStart> <postBins> <lateStart>
- *            <postFrames>
+ *            <postFrames> [postStride]
  *
  * The post reservation is fixed by the requested count. All remaining L3 is
  * converted into pre-trigger ring slots after frameCfg supplies the loop count.
  */
 static int32_t l3_cli_captureCfg(int32_t argc, char *argv[])
 {
-    uint8_t values[6];
+    uint8_t values[7];
+    uint32_t valueCount;
     uint32_t i;
 
     if (gCaptureActive) {
         CLI_write("Error: stop the sensor before captureCfg\n");
         return -1;
     }
-    if (argc != 7) {
-        CLI_write("Error: captureCfg needs 6 values: "
-                  "preStart preBins postStart postBins lateStart postFrames\n");
+    if (argc != 7 && argc != 8) {
+        CLI_write("Error: captureCfg needs 6 or 7 values: "
+                  "preStart preBins postStart postBins lateStart postFrames "
+                  "[postStride]\n");
         return -1;
     }
-    for (i = 0U; i < 6U; i++) {
+    valueCount = (uint32_t)argc - 1U;
+    for (i = 0U; i < valueCount; i++) {
         if (l3_parseU8(argv[i + 1U], &values[i]) != 0) {
             CLI_write("Error: captureCfg values must be uint8 integers\n");
             return -1;
         }
     }
+    if (valueCount == 6U) {
+        values[6] = L3_DEFAULT_POST_STRIDE;
+    }
     if (values[1] == 0U || values[3] == 0U || values[5] == 0U ||
+        values[6] == 0U || values[6] > L3_MAX_POST_STRIDE ||
         values[5] >= L3_MAX_CAPTURE_FRAMES ||
         ((uint32_t)values[0] + values[1]) > N_SAMPLES ||
         ((uint32_t)values[2] + values[3]) > N_SAMPLES ||
@@ -495,6 +525,7 @@ static int32_t l3_cli_captureCfg(int32_t argc, char *argv[])
     gCapturePlan.postBins = values[3];
     gCapturePlan.lateStart = values[4];
     gCapturePlan.postFrames = values[5];
+    gCapturePlan.postStride = values[6];
     gCapturePlan.preFrames = 0U;
     gCapturePlan.totalFrames = 0U;
     gCapturePlan.usedBytes = 0U;
@@ -740,6 +771,7 @@ static void l3_hwaMaybeQueueRearm(void)
     if (gCaptureActive && gHwaDoneSeen && gHwaOutputSeen && !gHwaRearmPending) {
 #ifdef CONFIGURABLE_CAPTURE
         if (gHwaFreezeRequested && gActiveFrameIsPost &&
+            gActiveFrameShouldKeep &&
             gPostFramesCaptured >= gCapturePlan.postFrames) {
             gCaptureActive = 0U;
             gHwaFreezeRequested = 0U;
@@ -788,7 +820,10 @@ static void l3_hwaOutputDoneCB(uintptr_t arg, uint8_t tcCode)
     gRingFrame++;
 #ifdef CONFIGURABLE_CAPTURE
     if (gActiveFrameIsPost) {
-        gPostFramesCaptured++;
+        gPostFramesObserved++;
+        if (gActiveFrameShouldKeep) {
+            gPostFramesCaptured++;
+        }
     } else {
         gPreFramesCaptured++;
         if ((gPreFramesCaptured % gCapturePlan.preFrames) == 0U) {
@@ -1067,10 +1102,13 @@ static int32_t l3_configHwaFrameOutput(uint32_t ringSlot)
         ringSlot = gCapturePlan.preFrames + gPostFramesCaptured;
         binCount = gCapturePlan.postBins;
         gActiveFrameIsPost = 1U;
+        gActiveFrameShouldKeep =
+            ((gPostFramesObserved % gCapturePlan.postStride) == 0U);
     } else {
         ringSlot = gPreFramesCaptured % gCapturePlan.preFrames;
         binCount = gCapturePlan.preBins;
         gActiveFrameIsPost = 0U;
+        gActiveFrameShouldKeep = 1U;
     }
     if (ringSlot >= gCapturePlan.totalFrames) {
         return -1;
@@ -1155,6 +1193,8 @@ static int32_t l3_freezeHwaAfterPostFrames(void)
 #ifdef CONFIGURABLE_CAPTURE
     gPostCaptureStarted = 0U;
     gPostFramesCaptured = 0U;
+    gPostFramesObserved = 0U;
+    gActiveFrameShouldKeep = 1U;
     gHwaFreezeTargetFrame = 0U;
 #else
     gHwaFreezeTargetFrame = gRingFrame + HWA_POST_TRIGGER_FRAMES;
@@ -1339,11 +1379,16 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
     h->n_rx             = N_RX;
 #ifdef SNAPSHOT_DUMP
 #ifdef CONFIGURABLE_CAPTURE
+#ifdef HYBRID_CADENCE_CAPTURE
+    h->version          = L3_DUMP_VERSION_TIMED;
+    h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED;
+#else
     h->version          = L3_DUMP_VERSION_VARIABLE;
+    h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE;
+#endif
     h->n_samples        =
         (gCapturePlan.preBins > gCapturePlan.postBins)
             ? gCapturePlan.preBins : gCapturePlan.postBins;
-    h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE;
     h->_pad             = 0U;
 #else
     h->n_samples        = SNAPSHOT_BINS;
@@ -1365,30 +1410,28 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
     h->frame_period_us  = gFramePeriodUs;
 }
 
-static int32_t l3_readTemperatureReport(l3_temperature_report_t *report)
+#ifdef CONFIGURABLE_CAPTURE
+static void l3_writeFrameDescriptor(uint32_t slot, uint8_t firstFrame)
 {
-    rlRfTempData_t tempData;
-    int32_t errCode;
+#ifdef HYBRID_CADENCE_CAPTURE
+    uint8_t descriptor[4];
+    uint16_t deltaUs = firstFrame ? 0U : gFrameDeltaUs[slot];
 
-    memset((void *)&tempData, 0, sizeof(tempData));
-    errCode = rlRfGetTemperatureReport(RL_DEVICE_MAP_INTERNAL_BSS, &tempData);
-    if (errCode != 0) {
-        return errCode;
-    }
+    descriptor[0] = gFrameBinStart[slot];
+    descriptor[1] = gFrameBinCount[slot];
+    descriptor[2] = (uint8_t)(deltaUs & 0xFFU);
+    descriptor[3] = (uint8_t)(deltaUs >> 8U);
+    UART_writePolling(gDataUart, descriptor, sizeof(descriptor));
+#else
+    uint8_t descriptor[2];
+    (void)firstFrame;
 
-    report->device_time_ms = tempData.time;
-    report->tmpRx0Sens = tempData.tmpRx0Sens;
-    report->tmpRx1Sens = tempData.tmpRx1Sens;
-    report->tmpRx2Sens = tempData.tmpRx2Sens;
-    report->tmpRx3Sens = tempData.tmpRx3Sens;
-    report->tmpTx0Sens = tempData.tmpTx0Sens;
-    report->tmpTx1Sens = tempData.tmpTx1Sens;
-    report->tmpTx2Sens = tempData.tmpTx2Sens;
-    report->tmpPmSens = tempData.tmpPmSens;
-    report->tmpDig0Sens = tempData.tmpDig0Sens;
-    report->tmpDig1Sens = tempData.tmpDig1Sens;
-    return 0;
+    descriptor[0] = gFrameBinStart[slot];
+    descriptor[1] = gFrameBinCount[slot];
+    UART_writePolling(gDataUart, descriptor, sizeof(descriptor));
+#endif
 }
+#endif
 
 #ifndef HWA_CHAINED_SNAPSHOT_RING
 /* EDMA ring-wrap completion (fires once per RING_CHIRPS; liveness only). */
@@ -1449,7 +1492,6 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
     uint32_t actualPre;
     uint32_t actualPost;
     uint32_t oldestPre;
-    uint8_t descriptor[2];
 #endif
     (void)argc; (void)argv;
 
@@ -1482,15 +1524,11 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 #ifdef CONFIGURABLE_CAPTURE
     for (i = 0U; i < actualPre; i++) {
         uint32_t slot = (oldestPre + i) % gCapturePlan.preFrames;
-        descriptor[0] = gFrameBinStart[slot];
-        descriptor[1] = gFrameBinCount[slot];
-        UART_writePolling(gDataUart, descriptor, sizeof(descriptor));
+        l3_writeFrameDescriptor(slot, (i == 0U));
     }
     for (i = 0U; i < actualPost; i++) {
         uint32_t slot = gCapturePlan.preFrames + i;
-        descriptor[0] = gFrameBinStart[slot];
-        descriptor[1] = gFrameBinCount[slot];
-        UART_writePolling(gDataUart, descriptor, sizeof(descriptor));
+        l3_writeFrameDescriptor(slot, (actualPre == 0U && i == 0U));
     }
 #else
 #ifdef SNAPSHOT_DYNAMIC_WINDOWS
@@ -1546,8 +1584,10 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 #ifdef CONFIGURABLE_CAPTURE
     gPreFramesCaptured = 0U;
     gPostFramesCaptured = 0U;
+    gPostFramesObserved = 0U;
     gPostCaptureStarted = 0U;
     gActiveFrameIsPost = 0U;
+    gActiveFrameShouldKeep = 1U;
 #endif
     if (l3_restartCompletedHwaFrame() < 0) {
         CLI_write("Error: completed HWA frame restart failed\n");
@@ -1603,7 +1643,7 @@ static int32_t l3_cli_stats(int32_t argc, char *argv[])
               "hwa_frames=%u hwa_out=%u hwa_rearms=%u hwa_rearm_err=%u "
               "hwa_wait=0x%x freeze_req=%u freeze_done=%u freeze_to=%u "
               "freeze_restart=%u plan=%upre/%upost bins=%u/%u loops=%u "
-              "used=%u pre_seen=%u post_seen=%u\n",
+              "used=%u pre_seen=%u post_kept=%u post_seen=%u stride=%u\n",
               (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
               (unsigned)gCalibStatus, (unsigned)gRfFaults,
               (unsigned)gHwaFrameDone, (unsigned)gHwaOutputDone,
@@ -1619,7 +1659,9 @@ static int32_t l3_cli_stats(int32_t argc, char *argv[])
               (unsigned)gCapturePlan.loops,
               (unsigned)gCapturePlan.usedBytes,
               (unsigned)gPreFramesCaptured,
-              (unsigned)gPostFramesCaptured);
+              (unsigned)gPostFramesCaptured,
+              (unsigned)gPostFramesObserved,
+              (unsigned)gCapturePlan.postStride);
 #else
     CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u "
               "hwa_frames=%u hwa_out=%u hwa_rearms=%u hwa_rearm_err=%u "
@@ -2127,8 +2169,10 @@ static int32_t l3_cli_sensorStart(int32_t argc, char *argv[])
 #ifdef CONFIGURABLE_CAPTURE
     gPreFramesCaptured = 0U;
     gPostFramesCaptured = 0U;
+    gPostFramesObserved = 0U;
     gPostCaptureStarted = 0U;
     gActiveFrameIsPost = 0U;
+    gActiveFrameShouldKeep = 1U;
 #endif
 #endif
     if (l3_armCapture() < 0) {
@@ -2305,7 +2349,11 @@ static void l3_initTask(UArg arg0, UArg arg1)
 
     /* CLI with the mmWave extension. */
     cliCfg.cliPrompt             = "l3dump:/>";
+#ifdef HYBRID_CADENCE_CAPTURE
+    cliCfg.cliBanner             = "OpenFlight hybrid-cadence L3 firmware (v6)\n";
+#else
     cliCfg.cliBanner             = "OpenFlight configurable L3 snapshot firmware (v5)\n";
+#endif
     cliCfg.cliUartHandle         = gCliUart;
     cliCfg.socHandle             = gSocHandle;
     cliCfg.mmWaveHandle          = gMMWaveHandle;
@@ -2338,7 +2386,7 @@ static void l3_initTask(UArg arg0, UArg arg1)
 #ifdef CONFIGURABLE_CAPTURE
     cliCfg.tableEntry[7].cmd           = "captureCfg";
     cliCfg.tableEntry[7].helpString    =
-        "captureCfg preStart preBins postStart postBins lateStart postFrames";
+        "captureCfg preStart preBins postStart postBins lateStart postFrames [postStride]";
     cliCfg.tableEntry[7].cmdHandlerFxn = l3_cli_captureCfg;
 #endif
     CLI_open(&cliCfg);

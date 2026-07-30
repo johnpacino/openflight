@@ -159,7 +159,7 @@ def pre_impact_window_s(
     """
     if impact_t_s is None or impact_t_s <= 0.0:
         return None
-    if impact_t_s > geo.n_frames * geo.frame_period_s:
+    if impact_t_s > geo.capture_duration_s:
         return None
     return (max(0.0, impact_t_s - n_frames * geo.frame_period_s), float(impact_t_s))
 

@@ -8,6 +8,7 @@ from pathlib import Path
 FIRMWARE = Path(__file__).parents[1] / "firmware" / "iwr6843" / "l3_dump.c"
 FIRMWARE_MAKEFILE = Path(__file__).parents[1] / "firmware" / "Makefile"
 CONFIGURABLE_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_configurable.cfg"
+HYBRID_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_hybrid.cfg"
 
 
 def _function_source(source: str, name: str, next_name: str) -> str:
@@ -109,6 +110,7 @@ def test_production_build_uses_configurable_capture_and_single_release():
 
     assert "--define=N_TX=3" in target
     assert "--define=CONFIGURABLE_CAPTURE=1" in target
+    assert "--define=HYBRID_CADENCE_CAPTURE=1" in target
     for fixed_geometry in (
         "--define=LOOPS=",
         "--define=RING_FRAMES=",
@@ -116,7 +118,7 @@ def test_production_build_uses_configurable_capture_and_single_release():
         "--define=SNAPSHOT_BINS=",
     ):
         assert fixed_geometry not in target
-    assert "RELEASE_NAME ?= l3_dump_vTX2_configurable_v5.bin" in source
+    assert "RELEASE_NAME ?= l3_dump_vTX2_hybrid_cadence_v6.bin" in source
     assert '"$(RELEASE_DIR)/$(RELEASE_NAME)"' in target
     assert source.count("\nbuild-native:") == 1
 
@@ -135,6 +137,66 @@ def test_configurable_capture_config_requests_32_frames_at_3ms():
     assert "chirpCfg 2 2 0 0 0 0 0 4" in lines
 
 
+def test_hybrid_config_acquires_12_loops_at_2ms_and_retains_alternate_post_frames():
+    lines = {
+        line.strip()
+        for line in HYBRID_CONFIG.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("%")
+    }
+
+    assert "frameCfg 0 2 12 0 2 1 0" in lines
+    assert "captureCfg 20 32 32 53 47 16 2" in lines
+
+
+def test_hybrid_timing_budget_and_retained_movie_length():
+    commands = {
+        line.split()[0]: line.split()
+        for line in HYBRID_CONFIG.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("%")
+    }
+    profile = commands["profileCfg"]
+    frame = commands["frameCfg"]
+    capture = commands["captureCfg"]
+
+    loops = int(frame[3])
+    frame_period_us = int(frame[5]) * 1000
+    chirp_us = float(profile[3]) + float(profile[5])
+    rf_occupancy_us = 3 * loops * chirp_us
+    post_frames = int(capture[6])
+    post_stride = int(capture[7])
+    acquired_post_frames = 1 + (post_frames - 1) * post_stride
+
+    assert rf_occupancy_us == 1620
+    assert frame_period_us - rf_occupancy_us == 380
+    assert acquired_post_frames == 31
+    assert 16 * frame_period_us + acquired_post_frames * frame_period_us == 94_000
+
+
+def test_hybrid_firmware_counts_observed_and_retained_post_frames_separately():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    callback = _function_source(
+        source,
+        "static void l3_hwaOutputDoneCB",
+        "static int32_t l3_hwaStartRing",
+    )
+    output = _function_source(
+        source,
+        "static int32_t l3_configHwaFrameOutput",
+        "static void l3_drainHwaRearmSemaphore",
+    )
+    descriptor = _function_source(
+        source,
+        "static void l3_writeFrameDescriptor",
+        "#ifndef HWA_CHAINED_SNAPSHOT_RING",
+    )
+
+    assert "gPostFramesObserved++" in callback
+    assert "gActiveFrameShouldKeep" in callback
+    assert "gCapturePlan.postStride" in output
+    assert "gFrameDeltaUs[slot]" in descriptor
+    assert "L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED" in source
+
+
 def test_variable_window_start_and_count_are_recorded_per_frame():
     source = FIRMWARE.read_text(encoding="utf-8")
     output = _function_source(
@@ -142,13 +204,17 @@ def test_variable_window_start_and_count_are_recorded_per_frame():
         "static int32_t l3_configHwaFrameOutput",
         "static void l3_drainHwaRearmSemaphore",
     )
-    dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
+    descriptor = _function_source(
+        source,
+        "static void l3_writeFrameDescriptor",
+        "#ifndef HWA_CHAINED_SNAPSHOT_RING",
+    )
 
     assert "gFrameOffset[ringSlot]" in output
     assert "gCapturePlan.preBins" in output
     assert "gCapturePlan.postBins" in output
-    assert "descriptor[0] = gFrameBinStart[slot]" in dump
-    assert "descriptor[1] = gFrameBinCount[slot]" in dump
+    assert "descriptor[0] = gFrameBinStart[slot]" in descriptor
+    assert "descriptor[1] = gFrameBinCount[slot]" in descriptor
 
 
 def test_configurable_ring_uses_exact_l3_arena_and_plan_fits():
