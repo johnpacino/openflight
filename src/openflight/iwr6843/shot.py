@@ -114,7 +114,7 @@ def impact_time_s(
     if trk.slope_bins <= 0.0:
         return None
     t_s = (tee_range_m / geo.range_res_m - trk.intercept_bins) / trk.slope_bins
-    if not 0.0 <= t_s <= geo.n_frames * geo.frame_period_s:
+    if not 0.0 <= t_s <= geo.capture_duration_s:
         return None
     return float(t_s)
 
@@ -244,6 +244,11 @@ def geometry_from_header(meta: dict, *, loop_period_s: float = tracking.LOOP_PRI
         range_fft_size=128 if range_domain else None,
         range_bin_starts=meta.get("range_bin_starts"),
         range_bin_counts=meta.get("range_bin_counts"),
+        frame_time_offsets_s=(
+            tuple(offset_us / 1e6 for offset_us in meta["frame_time_offsets_us"])
+            if "frame_time_offsets_us" in meta
+            else None
+        ),
     )
 
 

@@ -15,6 +15,11 @@
  *     n_frames pairs of uint8 (start-bin, bin-count) follow this header.
  *     Frame payloads then follow in order, each containing only its declared
  *     bin count. n_samples is the maximum frame width, not a payload stride.
+ *   range-bin fmt 4 (version 6+):
+ *     n_frames packed descriptors (uint8 start-bin, uint8 bin-count,
+ *     uint16 delta-us) follow this header. delta-us is elapsed time since the
+ *     previous retained frame and is zero for the first descriptor. This
+ *     represents dense pre-trigger and decimated post-trigger timing exactly.
  * Chirp order is TDM-interleaved: chirp c -> tx = c % n_tx, loop = c / n_tx.
  */
 #ifndef L3_DUMP_FORMAT_H
@@ -27,10 +32,12 @@
                                  * v3: frame_period_us populated */
 #define L3_DUMP_VERSION_WINDOWED 4
 #define L3_DUMP_VERSION_VARIABLE 5
+#define L3_DUMP_VERSION_TIMED    6
 #define L3_SAMPLE_INT16_IQ  0
 #define L3_SAMPLE_RANGE_FFT_IQ16 1
 #define L3_SAMPLE_RANGE_FFT_IQ16_WINDOWED 2
 #define L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE 3
+#define L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED 4
 
 typedef struct __attribute__((packed)) {
     char     magic[4];          /* "ILD1" */

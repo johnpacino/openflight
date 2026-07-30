@@ -48,6 +48,7 @@ class Geometry:
     range_fft_size: int | None = None
     range_bin_starts: tuple[int, ...] | None = None
     range_bin_counts: tuple[int, ...] | None = None
+    frame_time_offsets_s: tuple[float, ...] | None = None
 
     @property
     def n_loops(self) -> int:
@@ -87,7 +88,19 @@ class Geometry:
     def loop_time(self, frame: int, loop: int) -> float:
         """Seconds from window start for (ring-slot frame, loop)."""
         slot_order = (frame - self.trigger_frame) % self.n_frames
-        return slot_order * self.frame_period_s + loop * self.loop_period_s
+        frame_time = (
+            self.frame_time_offsets_s[slot_order]
+            if self.frame_time_offsets_s is not None
+            else slot_order * self.frame_period_s
+        )
+        return frame_time + loop * self.loop_period_s
+
+    @property
+    def capture_duration_s(self) -> float:
+        """Elapsed capture time including one base frame after the final sample."""
+        if self.frame_time_offsets_s:
+            return self.frame_time_offsets_s[-1] + self.frame_period_s
+        return self.n_frames * self.frame_period_s
 
 
 @dataclass

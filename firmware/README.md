@@ -13,46 +13,46 @@ tuning now happens in the runtime `.cfg`.
 For hardware wiring, mounting, geometry, calibration, and normal OpenFlight
 startup, use the [IWR6843 Operator Guide](../docs/iwr6843/README.md).
 
-## Current Configurable Test Release
+## Experimental Hybrid-Cadence Release
 
 Use this firmware and runtime configuration together:
 
 | Component | Current value |
 |---|---|
-| Flash image | `firmware/releases/l3_dump_vTX2_configurable_v5.bin` |
-| Runtime config | `config/iwr6843_l3dump_vTX2_configurable.cfg` |
+| Flash image | `firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin` |
+| Runtime config | `config/iwr6843_l3dump_vTX2_hybrid.cfg` |
 | Reference calibration | `config/iwr6843_calibration_reference.json` |
 | Build target | `make -C firmware docker-build` (any host) |
-| Flash image size | 341,956 bytes |
-| Flash SHA-256 | `dad4058b1e29272e0557ced7f3ae295d208e8b364fd1ca9b836996629afb2ee3` |
-| Dump format | Version 5, variable-width complex range-FFT snapshots |
-| Default complete dump size | 783,444 bytes |
+| Flash image size | 342,404 bytes |
+| Flash SHA-256 | `d6664e12bf06522c281b9cb227cfae274ed0a2cf32efe809551f7653faba7fe7` |
+| Dump format | Version 6, variable-width timed complex range-FFT snapshots |
+| Default complete dump size | 783,508 bytes |
 
 Verify the image before flashing:
 
 ```bash
-sha256sum firmware/releases/l3_dump_vTX2_configurable_v5.bin
+sha256sum firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin
 ```
 
-The v5 image separates storage into a narrow circular pre-impact ring and a
-wider sequential post-impact buffer. The checked-in config requests 32 bins
-before the trigger, 53 bins afterward, 16 post-trigger frames, 12 loops, and
-3 ms frame spacing. Firmware computes how many pre-trigger frames fit safely:
-the default is 16 pre plus 16 post, or 32 frames spanning 96 ms.
+The v6 image acquires all 12 loops every 2 ms. It retains every pre-trigger
+frame in the narrow 32-bin club window, then retains alternate post-trigger
+acquisitions in the wider 53-bin ball window. The resulting capture contains
+16 dense pre-impact frames at 2 ms spacing and 16 full-quality ball snapshots
+at 4 ms spacing. The post frames still contain all 12 loops.
 
-This release has passed the container build and host decoder tests but has not
-yet repeated the source-of-truth TrackMan validation that established the
-earlier fixed-window result. Keep the prior v3 image available for rollback
-until that validation is complete.
+This release has passed the container build, wire-format tests, and synthetic
+end-to-end speed/angle processing. It has not yet passed a hardware smoke test
+or source-of-truth TrackMan validation. Keep
+`l3_dump_vTX2_configurable_v5.bin` and its matching config available as the
+immediate rollback.
 
 Building the firmware needs the TI mmWave SDK and ARM codegen tools, which ship
 as **Linux x86_64 installers only**, so it cannot be built directly on an Apple
 Silicon Mac or on the Pi. Use `make -C firmware docker-build` (see
 [Prerequisites For Building](#prerequisites-for-building)); the target drops the
-image into `firmware/releases/` and prints its hash. Keep the previously
-validated v3 image available for rollback until v5 completes source-of-truth
-testing. Other experimental images and configs remain available through Git
-history rather than appearing as supported setup choices.
+image into `firmware/releases/` and prints its hash. Other experimental images
+and configs remain available through Git history rather than appearing as
+supported setup choices.
 
 The linked image is verifiable independently of the hash: the map file must show
 `.l3ring` at `0x51000000` with size `0x000c0000`. The firmware reserves all
@@ -62,10 +62,11 @@ The linked image is verifiable independently of the hash: the map file must show
 grep -E "l3ring|L3_RAM" firmware/iwr6843/l3_dump_mss.map
 ```
 
-The loop count and cadence come from `frameCfg`. `captureCfg` supplies the
-pre/post window widths, start bins, and post-trigger frame count. The firmware
-uses all remaining L3 for pre-trigger frames and prints the resolved plan during
-`sensorStart`; invalid or oversized plans fail before RF capture begins.
+The loop count and acquisition cadence come from `frameCfg`. `captureCfg`
+supplies the pre/post window widths, start bins, retained post-trigger frame
+count, and post-trigger retention stride. The firmware uses all remaining L3
+for pre-trigger frames and prints the resolved plan during `sensorStart`;
+invalid or oversized plans fail before RF capture begins.
 
 ## What The Current Firmware Captures
 
@@ -78,9 +79,10 @@ uses all remaining L3 for pre-trigger frames and prints the resolved plan during
 | Loops per frame | 12 |
 | Chirps per frame | 36 (`3 TX x 12 loops`) |
 | Frames in the default plan | 32 |
-| Frame spacing | 3 ms |
+| Acquisition spacing | 2 ms |
 | Frames before/around trigger | 16 |
-| Frames after trigger | 16 |
+| Retained frames after trigger | 16 |
+| Retained post-trigger spacing | 4 ms (`postStride=2`) |
 | Acquired ADC samples per chirp | 128 |
 | Stored pre-trigger bins per chirp/RX | 32 complex bins |
 | Stored post-trigger bins per chirp/RX | 53 complex bins |
@@ -88,12 +90,25 @@ uses all remaining L3 for pre-trigger frames and prints the resolved plan during
 The storage command is:
 
 ```text
-captureCfg 20 32 32 53 47 16
+captureCfg 20 32 32 53 47 16 2
 ```
 
-Its fields are `preStart preBins postStart postBins lateStart postFrames`.
+Its fields are
+`preStart preBins postStart postBins lateStart postFrames postStride`.
 The first half of the post frames uses `postStart`; the second half uses
-`lateStart`. All windows must remain within the 128-bin range FFT.
+`lateStart`. `postStride=2` retains every other post-trigger acquisition. All
+windows must remain within the 128-bin range FFT.
+
+The RF portion of each frame occupies approximately:
+
+```text
+3 TX x 12 loops x (7 us idle + 38 us ramp) = 1,620 us
+```
+
+A 2,000 us frame therefore leaves about 380 us for HWA/EDMA completion and
+firmware rearm. That is intentionally an aggressive experimental margin. The
+first hardware test must verify `hwa_rearm_err=0`, matching HWA input/output
+frame counts, and repeatable dump/rearm cycles before hitting balls.
 
 All three transmitters are retained. The outer transmitter pair is used by the
 vertical launch estimator, while the remaining transmitter provides the
@@ -130,9 +145,9 @@ switches to the proven 53-bin ball-flight window after the trigger:
 | Middle post-trigger flight | 8 | 32 | 32-84 | Follow the ball away from the tee |
 | Late post-trigger flight | 8 | 47 | 47-99 | Retain farther flight and the net-side region |
 
-Each frame's start bin and valid bin count are written into the v5 dump. The
-host therefore knows the absolute range represented by every local bin and
-does not treat absent pre-trigger bins as measured zeros.
+Each frame's start bin, valid bin count, and elapsed time from the previous
+retained frame are written into the v6 dump. The host therefore knows both the
+absolute range and actual sampling time represented by every frame.
 
 ### L3 Memory Budget
 
@@ -150,10 +165,10 @@ The linker reserves the full 786,432-byte region as a flat arena. At
 remaining whole-frame space into a circular pre-trigger ring. The default plan
 leaves 3,072 bytes unused because another 18,432-byte pre frame cannot fit.
 
-The transfer adds a 20-byte header and 32 two-byte frame descriptors:
+The transfer adds a 20-byte header and 32 four-byte frame descriptors:
 
 ```text
-783,360 + 20 + 64 = 783,444 bytes
+783,360 + 20 + 128 = 783,508 bytes
 ```
 
 At the saturated 1,041,667-baud link (measured 103,038 bytes/s) one dump takes
@@ -171,10 +186,11 @@ The wire format is defined in two places that must stay synchronized:
 - Firmware: [`iwr6843/dump_format.h`](iwr6843/dump_format.h)
 - Host parser: [`../src/openflight/iwr6843/dump.py`](../src/openflight/iwr6843/dump.py)
 
-The current version 5 transfer contains:
+The current version 6 transfer contains:
 
 1. A packed 20-byte little-endian `l3_dump_header_t`.
-2. One unsigned `(start bin, valid bin count)` byte pair for each frame.
+2. One packed `(uint8 start bin, uint8 valid bin count, uint16 delta-us)`
+   descriptor for each frame.
 3. Only each frame's declared valid complex int16 range bins, ordered by frame,
    chirp, RX, and local range bin.
 4. Each complex sample in TI's native imaginary-then-real order.
@@ -189,9 +205,9 @@ The header carries:
 | `chirps_per_frame` | `n_tx x loops` |
 | `n_tx`, `n_rx` | Virtual-array geometry |
 | `n_samples` | Raw ADC count or maximum stored frame width |
-| `sample_fmt` | Raw ADC, fixed snapshot, fixed-width window, or variable-width window |
-| `trigger_frame` | Oldest circular slot for legacy formats; zero for chronological v5 dumps |
-| `frame_period_us` | Frame spacing used by trajectory fitting |
+| `sample_fmt` | Raw ADC, fixed snapshot, fixed-width window, variable-width window, or timed variable-width window |
+| `trigger_frame` | Oldest circular slot for legacy formats; zero for chronological v5/v6 dumps |
+| `frame_period_us` | Base acquisition spacing; v6 descriptors carry retained-frame deltas |
 
 Changing the header, sample order, frame metadata, or sample format requires a
 matching host-parser change and regression tests in the same commit.
@@ -209,7 +225,7 @@ matching host-parser change and regression tests in the same commit.
 | `firmware/Dockerfile` | x86_64 build environment, so macOS/arm64 hosts can build |
 | `firmware/releases/` | Checked-in test image and validated rollback image |
 | `firmware/flash_iwr6843.py` | Pi-compatible IWR6843 ROM bootloader client |
-| `config/iwr6843_l3dump_vTX2_configurable.cfg` | Runtime RF and L3 storage plan |
+| `config/iwr6843_l3dump_vTX2_hybrid.cfg` | Runtime RF, L3 storage, and post-retention plan |
 | `src/openflight/iwr6843/dump.py` | Python decoder and executable format reference |
 
 ## Where To Build, Flash, And Run
@@ -410,7 +426,7 @@ The target performs the application build, generates the flashable TI
 meta-image, and copies the production image into `firmware/releases/`:
 
 ```text
-firmware/releases/l3_dump_vTX2_configurable_v5.bin
+firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin
 ```
 
 Generated `.xer4f`, `.map`, and intermediate `.bin` files stay under
@@ -504,7 +520,7 @@ Leave the board in flash mode and run:
 
 ```bash
 uv run python firmware/flash_iwr6843.py \
-  firmware/releases/l3_dump_vTX2_configurable_v5.bin \
+  firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin \
   --port /dev/ttyUSB0
 ```
 
@@ -595,7 +611,8 @@ The checked-in `.cfg` controls:
 | `captureCfg preStart preBins` | Circular pre-trigger range window |
 | `captureCfg postStart postBins` | First-half post-trigger range window |
 | `captureCfg lateStart` | Second-half post-trigger start; uses `postBins` width |
-| `captureCfg postFrames` | Reserved sequential post-trigger frames |
+| `captureCfg postFrames` | Number of retained post-trigger frames |
+| `captureCfg postStride` | Retain every Nth post-trigger acquisition |
 
 At `sensorStart`, firmware first reserves the post buffer, then turns every
 remaining whole-frame allocation into pre-trigger ring slots:
@@ -614,7 +631,7 @@ enough pre-trigger history for club work after trigger latency; see
 
 Changing loops or widths changes the resolved frame count and transfer size.
 The UART link is saturated at 1,041,667 baud (103,038 bytes/s measured), so the
-default 783,444-byte dump takes about 7.6 seconds, during which the radar is
+default 783,508-byte dump takes about 7.6 seconds, during which the radar is
 blind. Keep `--iwr6843-capture-timeout` comfortably above it.
 
 Do not reuse application objects after changing compile-time geometry. The
@@ -667,8 +684,8 @@ Also check:
 | Probe receives no ROM response | Wrong CP2105 interface or RESET timing | Use Enhanced/UARTA, type `READY`, then RESET only when prompted |
 | Flash fails after erase | Image transfer was interrupted | Leave flash mode enabled and rerun the full flash command; the ROM bootloader remains available |
 | No CLI after flashing | Board remains in flash mode or was not reset | Restore functional switches and press RESET |
-| Server rejects the config | Wrong firmware/config pair, invalid loop count, or an L3 plan that does not fit | Use the v5 binary and `iwr6843_l3dump_vTX2_configurable.cfg`; read the `Capture plan` or `Error` line |
-| Default dump is not 783,444 bytes | The pre-ring was not full, the config was changed, the UART transfer was interrupted, or the wrong firmware is flashed | Check the v5 frame descriptors and resolved plan before treating the size difference as corruption |
+| Server rejects the config | Wrong firmware/config pair, invalid loop count/stride, or an L3 plan that does not fit | Use the v6 binary and `iwr6843_l3dump_vTX2_hybrid.cfg`; read the `Capture plan` or `Error` line |
+| Default dump is not 783,508 bytes | The pre-ring was not full, the config was changed, the UART transfer was interrupted, or the wrong firmware is flashed | Check the v6 frame descriptors and resolved plan before treating the size difference as corruption |
 | First run works but restart hangs | Retired v1 image or incomplete shutdown | Flash the current image and reset in functional mode |
 | `docker-build` says the image does not exist | `docker-image` has not been run | `make -C firmware docker-image` (needs all five installers) |
 | Container build fails "cannot execute 32-bit i386 binaries" | Docker Desktop is using its Rosetta backend | Turn off **Use Rosetta for x86_64/amd64 emulation** so QEMU handles i386 |

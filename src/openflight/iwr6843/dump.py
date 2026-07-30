@@ -13,8 +13,10 @@ loop = c // n_tx. The rotated-board elevation virtual array is
 [tx0.rx0..rx(nrx-1), tx1.rx0..] = n_tx*n_rx lambda/2 elements.
 
 Version 5 stores a (start bin, valid bin count) pair for each frame, followed
-by only that frame's valid bins. The parser expands those frames to the
-header-declared maximum width and leaves the invalid tail as zeros. Earlier
+by only that frame's valid bins. Version 6 adds the elapsed microseconds since
+the previous retained frame, allowing dense pre-impact frames and decimated
+post-impact frames in one capture. The parser expands variable-width frames to
+the header-declared maximum width and leaves the invalid tail as zeros. Earlier
 dump versions remain parseable so recorded sessions can still be replayed.
 """
 
@@ -32,6 +34,13 @@ SAMPLE_INT16_IQ = 0
 SAMPLE_RANGE_FFT_IQ16 = 1
 SAMPLE_RANGE_FFT_IQ16_WINDOWED = 2
 SAMPLE_RANGE_FFT_IQ16_VARIABLE = 3
+SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED = 4
+TIMED_FRAME_DESCRIPTOR = struct.Struct("<BBH")
+
+_VARIABLE_SAMPLE_FORMATS = (
+    SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+    SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+)
 
 
 def pack_dump(
@@ -45,6 +54,7 @@ def pack_dump(
     range_bin_start: int = 0,
     range_bin_starts: tuple[int, ...] | list[int] | None = None,
     range_bin_counts: tuple[int, ...] | list[int] | None = None,
+    frame_time_offsets_us: tuple[int, ...] | list[int] | None = None,
 ) -> bytes:
     """Complex cube [n_frames, chirps_per_frame, n_rx, n_samples] -> dump bytes.
 
@@ -57,28 +67,56 @@ def pack_dump(
         SAMPLE_RANGE_FFT_IQ16,
         SAMPLE_RANGE_FFT_IQ16_WINDOWED,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     ):
         raise ValueError(f"unsupported sample_fmt {sample_fmt}")
     frame_prefix = b""
     if sample_fmt in (
         SAMPLE_RANGE_FFT_IQ16_WINDOWED,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     ):
-        minimum_version = 5 if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE else 4
+        minimum_version = (
+            6
+            if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED
+            else 5
+            if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE
+            else 4
+        )
         if version < minimum_version:
             raise ValueError(f"sample format {sample_fmt} requires dump version {minimum_version}+")
         if range_bin_starts is None or len(range_bin_starts) != n_frames:
             raise ValueError("windowed range snapshots require one start bin per frame")
         if any(start < 0 or start > 255 for start in range_bin_starts):
             raise ValueError("frame range-bin starts must fit in uint8")
-        if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE:
+        if sample_fmt in _VARIABLE_SAMPLE_FORMATS:
             if range_bin_counts is None or len(range_bin_counts) != n_frames:
                 raise ValueError("variable range snapshots require one bin count per frame")
             if any(count <= 0 or count > n_samples or count > 255 for count in range_bin_counts):
                 raise ValueError("frame range-bin counts must fit in uint8 and cube width")
-            frame_prefix = bytes(
-                value for pair in zip(range_bin_starts, range_bin_counts) for value in pair
-            )
+            if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED:
+                if frame_time_offsets_us is None or len(frame_time_offsets_us) != n_frames:
+                    raise ValueError("timed range snapshots require one time offset per frame")
+                if not frame_time_offsets_us or frame_time_offsets_us[0] != 0:
+                    raise ValueError("the first timed frame offset must be zero")
+                deltas_us = [
+                    later - earlier
+                    for earlier, later in zip(frame_time_offsets_us, frame_time_offsets_us[1:])
+                ]
+                if any(delta <= 0 or delta > 0xFFFF for delta in deltas_us):
+                    raise ValueError("timed frame offsets must increase by 1-65535 microseconds")
+                frame_prefix = b"".join(
+                    TIMED_FRAME_DESCRIPTOR.pack(start, count, delta)
+                    for start, count, delta in zip(
+                        range_bin_starts,
+                        range_bin_counts,
+                        (0, *deltas_us),
+                    )
+                )
+            else:
+                frame_prefix = bytes(
+                    value for pair in zip(range_bin_starts, range_bin_counts) for value in pair
+                )
         else:
             frame_prefix = bytes(range_bin_starts)
     pad = range_bin_start if sample_fmt == SAMPLE_RANGE_FFT_IQ16 else 0
@@ -95,7 +133,7 @@ def pack_dump(
         trigger_frame,
         frame_period_us,
     )
-    if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE:
+    if sample_fmt in _VARIABLE_SAMPLE_FORMATS:
         flat = np.concatenate(
             [cube[frame, ..., :count].reshape(-1) for frame, count in enumerate(range_bin_counts)]
         )
@@ -120,6 +158,7 @@ def parse_header(raw: bytes) -> dict:
         SAMPLE_RANGE_FFT_IQ16,
         SAMPLE_RANGE_FFT_IQ16_WINDOWED,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     ):
         raise ValueError(f"unsupported sample_fmt {fmt}")
     return dict(
@@ -134,7 +173,9 @@ def parse_header(raw: bytes) -> dict:
         sample_fmt=fmt,
         range_bin_start=_pad if fmt == SAMPLE_RANGE_FFT_IQ16 else 0,
         frame_metadata_nbytes=(
-            2 * nf
+            TIMED_FRAME_DESCRIPTOR.size * nf
+            if fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED
+            else 2 * nf
             if fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE
             else nf
             if fmt == SAMPLE_RANGE_FFT_IQ16_WINDOWED
@@ -157,11 +198,26 @@ def _parse_frame_metadata(raw: bytes, meta: dict) -> None:
         meta["range_bin_counts"] = tuple(table[1::2])
         if any(count <= 0 or count > meta["n_samples"] for count in meta["range_bin_counts"]):
             raise ValueError("invalid per-frame range-bin count")
+    elif meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED:
+        descriptors = tuple(TIMED_FRAME_DESCRIPTOR.iter_unpack(raw[HEADER.size : stop]))
+        meta["range_bin_starts"] = tuple(item[0] for item in descriptors)
+        meta["range_bin_counts"] = tuple(item[1] for item in descriptors)
+        deltas_us = tuple(item[2] for item in descriptors)
+        if any(count <= 0 or count > meta["n_samples"] for count in meta["range_bin_counts"]):
+            raise ValueError("invalid per-frame range-bin count")
+        if not deltas_us or deltas_us[0] != 0 or any(delta == 0 for delta in deltas_us[1:]):
+            raise ValueError("invalid per-frame time delta")
+        elapsed = 0
+        offsets = []
+        for delta in deltas_us:
+            elapsed += delta
+            offsets.append(elapsed)
+        meta["frame_time_offsets_us"] = tuple(offsets)
 
 
 def payload_nbytes(meta: dict, raw: bytes | None = None) -> int:
     """Bytes of int16-I/Q ADC payload following the header."""
-    if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_VARIABLE:
+    if meta["sample_fmt"] in _VARIABLE_SAMPLE_FORMATS:
         if "range_bin_counts" not in meta:
             if raw is None:
                 raise ValueError("variable-width payload requires frame metadata")
@@ -179,7 +235,7 @@ def parse_dump(raw: bytes):
     nf, cpf, nrx, ns = (meta["n_frames"], meta["chirps_per_frame"], meta["n_rx"], meta["n_samples"])
     payload_offset = HEADER.size + meta.get("frame_metadata_nbytes", 0)
     _parse_frame_metadata(raw, meta)
-    if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_VARIABLE:
+    if meta["sample_fmt"] in _VARIABLE_SAMPLE_FORMATS:
         cube = np.zeros((nf, cpf, nrx, ns), dtype=np.complex128)
         word_offset = payload_offset
         for frame, count in enumerate(meta["range_bin_counts"]):
@@ -240,6 +296,7 @@ def select_tdm_loops(raw: bytes, *, start: int, count: int) -> bytes:
         range_bin_start=meta.get("range_bin_start", 0),
         range_bin_starts=meta.get("range_bin_starts"),
         range_bin_counts=meta.get("range_bin_counts"),
+        frame_time_offsets_us=meta.get("frame_time_offsets_us"),
     )
 
 
@@ -249,6 +306,7 @@ def is_range_snapshot(meta: dict) -> bool:
         SAMPLE_RANGE_FFT_IQ16,
         SAMPLE_RANGE_FFT_IQ16_WINDOWED,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     )
 
 
@@ -289,6 +347,7 @@ def project_tx_pair(raw: bytes, tx_indices: tuple[int, int] = (0, 1)) -> bytes:
         range_bin_start=meta.get("range_bin_start", 0),
         range_bin_starts=meta.get("range_bin_starts"),
         range_bin_counts=meta.get("range_bin_counts"),
+        frame_time_offsets_us=meta.get("frame_time_offsets_us"),
     )
 
 

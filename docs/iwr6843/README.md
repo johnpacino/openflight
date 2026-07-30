@@ -20,66 +20,80 @@ frame ring.
 For firmware development, architecture, and build instructions, see
 [`firmware/README.md`](../../firmware/README.md).
 
-## Current Configurable Test Configuration
+## Experimental Hybrid-Cadence Configuration
 
 Use these files together. Mixing a firmware binary and config from different
 variants will fail startup or produce the wrong capture geometry.
 
-> **v5 is the current configurable test image.** It has passed build and host
-> decoding tests but still needs source-of-truth TrackMan validation. Keep v3
-> available for rollback. Rebuilding v5 needs Docker plus the TI installers; see
-> [`firmware/README.md`](../../firmware/README.md).
+> **v6 is an experimental hybrid-cadence image.** It has passed the TI build,
+> host decoding, and synthetic pipeline tests, but it still needs radar hardware
+> and source-of-truth TrackMan validation. Keep configurable v5 available as the
+> validated rollback baseline. Rebuilding either image needs Docker plus the TI
+> installers; see [`firmware/README.md`](../../firmware/README.md).
 
 | Component | Current file or value |
 |---|---|
-| Firmware | `firmware/releases/l3_dump_vTX2_configurable_v5.bin` |
-| Radar config | `config/iwr6843_l3dump_vTX2_configurable.cfg` |
+| Firmware | `firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin` |
+| Radar config | `config/iwr6843_l3dump_vTX2_hybrid.cfg` |
 | Reference array calibration | `config/iwr6843_calibration_reference.json` |
 | Transmitters / receivers | 3 TX / 4 RX |
-| Capture | 12 loops, 32 frames, 3 ms spacing (16 narrow pre/trigger, 16 wider post) |
+| Acquisition | 12 loops every 2 ms |
+| Retained capture | 16 narrow pre-trigger frames at 2 ms; 16 wider post-trigger frames at 4 ms |
 | Saved range data | 32 complex bins pre-trigger; 53 complex bins during ball flight |
-| Default complete dump size | 783,444 bytes, including header and frame descriptors |
+| Default complete dump size | 783,508 bytes, including header and timed frame descriptors |
 
-The v5 firmware SHA-256 is:
+The v6 firmware SHA-256 is:
 
 ```text
-dad4058b1e29272e0557ced7f3ae295d208e8b364fd1ca9b836996629afb2ee3
+d6664e12bf06522c281b9cb227cfae274ed0a2cf32efe809551f7653faba7fe7
 ```
 
 Verify it on the Pi before flashing:
 
 ```bash
-sha256sum firmware/releases/l3_dump_vTX2_configurable_v5.bin
+sha256sum firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin
 ```
 
 The config's `captureCfg` line controls pre/post range windows and the
-post-trigger frame count. The firmware derives the largest safe pre-trigger
-ring from the loop count and available L3 RAM.
+post-trigger retention stride. The firmware derives the largest safe
+pre-trigger ring from the loop count and available L3 RAM.
 
 ### Runtime Capture Settings
 
 The current test config contains:
 
 ```text
-frameCfg 0 2 12 0 3 1 0
-captureCfg 20 32 32 53 47 16
+frameCfg 0 2 12 0 2 1 0
+captureCfg 20 32 32 53 47 16 2
 ```
 
-`frameCfg` selects 12 loops and 3 ms frame spacing. `captureCfg` fields are:
+`frameCfg` selects 12 loops and a 2 ms acquisition cadence. `captureCfg` fields
+are:
 
 ```text
-captureCfg preStart preBins postStart postBins lateStart postFrames
+captureCfg preStart preBins postStart postBins lateStart postFrames postStride
 ```
 
 With the default values, the rolling pre/trigger frames retain bins 20-51,
 the first eight post frames retain bins 32-84, and the final eight retain bins
-47-99. The 53-bin post-impact window is intentionally unchanged from the
-source-of-truth-tested ball-flight configuration.
+47-99. `postStride 2` retains every other post-trigger acquisition. The radar
+therefore observes post-impact motion every 2 ms but stores full 12-loop
+snapshots every 4 ms. The 53-bin post-impact window and retained post-impact
+cadence are intentionally unchanged from the source-of-truth-tested
+ball-flight configuration.
 
 `sensorStart` prints the resolved frame count and byte budget. The firmware
 supports even loop counts from 2 through 16 and rejects zero-width, out-of-range,
-or oversized plans. Changing loops, cadence, or stored ball-flight coverage
-requires another source-of-truth validation session even when the plan fits.
+oversized, or invalid-stride plans. The v6 dump stores a time delta with every
+retained frame so the host does not mistake the mixed 2 ms / 4 ms timeline for
+a uniform movie. Changing loops, cadence, stride, or stored ball-flight
+coverage requires another source-of-truth validation session even when the
+plan fits.
+
+The 2 ms acquisition period leaves only about 0.38 ms between the end of a
+12-loop, 3-TX frame and the next frame boundary. Treat any HWA re-arm error,
+RF fault, missing frame, or unstable restart as a failed hardware smoke test
+and return to configurable v5 before collecting accuracy data.
 
 ## Before You Start
 
@@ -373,7 +387,7 @@ command will ask for another RESET after it opens the UART.
 
 ```bash
 uv run python firmware/flash_iwr6843.py \
-  firmware/releases/l3_dump_vTX2_configurable_v5.bin \
+  firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin \
   --port /dev/ttyUSB0
 ```
 
@@ -481,7 +495,7 @@ scripts/start-kiosk.sh --debug \
   --radar-port /dev/ttyAMA0 \
   --iwr6843 \
   --iwr6843-port /dev/ttyUSB0 \
-  --iwr6843-config config/iwr6843_l3dump_vTX2_configurable.cfg \
+  --iwr6843-config config/iwr6843_l3dump_vTX2_hybrid.cfg \
   --iwr6843-tee-m 1.575 \
   --iwr6843-net-m 4.6 \
   --iwr6843-tilt-deg 10.4 \
@@ -493,9 +507,9 @@ scripts/start-kiosk.sh --debug \
 For Option B, replace `/dev/ttyAMA0` after `--radar-port` with the OPS USB serial
 device, preferably its stable `/dev/serial/by-id/...` path.
 
-The production config and reference calibration above are the server defaults.
-Passing `--iwr6843-config` explicitly is still useful when diagnosing a setup
-because the selected file is visible in the launch command and session log.
+Pass the experimental config explicitly. That keeps the selected firmware
+contract visible in the launch command and session log and avoids accidentally
+running v6 with a different capture plan.
 
 The OPS port can also be supplied as `--ops-port /dev/ttyAMA0`. `--port` means
 the web-server port, so do not use it for the OPS serial device.
@@ -664,7 +678,7 @@ uv run \
   --club 7i \
   --ops-port /dev/ttyAMA0 \
   --iwr6843-port /dev/ttyUSB0 \
-  --cfg config/iwr6843_l3dump_vTX2_configurable.cfg \
+  --cfg config/iwr6843_l3dump_vTX2_hybrid.cfg \
   --tee-m 1.575 \
   --net-m 4.6 \
   --tilt-deg 10.4 \
@@ -740,7 +754,7 @@ Replay a debug session JSONL:
 ```bash
 uv run python scripts/iwr6843/replay.py \
   --input ~/openflight_sessions/session_YYYYMMDD_HHMMSS_home.jsonl \
-  --cfg config/iwr6843_l3dump_vTX2_configurable.cfg \
+  --cfg config/iwr6843_l3dump_vTX2_hybrid.cfg \
   --tee-m 1.575 \
   --net-m 4.6 \
   --tilt-deg 10.4 \
@@ -756,7 +770,7 @@ Replay one dump:
 uv run python scripts/iwr6843/replay.py \
   --input ~/openflight_sessions/iwr6843/shot.l3dump \
   --ball-speed-mph 105.9 \
-  --cfg config/iwr6843_l3dump_vTX2_configurable.cfg \
+  --cfg config/iwr6843_l3dump_vTX2_hybrid.cfg \
   --club 9i \
   --tee-m 1.575 \
   --net-m 4.6 \
@@ -771,7 +785,7 @@ TI binary dump.
 
 ### Compare 12 loops with 10 loops
 
-The configurable test image records all 12 loops. Keep that richer hardware
+The hybrid test image records all 12 loops. Keep that richer hardware
 capture and remove loops offline so the full and reduced estimates come from
 the exact same swing:
 
@@ -779,7 +793,7 @@ the exact same swing:
 uv run python scripts/iwr6843/club_path_loop_ablation.py \
   --session ~/openflight_sessions/session_YYYYMMDD_HHMMSS_home.jsonl \
   --dump-dir ~/openflight_sessions/iwr6843 \
-  --cfg config/iwr6843_l3dump_vTX2_configurable.cfg \
+  --cfg config/iwr6843_l3dump_vTX2_hybrid.cfg \
   --keep-loops 10 \
   --club 9i \
   --tee-m 1.575 \
@@ -806,11 +820,12 @@ until power, ports, firmware, config, and geometry are verified.
 |---|---|---|
 | `no IWR6843 CLI found` | Wrong USB interface, board still in flash mode, missing functional RESET, stale serial owner, or unstable power | Set functional switches, press RESET, verify interface `00`, stop serial processes, then retry with explicit `--iwr6843-port` |
 | `GPIO busy` | Another kiosk, calibration, or shot-test process owns BCM17 | Stop the old process; use `pgrep -af` and `sudo fuser -v /dev/gpiochip*` to locate it |
-| Config rejected at startup | Wrong firmware/config pair, invalid loops/windows, or the requested post buffer exceeds L3 | Flash v5, use `iwr6843_l3dump_vTX2_configurable.cfg`, and read the firmware's `Error` line |
+| Config rejected at startup | Wrong firmware/config pair, invalid loops/windows/stride, or the requested post buffer exceeds L3 | Flash v6, use `iwr6843_l3dump_vTX2_hybrid.cfg`, and read the firmware's `Error` line |
 | Bootloader probe returns no response | Wrong CP2105 port or RESET occurred before the script opened UART | Use Enhanced/UARTA, rerun the probe, type `READY`, then RESET only when prompted |
 | Flash fails after `Erasing existing SFLASH` | Transfer was interrupted after the old image was erased | Leave the board in flash mode and rerun the complete flash; the ROM bootloader is still available |
 | Server starts only after unplugging TI | Board was not reset cleanly, a prior dump was still streaming, or USB/power wedged | Stop the old process, press RESET in functional mode, wait for the port, then reconnect USB only if needed |
-| `short IWR6843 dump` | Interrupted UART transfer, process shutdown during dump, or wrong firmware format | Let the active dump finish, restart, and compare the v5 frame descriptors with the resolved capture plan |
+| `short IWR6843 dump` | Interrupted UART transfer, process shutdown during dump, or wrong firmware format | Let the active dump finish, restart, and compare the v6 timed frame descriptors with the resolved capture plan |
+| HWA re-arm error, RF fault, or missing retained frame | The 2 ms acquisition cadence is too aggressive for reliable re-arm on this hardware/configuration | Stop testing v6, return to configurable v5, and preserve the complete terminal log and debug dump |
 | Clap produces `rejected_by_ball_tracker` | A clap has no moving ball range track | Expected for trigger testing; confirm the dump completed, then hit a ball |
 | `rejected_track_quality` | A ball-like track was found but it was too thin, noisy, inconsistent, or net-contaminated | Verify geometry and aim; inspect the debug dump before relaxing acceptance gates |
 | `rejected_missing_tdm_sign` | The ball track was usable, but the TX timing evidence did not resolve a trustworthy correction sign | Keep the estimated UI angle, inspect the debug dump, and verify signal quality before changing gates |
