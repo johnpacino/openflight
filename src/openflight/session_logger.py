@@ -360,6 +360,10 @@ class SessionLogger:
         angle_source: Optional[str] = None,
         club_angle_deg: Optional[float] = None,
         club_path_deg: Optional[float] = None,
+        experimental_attack_angle_deg: Optional[float] = None,
+        experimental_attack_angle_status: Optional[str] = None,
+        experimental_club_path_deg: Optional[float] = None,
+        experimental_club_path_status: Optional[str] = None,
         spin_axis_deg: Optional[float] = None,
         pipeline_ms: Optional[Dict] = None,
         impact_timestamp: Optional[float] = None,
@@ -454,6 +458,12 @@ class SessionLogger:
             data["club_angle_deg"] = club_angle_deg
         if club_path_deg is not None:
             data["club_path_deg"] = club_path_deg
+        if experimental_attack_angle_deg is not None:
+            data["experimental_attack_angle_deg"] = experimental_attack_angle_deg
+            data["experimental_attack_angle_status"] = experimental_attack_angle_status
+        if experimental_club_path_deg is not None:
+            data["experimental_club_path_deg"] = experimental_club_path_deg
+            data["experimental_club_path_status"] = experimental_club_path_status
         if spin_axis_deg is not None:
             data["spin_axis_deg"] = spin_axis_deg
         if pipeline_ms is not None:

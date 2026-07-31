@@ -132,13 +132,12 @@ function getLaunchAngleQuality(confidence: number | null): 'high' | 'medium' | '
   return 'low';
 }
 
-export function ShotDisplay({
-  shot,
-  shots = [],
-  animate = false,
-  activePlayerName,
-  activeTrainingImplement,
-}: ShotDisplayProps) {
+function experimentalStatus(status: string | null | undefined): string {
+  if (!status || status === 'candidate_available') return 'candidate';
+  return status.replace(/^rejected_/, 'rejected: ').replaceAll('_', ' ');
+}
+
+export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
   const { unitSystem } = useUnitPreference();
   const carryRange = useMemo(() => {
     if (!shot) return null;
@@ -226,6 +225,12 @@ export function ShotDisplay({
 
   const hasSpin = shot.spin_rpm !== null;
   const hasLaunchAngle = shot.launch_angle_vertical !== null;
+  const attackAngle = shot.club_angle_deg ?? shot.experimental_attack_angle_deg ?? null;
+  const attackIsExperimental =
+    shot.club_angle_deg === null && shot.experimental_attack_angle_deg != null;
+  const clubPath = shot.club_path_deg ?? shot.experimental_club_path_deg ?? null;
+  const clubPathIsExperimental =
+    shot.club_path_deg === null && shot.experimental_club_path_deg != null;
 
   return (
     <div className={`shot-display ${animate ? 'shot-display--animate' : ''}`}>
@@ -262,22 +267,32 @@ export function ShotDisplay({
             variant="secondary"
             confidence={hasLaunchAngle ? getLaunchAngleQuality(shot.launch_angle_confidence) : null}
           />
-          {shot.club_angle_deg !== null && (
+          {attackAngle !== null && (
             <MetricCard
-              value={shot.club_angle_deg.toFixed(1)}
+              value={attackAngle.toFixed(1)}
               unit="°"
               label="Club AoA"
-              subtext="radar"
+              subtext={
+                attackIsExperimental
+                  ? experimentalStatus(shot.experimental_attack_angle_status)
+                  : 'radar'
+              }
               variant="secondary"
+              confidence={attackIsExperimental ? 'experimental' : null}
             />
           )}
-          {shot.club_path_deg !== null && (
+          {clubPath !== null && (
             <MetricCard
-              value={(shot.club_path_deg >= 0 ? '+' : '') + shot.club_path_deg.toFixed(1)}
+              value={(clubPath >= 0 ? '+' : '') + clubPath.toFixed(1)}
               unit="°"
               label="Club Path"
-              subtext="radar"
+              subtext={
+                clubPathIsExperimental
+                  ? experimentalStatus(shot.experimental_club_path_status)
+                  : 'radar'
+              }
               variant="secondary"
+              confidence={clubPathIsExperimental ? 'experimental' : null}
             />
           )}
           {shot.spin_axis_deg !== null && (

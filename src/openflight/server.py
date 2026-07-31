@@ -884,6 +884,10 @@ def shot_to_dict(shot: Shot) -> dict:
         "angle_source": shot.angle_source,
         "club_angle_deg": shot.club_angle_deg,
         "club_path_deg": shot.club_path_deg,
+        "experimental_attack_angle_deg": shot.experimental_attack_angle_deg,
+        "experimental_attack_angle_status": shot.experimental_attack_angle_status,
+        "experimental_club_path_deg": shot.experimental_club_path_deg,
+        "experimental_club_path_status": shot.experimental_club_path_status,
         "spin_axis_deg": shot.spin_axis_deg,
         # Spin data from rolling buffer mode
         "spin_rpm": round(shot.spin_rpm) if shot.spin_rpm else None,
@@ -2153,6 +2157,24 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
                 club_path.confidence or 0.0,
                 club_path.n_frames,
             )
+        if debug_mode and club_path is not None:
+            candidate_path = getattr(club_path, "candidate_path_deg", None)
+            candidate_attack = getattr(club_path, "candidate_attack_angle_deg", None)
+            if candidate_path is not None:
+                shot.experimental_club_path_deg = round(candidate_path, 1)
+                candidate_status = getattr(club_path, "candidate_path_status", None)
+                shot.experimental_club_path_status = (
+                    candidate_status
+                    if candidate_status not in (None, "candidate_available")
+                    else club_path.status
+                )
+            if candidate_attack is not None:
+                shot.experimental_attack_angle_deg = round(candidate_attack, 1)
+                shot.experimental_attack_angle_status = getattr(
+                    club_path,
+                    "attack_angle_status",
+                    None,
+                )
     except Exception as error:  # pylint: disable=broad-exception-caught
         logger.warning("[SERVER] IWR6843 processing error: %s", error, exc_info=True)
         log_session_error(
@@ -2598,6 +2620,10 @@ def on_shot_detected(shot: Shot):
                 angle_source=shot.angle_source,
                 club_angle_deg=shot.club_angle_deg,
                 club_path_deg=shot.club_path_deg,
+                experimental_attack_angle_deg=shot.experimental_attack_angle_deg,
+                experimental_attack_angle_status=shot.experimental_attack_angle_status,
+                experimental_club_path_deg=shot.experimental_club_path_deg,
+                experimental_club_path_status=shot.experimental_club_path_status,
                 spin_axis_deg=shot.spin_axis_deg,
                 impact_timestamp=shot.impact_timestamp,
                 player_name=shot.player_name,

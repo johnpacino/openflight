@@ -113,7 +113,11 @@ def _synth_club(
                 value = amp * az_factor * np.exp(1j * (tdm_phase + doppler_phase))
                 cube[frame, loop * n_tx + tx, :, bin_at] = value
     return pack_dump(
-        cube, n_tx=n_tx, version=3, frame_period_us=4000, trigger_frame=0,
+        cube,
+        n_tx=n_tx,
+        version=3,
+        frame_period_us=4000,
+        trigger_frame=0,
         sample_fmt=SAMPLE_RANGE_FFT_IQ16,
     )
 
@@ -137,7 +141,11 @@ def test_recovers_known_path(path_deg):
     angles.
     """
     result = club.estimate_club_path(
-        _synth_club(path_deg), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
+        _synth_club(path_deg),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=IMPACT_S,
+        tdm_sign=1,
     )
     assert result.status == "accepted", result.status
     assert result.path_deg == pytest.approx(path_deg, abs=0.4)
@@ -154,12 +162,43 @@ def test_sign_convention_is_in_to_out_positive():
     assert in_out.path_deg > 0 > out_in.path_deg
 
 
+def test_experimental_path_candidate_unwraps_vertical_references_through_time():
+    """The debug candidate recovers motion without the +/-pi midpoint flip."""
+    path_deg = 5.0
+    times = np.repeat(np.arange(6, dtype=float) * 0.002, 3)
+    frames = np.repeat(np.arange(6), 3)
+    ranges = 1.0 + 25.0 * times
+    y = np.tan(np.radians(path_deg)) * (ranges - 1.0)
+    azimuth = np.arctan2(y, ranges)
+    horizontal_phase = -math.tau * np.sin(azimuth)
+    vertical_phase = np.linspace(2.6, 3.8, times.size)
+    phase_tx1 = np.angle(np.exp(1j * (horizontal_phase + vertical_phase / 2.0)))
+    phase_tx3 = np.angle(np.exp(1j * (horizontal_phase - vertical_phase / 2.0)))
+
+    candidate, status, residual = club.experimental_path_candidate(
+        times,
+        ranges,
+        phase_tx1,
+        phase_tx3,
+        frames,
+    )
+
+    assert status == "candidate_available"
+    assert candidate == pytest.approx(path_deg, abs=0.5)
+    assert residual is not None and residual < 0.2
+
+
 def test_aim_offset_is_added():
     without = club.estimate_club_path(
         _synth_club(0.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
     )
     with_offset = club.estimate_club_path(
-        _synth_club(0.0), _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1, aim_offset_deg=2.0
+        _synth_club(0.0),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=IMPACT_S,
+        tdm_sign=1,
+        aim_offset_deg=2.0,
     )
     assert with_offset.path_deg == pytest.approx(without.path_deg + 2.0, abs=0.01)
 
@@ -171,9 +210,20 @@ def test_result_serialises():
     payload = result.to_dict()
     assert payload["status"] == "accepted"
     assert set(payload) >= {
-        "status", "path_deg", "confidence", "azimuth_rate_dps", "range_rate_ms",
-        "club_range_m", "n_frames", "n_snapshots", "fit_residual_deg",
-        "track_rms_bins", "track_inliers", "track_span_s",
+        "status",
+        "path_deg",
+        "candidate_path_deg",
+        "candidate_attack_angle_deg",
+        "confidence",
+        "azimuth_rate_dps",
+        "range_rate_ms",
+        "club_range_m",
+        "n_frames",
+        "n_snapshots",
+        "fit_residual_deg",
+        "track_rms_bins",
+        "track_inliers",
+        "track_span_s",
     }
 
 
@@ -188,29 +238,32 @@ def test_two_tx_dump_is_rejected():
     """Club path needs TX2; a 2-TX dump has no horizontal aperture."""
     cube = np.zeros((18, 24, 4, 128), dtype=complex)
     cube[:, :, :, 30] = 1000.0
-    raw = pack_dump(cube, n_tx=2, version=3, frame_period_us=4000,
-                    sample_fmt=SAMPLE_RANGE_FFT_IQ16)
-    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S)
+    raw = pack_dump(cube, n_tx=2, version=3, frame_period_us=4000, sample_fmt=SAMPLE_RANGE_FFT_IQ16)
+    result = club.estimate_club_path(
+        raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S
+    )
     assert result.status == "rejected_requires_three_tx"
     assert result.path_deg is None
 
 
 def test_empty_dump_reports_no_club_track():
     cube = np.zeros((18, 36, 4, 128), dtype=complex)
-    raw = pack_dump(cube, n_tx=3, version=3, frame_period_us=4000,
-                    sample_fmt=SAMPLE_RANGE_FFT_IQ16)
-    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S)
+    raw = pack_dump(cube, n_tx=3, version=3, frame_period_us=4000, sample_fmt=SAMPLE_RANGE_FFT_IQ16)
+    result = club.estimate_club_path(
+        raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S
+    )
     assert result.status == "rejected_no_club_track"
     assert result.path_deg is None
 
 
 def test_club_speed_mismatch_is_rejected():
-    """A 22 m/s radial track cannot belong to a 20 mph club."""
+    """A rejected identity gate retains its debug-only path candidate."""
     result = club.estimate_club_path(
         _synth_club(0.0), _cal(), ops_club_speed_mph=20.0, impact_t_s=IMPACT_S, tdm_sign=1
     )
     assert result.status == "rejected_club_speed_mismatch"
     assert result.path_deg is None
+    assert result.candidate_path_deg == pytest.approx(0.0, abs=0.5)
     assert result.range_rate_ms is not None, "evidence must survive the rejection"
 
 
@@ -232,9 +285,10 @@ def test_short_ring_reports_no_pre_impact_frames():
     """
     cube = np.zeros((4, 36, 4, 128), dtype=complex)
     cube[:, :, :, 30] = 1000.0
-    raw = pack_dump(cube, n_tx=3, version=3, frame_period_us=4000,
-                    sample_fmt=SAMPLE_RANGE_FFT_IQ16)
-    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S)
+    raw = pack_dump(cube, n_tx=3, version=3, frame_period_us=4000, sample_fmt=SAMPLE_RANGE_FFT_IQ16)
+    result = club.estimate_club_path(
+        raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S
+    )
     assert result.status == "rejected_no_pre_impact_frames"
 
 
@@ -375,14 +429,22 @@ def test_club_search_does_not_fit_the_ball():
     for frame in range(n_frames):
         for loop in range(loops):
             t = frame * 4e-3 + loop * 90e-6
-            if t < 0.030:                      # nothing before the ball launches
+            if t < 0.030:  # nothing before the ball launches
                 continue
             bin_at = int((1.5 + 40.0 * (t - 0.030)) / res)
             if 0 <= bin_at < n_samples:
                 cube[frame, loop * n_tx : (loop + 1) * n_tx, :, bin_at] = 1000.0
-    raw = pack_dump(cube, n_tx=n_tx, version=3, frame_period_us=4000, trigger_frame=0,
-                    sample_fmt=SAMPLE_RANGE_FFT_IQ16)
-    result = club.estimate_club_path(raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1)
+    raw = pack_dump(
+        cube,
+        n_tx=n_tx,
+        version=3,
+        frame_period_us=4000,
+        trigger_frame=0,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16,
+    )
+    result = club.estimate_club_path(
+        raw, _cal(), ops_club_speed_mph=OPS_CLUB_MPH, impact_t_s=IMPACT_S, tdm_sign=1
+    )
     assert result.status != "accepted", (
         f"fitted a post-impact mover as club path: {result.to_dict()}"
     )

@@ -29,6 +29,13 @@ class AblationRecord:
     ball_status: str
     club_status: str
     path_deg: float | None
+    candidate_path_deg: float | None
+    candidate_path_status: str | None
+    candidate_path_fit_residual_deg: float | None
+    candidate_attack_angle_deg: float | None
+    attack_angle_status: str | None
+    attack_fit_rms_m: float | None
+    attack_n_points: int
     range_rate_ms: float | None
     n_frames: int
     n_snapshots: int
@@ -91,6 +98,14 @@ def summarize(records: list[AblationRecord]) -> None:
         group = [record for record in records if record.variant == variant]
         detected = [record for record in group if record.range_rate_ms is not None]
         accepted = [record for record in group if record.path_deg is not None]
+        path_candidates = [
+            record.candidate_path_deg for record in group if record.candidate_path_deg is not None
+        ]
+        attack_candidates = [
+            record.candidate_attack_angle_deg
+            for record in group
+            if record.candidate_attack_angle_deg is not None
+        ]
         deltas = [
             abs(record.path_deg - baseline[record.shot_number].path_deg)
             for record in accepted
@@ -106,7 +121,9 @@ def summarize(records: list[AblationRecord]) -> None:
             )
         print(
             f"{variant:>6}: club detected {len(detected)}/{len(group)}, "
-            f"path accepted {len(accepted)}/{len(group)}{delta_text}"
+            f"path accepted {len(accepted)}/{len(group)}, "
+            f"path candidates {len(path_candidates)}/{len(group)}, "
+            f"AoA candidates {len(attack_candidates)}/{len(group)}{delta_text}"
         )
 
 
@@ -172,7 +189,7 @@ def main() -> int:
 
     print(
         "shot  variant  loops  club status                         "
-        "path     radial m/s  frames/snaps"
+        "path     AoA      radial m/s  frames/snaps"
     )
     for replay_input in inputs_from_session(session_path, club=args.club):
         shot_number = replay_input.shot_number
@@ -225,22 +242,37 @@ def main() -> int:
                 ball_status=ball.status,
                 club_status=result.status,
                 path_deg=result.path_deg,
+                candidate_path_deg=result.candidate_path_deg,
+                candidate_path_status=result.candidate_path_status,
+                candidate_path_fit_residual_deg=result.candidate_path_fit_residual_deg,
+                candidate_attack_angle_deg=result.candidate_attack_angle_deg,
+                attack_angle_status=result.attack_angle_status,
+                attack_fit_rms_m=result.attack_fit_rms_m,
+                attack_n_points=result.attack_n_points,
                 range_rate_ms=result.range_rate_ms,
                 n_frames=result.n_frames,
                 n_snapshots=result.n_snapshots,
                 capture_path=str(capture_path),
             )
             records.append(record)
-            path_text = f"{result.path_deg:+7.2f}" if result.path_deg is not None else "    n/a"
+            displayed_path = (
+                result.path_deg if result.path_deg is not None else result.candidate_path_deg
+            )
+            path_text = f"{displayed_path:+7.2f}" if displayed_path is not None else "    n/a"
             speed_text = (
                 f"{result.range_rate_ms:10.2f}"
                 if result.range_rate_ms is not None
                 else "       n/a"
             )
+            attack_text = (
+                f"{result.candidate_attack_angle_deg:+7.2f}"
+                if result.candidate_attack_angle_deg is not None
+                else "    n/a"
+            )
             print(
                 f"{str(shot_number):>4}  {variant:>7}  "
                 f"{kept_loops:>2}@{loop_start:<2}  "
-                f"{result.status[:31]:<31} {path_text}  {speed_text}  "
+                f"{result.status[:31]:<31} {path_text}  {attack_text}  {speed_text}  "
                 f"{result.n_frames:>2}/{result.n_snapshots:<3}"
             )
 

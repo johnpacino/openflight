@@ -79,6 +79,30 @@ describe('ShotDisplay', () => {
       expect(html).toContain('-4.3');
     });
 
+    it('labels rejected club candidates as experimental with their reason', () => {
+      const html = renderToString(
+        <ShotDisplay
+          shot={{
+            ...withAngles,
+            club_angle_deg: null,
+            club_path_deg: null,
+            experimental_attack_angle_deg: -4.9,
+            experimental_attack_angle_status: 'rejected_azimuth_fit',
+            experimental_club_path_deg: 5.8,
+            experimental_club_path_status: 'rejected_phase_span',
+          }}
+        />,
+      );
+
+      expect(html).toContain('Club AoA');
+      expect(html).toContain('-4.9');
+      expect(html).toContain('Club Path');
+      expect(html).toContain('+5.8');
+      expect(html).toContain('rejected: azimuth fit');
+      expect(html).toContain('rejected: phase span');
+      expect(html.match(/metric-card__confidence--experimental/g)).toHaveLength(3);
+    });
+
     it('omits each card when the radar produced no measurement', () => {
       const html = renderToString(
         <ShotDisplay
