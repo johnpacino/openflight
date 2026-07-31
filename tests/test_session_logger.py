@@ -242,6 +242,10 @@ class TestLogShot:
             launch_angle_horizontal_confidence=0.6,
             launch_angle_vertical_source="radar",
             launch_angle_horizontal_source="estimated",
+            experimental_attack_angle_deg=-4.9,
+            experimental_attack_angle_status="candidate_available",
+            experimental_club_path_deg=5.8,
+            experimental_club_path_status="rejected_phase_span",
             impact_timestamp=1234567890.25,
         )
 
@@ -264,6 +268,10 @@ class TestLogShot:
         assert entry["launch_angle_horizontal_confidence"] == 0.6
         assert entry["launch_angle_vertical_source"] == "radar"
         assert entry["launch_angle_horizontal_source"] == "estimated"
+        assert entry["experimental_attack_angle_deg"] == -4.9
+        assert entry["experimental_attack_angle_status"] == "candidate_available"
+        assert entry["experimental_club_path_deg"] == 5.8
+        assert entry["experimental_club_path_status"] == "rejected_phase_span"
         assert entry["impact_timestamp"] == 1234567890.25
 
     def test_rolling_buffer_capture_logs_trigger_timing(self, tmp_path):

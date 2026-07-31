@@ -161,7 +161,7 @@ def snapshot_series(
         tdm_sign = measure_tdm_sign(mti, track, geo)
     if tdm_sign not in (-1, +1):
         raise ValueError("tdm_sign must be -1 or +1")
-    noise = float(np.median(np.abs(mti) ** 2))
+    noise = max(float(np.median(np.abs(mti) ** 2)), 1e-12)
     k = max(1, int(coherent_loops))
     out: list[tuple[float, float, np.ndarray, float]] = []
     for frame in range(geo.n_frames):
@@ -245,9 +245,7 @@ def angle_points(
 def circular_median(values: list[float]) -> float:
     """Median of angles, wrapping correctly across +/-pi."""
     array = np.asarray(values, dtype=float)
-    scores = [
-        np.median(np.abs(np.angle(np.exp(1j * (array - candidate))))) for candidate in array
-    ]
+    scores = [np.median(np.abs(np.angle(np.exp(1j * (array - candidate))))) for candidate in array]
     return float(array[int(np.argmin(scores))])
 
 
@@ -287,3 +285,45 @@ def tx2_phase_at(
     if not phases:
         return None
     return circular_median(phases), weight
+
+
+def tx2_reference_phases_at(
+    tdm: np.ndarray,
+    frame: int,
+    loop: int,
+    local_bin: int,
+    *,
+    velocity_ms: float,
+    tdm_sign: int,
+    n_rx: int,
+) -> tuple[float, float, float] | None:
+    """Separate TX2-vs-TX1 and TX2-vs-TX3 phases for temporal fusion.
+
+    Unlike :func:`tx2_phase_at`, this does not average the two vertical
+    reference voltages. Their unequal gains and elevation-dependent phase can
+    cancel in voltage space. Keeping both normalized phase differences lets
+    the experimental club-path estimator unwrap each through time before
+    averaging their motion, avoiding the 180-degree midpoint branch flips
+    seen on real V6 captures.
+    """
+    tx1 = tdm[frame, loop, 0, :, local_bin]
+    tx2 = tdm[frame, loop, 1, :, local_bin] * np.exp(
+        -1j * tdm_sign * 4.0 * np.pi * velocity_ms * TDM_TAU_S / LAM
+    )
+    tx3 = tdm[frame, loop, 2, :, local_bin] * np.exp(
+        -1j * tdm_sign * 4.0 * np.pi * velocity_ms * TX2_VERTICAL_TDM_TAU_S / LAM
+    )
+    phase_tx1 = [
+        float(np.angle(np.conj(tx1[rx]) * tx2[rx]))
+        for rx in range(n_rx)
+        if abs(tx1[rx]) * abs(tx2[rx]) > 0
+    ]
+    phase_tx3 = [
+        float(np.angle(np.conj(tx3[rx]) * tx2[rx]))
+        for rx in range(n_rx)
+        if abs(tx3[rx]) * abs(tx2[rx]) > 0
+    ]
+    if not phase_tx1 or not phase_tx3:
+        return None
+    weight = float(np.mean(np.abs(tx2) * np.sqrt(np.maximum(np.abs(tx1) * np.abs(tx3), 0.0))))
+    return circular_median(phase_tx1), circular_median(phase_tx3), weight

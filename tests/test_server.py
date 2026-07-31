@@ -287,6 +287,110 @@ class TestIWR6843ShotIntegration:
         # a hardcoded 0.95 -- see openflight.server.horizontal_confidence_from.
         assert shot.launch_angle_horizontal_confidence == pytest.approx(0.63)
 
+    def test_debug_mode_exposes_rejected_club_candidates_without_promoting_them(self, monkeypatch):
+        measurement = SimpleNamespace(
+            accepted=False,
+            status="rejected_track_quality",
+            to_dict=lambda: {"status": "rejected_track_quality"},
+        )
+        club_path = SimpleNamespace(
+            accepted=False,
+            status="rejected_phase_span",
+            path_deg=None,
+            candidate_path_deg=5.8,
+            candidate_path_status="candidate_available",
+            candidate_attack_angle_deg=-4.9,
+            attack_angle_status="candidate_available",
+            to_dict=lambda: {
+                "status": "rejected_phase_span",
+                "candidate_path_deg": 5.8,
+                "candidate_attack_angle_deg": -4.9,
+            },
+        )
+        capture = SimpleNamespace(
+            trigger_timestamp=100.01,
+            path=Path("/tmp/test.l3dump"),
+            raw=b"raw",
+            dump_duration_s=4.5,
+            error=None,
+            valid=True,
+            sequence=1,
+        )
+        runtime = SimpleNamespace(
+            process_shot=lambda **kwargs: SimpleNamespace(
+                capture=capture,
+                measurement=measurement,
+                club_path=club_path,
+            )
+        )
+        monkeypatch.setattr(server_module, "iwr6843_runtime", runtime)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        shot = Shot(
+            ball_speed_mph=100.0,
+            club_speed_mph=80.0,
+            timestamp=datetime.now(),
+            impact_timestamp=100.0,
+            club=ClubType.IRON_9,
+        )
+
+        server_module._process_iwr6843_angle(shot)
+
+        assert shot.club_path_deg is None
+        assert shot.club_angle_deg is None
+        assert shot.experimental_club_path_deg == pytest.approx(5.8)
+        assert shot.experimental_club_path_status == "rejected_phase_span"
+        assert shot.experimental_attack_angle_deg == pytest.approx(-4.9)
+        assert shot.experimental_attack_angle_status == "candidate_available"
+
+    def test_non_debug_mode_does_not_emit_experimental_club_candidates(self, monkeypatch):
+        measurement = SimpleNamespace(
+            accepted=False,
+            status="rejected_track_quality",
+            to_dict=lambda: {"status": "rejected_track_quality"},
+        )
+        club_path = SimpleNamespace(
+            accepted=False,
+            status="rejected_phase_span",
+            path_deg=None,
+            candidate_path_deg=5.8,
+            candidate_path_status="candidate_noisy_fit",
+            candidate_attack_angle_deg=-4.9,
+            attack_angle_status="candidate_available",
+            to_dict=lambda: {},
+        )
+        capture = SimpleNamespace(
+            trigger_timestamp=100.01,
+            path=None,
+            raw=b"raw",
+            dump_duration_s=4.5,
+            error=None,
+            valid=True,
+            sequence=1,
+        )
+        runtime = SimpleNamespace(
+            process_shot=lambda **kwargs: SimpleNamespace(
+                capture=capture,
+                measurement=measurement,
+                club_path=club_path,
+            )
+        )
+        monkeypatch.setattr(server_module, "iwr6843_runtime", runtime)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        shot = Shot(
+            ball_speed_mph=100.0,
+            club_speed_mph=80.0,
+            timestamp=datetime.now(),
+            impact_timestamp=100.0,
+            club=ClubType.IRON_9,
+        )
+
+        server_module._process_iwr6843_angle(shot)
+
+        assert shot.experimental_club_path_deg is None
+        assert shot.experimental_attack_angle_deg is None
+
     def test_horizontal_fallback_does_not_invent_confidence_for_lcmf_angle(self):
         shot = Shot(
             ball_speed_mph=100.0,
@@ -2272,9 +2376,7 @@ class TestOnShotDetected:
         on_shot_detected(shot)
 
     def test_spin_axis_emitted_when_horizontal_confidence_clears_gate(self, monkeypatch):
-        shot = self._spin_axis_shot(
-            horizontal_confidence=server_module.SPIN_AXIS_MIN_CONFIDENCE
-        )
+        shot = self._spin_axis_shot(horizontal_confidence=server_module.SPIN_AXIS_MIN_CONFIDENCE)
 
         self._run_with_no_radar_hardware(monkeypatch, shot)
 
@@ -2491,9 +2593,7 @@ class TestClubPathOwnershipGuard:
     existing --iwr6843/--kld7 (vertical) guard."""
 
     def test_iwr6843_and_kld7_horizontal_cannot_both_own_club_path(self, monkeypatch, capsys):
-        monkeypatch.setattr(
-            sys, "argv", ["openflight-server", "--iwr6843", "--kld7-horizontal"]
-        )
+        monkeypatch.setattr(sys, "argv", ["openflight-server", "--iwr6843", "--kld7-horizontal"])
 
         with pytest.raises(SystemExit) as exc_info:
             server_module.main()
