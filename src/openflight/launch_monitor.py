@@ -291,6 +291,10 @@ class Shot:
     angle_source: Optional[str] = None  # "radar", "camera", "estimated", or None
     club_angle_deg: Optional[float] = None  # Club angle of attack from K-LD7 (vertical)
     club_path_deg: Optional[float] = None  # Club path: IWR6843, or K-LD7 (deprecated, horizontal)
+    experimental_attack_angle_deg: Optional[float] = None
+    experimental_attack_angle_status: Optional[str] = None
+    experimental_club_path_deg: Optional[float] = None
+    experimental_club_path_status: Optional[str] = None
     spin_axis_deg: Optional[float] = None  # Spin axis tilt: 0=backspin, +right(fade), -left(draw)
     inclinometer: Optional[dict] = None  # Stable enclosure orientation used for this shot
 

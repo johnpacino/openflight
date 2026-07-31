@@ -41,6 +41,11 @@ function formatSpin(value: number | null): string {
   return value.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
+function experimentalStatus(status: string | null | undefined): string {
+  if (!status || status === 'candidate_available') return 'experimental candidate';
+  return `experimental · ${status.replace(/^rejected_/, 'rejected: ').replaceAll('_', ' ')}`;
+}
+
 function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): DisplayMetric[] {
   if (!shot) {
     return [
@@ -51,6 +56,7 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
       { label: 'Launch', value: '--', unit: 'deg' },
       { label: 'Spin', value: '--', unit: 'rpm' },
       { label: 'Club Path', value: '--', unit: 'deg' },
+      { label: 'Club AoA', value: '--', unit: 'deg' },
       { label: 'H. Launch', value: '--', unit: 'deg' },
     ];
   }
@@ -92,8 +98,21 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
     },
     {
       label: 'Club Path',
-      value: formatOptionalNumber(shot.club_path_deg, 1, true),
-      unit: shot.club_path_deg === null ? undefined : 'deg',
+      value: formatOptionalNumber(shot.club_path_deg ?? shot.experimental_club_path_deg ?? null, 1, true),
+      unit: shot.club_path_deg === null && shot.experimental_club_path_deg == null ? undefined : 'deg',
+      detail:
+        shot.club_path_deg === null && shot.experimental_club_path_deg != null
+          ? experimentalStatus(shot.experimental_club_path_status)
+          : undefined,
+    },
+    {
+      label: 'Club AoA',
+      value: formatOptionalNumber(shot.club_angle_deg ?? shot.experimental_attack_angle_deg ?? null),
+      unit: shot.club_angle_deg === null && shot.experimental_attack_angle_deg == null ? undefined : 'deg',
+      detail:
+        shot.club_angle_deg === null && shot.experimental_attack_angle_deg != null
+          ? experimentalStatus(shot.experimental_attack_angle_status)
+          : undefined,
     },
     {
       label: 'H. Launch',

@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from openflight.iwr6843 import doa, tracking
+from openflight.iwr6843 import doa, tracking, trajectory
 from openflight.iwr6843.calibration import Calibration
 from openflight.iwr6843.dump import parse_dump
 from openflight.iwr6843.shot import (
@@ -114,6 +114,13 @@ class ClubPathResult:
 
     status: str
     path_deg: float | None = None
+    candidate_path_deg: float | None = None
+    candidate_path_status: str | None = None
+    candidate_path_fit_residual_deg: float | None = None
+    candidate_attack_angle_deg: float | None = None
+    attack_angle_status: str | None = None
+    attack_fit_rms_m: float | None = None
+    attack_n_points: int = 0
     confidence: float | None = None
     azimuth_rate_dps: float | None = None
     range_rate_ms: float | None = None
@@ -164,9 +171,7 @@ def pre_impact_window_s(
     return (max(0.0, impact_t_s - n_frames * geo.frame_period_s), float(impact_t_s))
 
 
-def _frame_medians(
-    phases: np.ndarray, frames: np.ndarray
-) -> list[tuple[int, float]]:
+def _frame_medians(phases: np.ndarray, frames: np.ndarray) -> list[tuple[int, float]]:
     """Each frame's circular median phase, in frame order."""
     return [
         (int(frame), doa.circular_median(list(phases[frames == frame])))
@@ -204,8 +209,7 @@ def phase_span_rad(phases: np.ndarray, frames: np.ndarray) -> float:
     if len(medians) < 2:
         return 0.0
     steps = [
-        math.remainder(later - earlier, math.tau)
-        for earlier, later in zip(medians, medians[1:])
+        math.remainder(later - earlier, math.tau) for earlier, later in zip(medians, medians[1:])
     ]
     walk = np.cumsum([0.0] + steps)
     return float(np.ptp(walk))
@@ -240,6 +244,123 @@ def find_club(
         min_ball_ms=CLUB_SPEED_BOUNDS_MS[0],
         time_window_s=window_s,
     )
+
+
+def estimate_attack_angle_candidate(
+    mti: np.ndarray,
+    track: tracking.BallTrack,
+    geo: tracking.Geometry,
+    cal: Calibration,
+    *,
+    tdm_sign: int,
+) -> tuple[float | None, str, int, float | None]:
+    """Fit the clubhead's pre-impact vertical direction.
+
+    The TX1/TX3 pair is the calibrated eight-element vertical aperture.
+    ``track`` is already restricted to the club's pre-impact range walk, so
+    fitting its Cartesian height against down-range position estimates the
+    direction of travel: negative is descending, positive is ascending.
+
+    This remains an experimental candidate. The ball pipeline's strict SNR
+    and MUSIC/Bartlett agreement checks are retained, but four points are
+    sufficient because this short club window cannot offer the ball
+    trajectory's usual eight-point minimum.
+    """
+    points = doa.angle_points(
+        mti,
+        track,
+        geo,
+        cal,
+        coherent_loops=1,
+        tx_order="normal",
+        tdm_sign=tdm_sign,
+        tdm_tau_s=doa.TX2_VERTICAL_TDM_TAU_S,
+    )
+    fit = trajectory.fit_free(points, cal, min_points=4)
+    if fit is None:
+        return None, "rejected_insufficient_vertical_points", len(points), None
+    status = "candidate_available"
+    if abs(fit.launch_angle_deg) > 25.0:
+        status = "candidate_out_of_bounds"
+    elif fit.h_rms_m > 0.08:
+        status = "candidate_noisy_fit"
+    return (
+        fit.launch_angle_deg,
+        status,
+        fit.n_points,
+        fit.h_rms_m,
+    )
+
+
+def experimental_path_candidate(
+    times: np.ndarray,
+    ranges_m: np.ndarray,
+    phase_tx1: np.ndarray,
+    phase_tx3: np.ndarray,
+    frames: np.ndarray,
+    *,
+    aim_offset_deg: float = 0.0,
+) -> tuple[float | None, str, float | None]:
+    """Fuse TX2 horizontal motion through time without midpoint branch flips.
+
+    TX2 is one wavelength from the TX1/TX3 vertical midpoint. Each reference
+    phase is unwrapped independently in chronological frame order, then their
+    midpoint is formed. A robust pairwise-slope Cartesian fit limits the
+    damage from one noisy frame in the short pre-impact window.
+    """
+    rows = []
+    for frame in np.unique(frames):
+        selector = frames == frame
+        rows.append(
+            (
+                float(np.median(times[selector])),
+                float(np.median(ranges_m[selector])),
+                doa.circular_median(list(phase_tx1[selector])),
+                doa.circular_median(list(phase_tx3[selector])),
+            )
+        )
+    rows.sort(key=lambda row: row[0])
+    if len(rows) < CLUB_MIN_FRAMES:
+        return None, "rejected_insufficient_phase_frames", None
+
+    t_array = np.asarray([row[0] for row in rows])
+    r_array = np.asarray([row[1] for row in rows])
+    unwrapped_tx1 = np.unwrap([row[2] for row in rows])
+    unwrapped_tx3 = np.unwrap([row[3] for row in rows])
+    midpoint = 0.5 * (unwrapped_tx1 + unwrapped_tx3)
+    midpoint -= round(float(midpoint[0]) / math.pi) * math.pi
+
+    # Board convention: positive TrackMan path is the negative TX2 phase
+    # direction. The one-wavelength baseline gives phase=2*pi*sin(azimuth).
+    azimuth = -np.arcsin(np.clip(midpoint / math.tau, -1.0, 1.0))
+    x_m = r_array * np.cos(azimuth)
+    y_m = r_array * np.sin(azimuth)
+
+    dt = t_array[:, None] - t_array[None, :]
+    upper = np.triu(np.ones(dt.shape, dtype=bool), k=1)
+    valid = upper & (np.abs(dt) > 1e-9)
+    if not np.any(valid):
+        return None, "rejected_insufficient_phase_frames", None
+    x_slopes = np.zeros_like(dt)
+    y_slopes = np.zeros_like(dt)
+    np.divide(x_m[:, None] - x_m[None, :], dt, out=x_slopes, where=valid)
+    np.divide(y_m[:, None] - y_m[None, :], dt, out=y_slopes, where=valid)
+    v_x = float(np.median(x_slopes[valid]))
+    v_y = float(np.median(y_slopes[valid]))
+    y_0 = float(np.median(y_m - v_y * t_array))
+    residual_deg = float(
+        np.degrees(
+            np.sqrt(np.mean((y_m - (v_y * t_array + y_0)) ** 2))
+            / max(float(np.mean(r_array)), 1e-9)
+        )
+    )
+    path_deg = math.degrees(math.atan2(v_y, v_x)) + aim_offset_deg
+    status = "candidate_available"
+    if abs(path_deg) > 30.0:
+        status = "candidate_out_of_bounds"
+    elif residual_deg > 2.0:
+        status = "candidate_noisy_fit"
+    return path_deg, status, residual_deg
 
 
 def estimate_club_path(
@@ -288,9 +409,20 @@ def estimate_club_path(
 
     projection = abs(result.range_rate_ms) / max(ops_club_speed_mph / MPH_PER_MS, 1e-6)
     low, high = CLUB_SPEED_PROJECTION_RANGE
-    if not low <= projection <= high:
-        result.status = "rejected_club_speed_mismatch"
-        return result
+    speed_mismatch = not low <= projection <= high
+
+    (
+        result.candidate_attack_angle_deg,
+        result.attack_angle_status,
+        result.attack_n_points,
+        result.attack_fit_rms_m,
+    ) = estimate_attack_angle_candidate(
+        mti,
+        track,
+        geo,
+        cal,
+        tdm_sign=tdm_sign,
+    )
 
     # TX2 phase needs all three transmitters, so re-split the ORIGINAL dump.
     _meta3, cube3 = parse_dump(raw)
@@ -309,6 +441,11 @@ def estimate_club_path(
     phases: list[float] = []
     weights: list[float] = []
     frame_ids: list[int] = []
+    candidate_times: list[float] = []
+    candidate_ranges: list[float] = []
+    candidate_phase_tx1: list[float] = []
+    candidate_phase_tx3: list[float] = []
+    candidate_frames: list[int] = []
     frames_seen: set[int] = set()
     for frame in range(geo.n_frames):
         for loop in range(geo.n_loops):
@@ -321,6 +458,22 @@ def estimate_club_path(
             local_bin = geo.local_bin(absolute_bin, frame)
             if not 0 <= local_bin < n_samples:
                 continue
+            phase_pair = doa.tx2_reference_phases_at(
+                tdm,
+                frame,
+                loop,
+                local_bin,
+                velocity_ms=track.speed_ms_at(t_s, res),
+                tdm_sign=tdm_sign,
+                n_rx=n_rx,
+            )
+            if phase_pair is not None:
+                phase_tx1, phase_tx3, _candidate_weight = phase_pair
+                candidate_times.append(t_s)
+                candidate_ranges.append(float(track.range_at(t_s, res)))
+                candidate_phase_tx1.append(phase_tx1)
+                candidate_phase_tx3.append(phase_tx3)
+                candidate_frames.append(frame)
             sample = doa.tx2_phase_at(
                 tdm,
                 frame,
@@ -338,6 +491,19 @@ def estimate_club_path(
             weights.append(weight)
             frame_ids.append(frame)
             frames_seen.add(frame)
+
+    (
+        result.candidate_path_deg,
+        result.candidate_path_status,
+        result.candidate_path_fit_residual_deg,
+    ) = experimental_path_candidate(
+        np.asarray(candidate_times),
+        np.asarray(candidate_ranges),
+        np.asarray(candidate_phase_tx1),
+        np.asarray(candidate_phase_tx3),
+        np.asarray(candidate_frames),
+        aim_offset_deg=aim_offset_deg,
+    )
 
     # Discard snapshots that disagree with their own frame before counting, so
     # the reported counts are the evidence the fit actually used.
@@ -359,9 +525,7 @@ def estimate_club_path(
         return result
 
     result.phase_span_rad = phase_span_rad(phase_array, frame_array)
-    if result.phase_span_rad > CLUB_MAX_PHASE_SPAN_RAD:
-        result.status = "rejected_phase_span"
-        return result
+    phase_span_rejected = result.phase_span_rad > CLUB_MAX_PHASE_SPAN_RAD
 
     # Phase -> azimuth. The wrapped phase is used as-is: a lambda/2 baseline is
     # unambiguous over exactly +/-pi, which arcsin maps onto the full +/-90
@@ -398,16 +562,22 @@ def estimate_club_path(
     result.fit_residual_deg = float(
         np.degrees(np.sqrt((cross_range_resid_m**2).mean()) / max(mean_r, 1e-9))
     )
-    if result.fit_residual_deg > CLUB_MAX_AZIMUTH_FIT_RESIDUAL_DEG:
-        result.status = "rejected_azimuth_fit"
-        return result
-
     result.club_range_m = mean_r
     # Diagnostic only (not a path input): the azimuth rate implied by the
     # cross-range velocity at the mean range.
     result.azimuth_rate_dps = float(np.degrees(v_y / max(mean_r, 1e-9)))
 
     path_deg = math.degrees(math.atan2(v_y, v_x))
+    if speed_mismatch:
+        result.status = "rejected_club_speed_mismatch"
+        return result
+    if phase_span_rejected:
+        result.status = "rejected_phase_span"
+        return result
+    if result.fit_residual_deg > CLUB_MAX_AZIMUTH_FIT_RESIDUAL_DEG:
+        result.status = "rejected_azimuth_fit"
+        return result
+
     result.path_deg = path_deg + aim_offset_deg
     result.confidence = _confidence(result)
     result.status = "accepted"
