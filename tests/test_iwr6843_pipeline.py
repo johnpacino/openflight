@@ -191,6 +191,53 @@ def test_recovers_speed_and_launch_angle(cal):
     assert shot.fits["tee"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
 
 
+def test_lcmf_impact_time_uses_calibrated_range_bias():
+    """LCMF must anchor impact in the track's apparent-range coordinates."""
+    speed_ms = 45.0
+    range_bias_m = 0.066
+    raw = synth_shot(
+        speed_ms=speed_ms,
+        launch_deg=18.0,
+        tee_m=1.116,
+        n_frames=25,
+        n_loops=12,
+        n_tx=3,
+        frame_period_us=4000,
+        trigger_frame=0,
+    )
+
+    def calibration(bias_m):
+        candidate = Calibration.identity()
+        candidate.tilt_rad = np.radians(10.4)
+        candidate.tee_range_m = 1.5
+        candidate.range_bias_m = bias_m
+        candidate.tee_ball_height_m = RADAR_HEIGHT_M
+        candidate.meta["radar_height_m"] = RADAR_HEIGHT_M
+        return candidate
+
+    uncorrected = estimate_lcmf_v1(
+        raw,
+        calibration(0.0),
+        ball_speed_mph=speed_ms * 2.23694,
+        net_range_m=5.0,
+        tx_order="normal",
+    )
+    corrected = estimate_lcmf_v1(
+        raw,
+        calibration(range_bias_m),
+        ball_speed_mph=speed_ms * 2.23694,
+        net_range_m=5.0,
+        tx_order="normal",
+    )
+
+    assert uncorrected.impact_t_s is not None
+    assert corrected.impact_t_s is not None
+    assert corrected.impact_t_s - uncorrected.impact_t_s == pytest.approx(
+        range_bias_m / speed_ms,
+        rel=0.03,
+    )
+
+
 def test_range_snapshot_recovers_speed_and_launch_angle(cal):
     """Snapshot dumps store selected FFT bins, not raw ADC fast-time samples."""
     truth_v, truth_la = 45.0, 18.0

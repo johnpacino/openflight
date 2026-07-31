@@ -90,6 +90,8 @@ def impact_time_s(
     trk: BallTrack | None,
     geo: Geometry,
     tee_range_m: float | None,
+    *,
+    range_bias_m: float = 0.0,
 ) -> float | None:
     """When the ball left the tee, from its own fitted range walk.
 
@@ -113,7 +115,11 @@ def impact_time_s(
     # would invent an impact time rather than measure one.
     if trk.slope_bins <= 0.0:
         return None
-    t_s = (tee_range_m / geo.range_res_m - trk.intercept_bins) / trk.slope_bins
+    # Track bins remain in the radar's apparent range coordinates. Tape
+    # measurements and configured tee range are true range, so intersect the
+    # fitted walk at the apparent tee location.
+    apparent_tee_range_m = tee_range_m + range_bias_m
+    t_s = (apparent_tee_range_m / geo.range_res_m - trk.intercept_bins) / trk.slope_bins
     if not 0.0 <= t_s <= geo.capture_duration_s:
         return None
     return float(t_s)

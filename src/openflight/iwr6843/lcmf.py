@@ -119,7 +119,7 @@ def _result_from_track(
     status: str,
     shot: ShotMeasurement,
     *,
-    tee_range_m: float | None = None,
+    cal: Calibration,
     effective_tdm_tau_s: float = doa.TDM_TAU_S,
     effective_loop_period_s: float = tracking.LOOP_PRI_S,
 ) -> LCMFResult:
@@ -131,7 +131,12 @@ def _result_from_track(
         track_rms_bins=track.rms_bins if track is not None else None,
         track_inliers=track.n_inliers if track is not None else None,
         track_span_s=(track.t_last - track.t_first) if track is not None else None,
-        impact_t_s=impact_time_s(track, shot.geometry, tee_range_m),
+        impact_t_s=impact_time_s(
+            track,
+            shot.geometry,
+            cal.tee_range_m,
+            range_bias_m=cal.range_bias_m,
+        ),
         tdm_sign_used=shot.tdm_sign_used,
         effective_tdm_tau_s=effective_tdm_tau_s,
         effective_loop_period_s=effective_loop_period_s,
@@ -690,7 +695,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             "rejected_by_ball_tracker",
             shot,
-            tee_range_m=cal.tee_range_m,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -698,7 +703,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             "rejected_track_quality",
             shot,
-            tee_range_m=cal.tee_range_m,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -706,7 +711,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             "rejected_missing_tdm_sign",
             shot,
-            tee_range_m=cal.tee_range_m,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -767,7 +772,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             str(error).replace(" ", "_"),
             shot,
-            tee_range_m=cal.tee_range_m,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -779,7 +784,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             "rejected_no_conditioned_channel",
             shot,
-            tee_range_m=cal.tee_range_m,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -787,7 +792,7 @@ def estimate_lcmf_v1(
     result = _result_from_track(
         "accepted_track_quality_warning" if shot.quality == "reject" else "accepted",
         shot,
-        tee_range_m=cal.tee_range_m,
+        cal=cal,
     )
     result.angle_deg = raw_angle_deg + ANGLE_CORRECTION_DEG
     result.raw_angle_deg = raw_angle_deg
