@@ -19,7 +19,7 @@ Use this firmware and runtime configuration together:
 
 | Component | Current value |
 |---|---|
-| Flash image | `firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin` |
+| Flash image | `firmware/releases/l3_dump_hybrid_cadence_20260801.bin` |
 | Runtime config | `config/iwr6843_l3dump_vTX2_hybrid.cfg` |
 | Reference calibration | `config/iwr6843_calibration_reference.json` |
 | Build target | `make -C firmware docker-build` (any host) |
@@ -28,10 +28,15 @@ Use this firmware and runtime configuration together:
 | Dump format | Version 6, variable-width timed complex range-FFT snapshots |
 | Default complete dump size | 783,508 bytes |
 
+Current release binaries use `<feature_name>_<YYYYMMDD>.bin`. Capabilities such
+as temperature reporting and the dump-contract version belong in source and
+header metadata, not in the filename. Rollback binaries use the same convention;
+renaming an artifact does not alter its published hash.
+
 Verify the image before flashing:
 
 ```bash
-sha256sum firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin
+sha256sum firmware/releases/l3_dump_hybrid_cadence_20260801.bin
 ```
 
 The v6 image acquires all 12 loops every 2 ms. It retains every pre-trigger
@@ -43,8 +48,8 @@ at 4 ms spacing. The post frames still contain all 12 loops.
 This release has passed the container build, wire-format tests, and synthetic
 end-to-end speed/angle processing. It has not yet passed a hardware smoke test
 or source-of-truth TrackMan validation. Keep
-`l3_dump_vTX2_configurable_v5.bin` and its matching config available as the
-immediate rollback.
+`l3_dump_configurable_capture_20260728.bin` and its matching config available
+as the immediate rollback.
 
 Building the firmware needs the TI mmWave SDK and ARM codegen tools, which ship
 as **Linux x86_64 installers only**, so it cannot be built directly on an Apple
@@ -426,7 +431,7 @@ The target performs the application build, generates the flashable TI
 meta-image, and copies the production image into `firmware/releases/`:
 
 ```text
-firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin
+firmware/releases/l3_dump_hybrid_cadence_20260801.bin
 ```
 
 Generated `.xer4f`, `.map`, and intermediate `.bin` files stay under
@@ -520,7 +525,7 @@ Leave the board in flash mode and run:
 
 ```bash
 uv run python firmware/flash_iwr6843.py \
-  firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin \
+  firmware/releases/l3_dump_hybrid_cadence_20260801.bin \
   --port /dev/ttyUSB0
 ```
 

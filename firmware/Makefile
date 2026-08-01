@@ -10,7 +10,7 @@ FIRMWARE_DIR ?= iwr6843
 REPO_ROOT := $(abspath $(CURDIR)/..)
 DOCKER_IMAGE ?= openflight-iwr-sdk:latest
 RELEASE_DIR ?= releases
-RELEASE_NAME ?= l3_dump_vTX2_hybrid_cadence_v6.bin
+RELEASE_NAME ?= l3_dump_hybrid_cadence_20260801.bin
 
 SDK_INSTALLER := $(INSTALLER_DIR)/mmwave_sdk_03_06_02_00-LTS-Linux-x86-Install.bin
 R4F_INSTALLER := $(INSTALLER_DIR)/ti_cgt_tms470_20.2.7.LTS_linux-x64_installer.bin

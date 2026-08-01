@@ -33,7 +33,7 @@ variants will fail startup or produce the wrong capture geometry.
 
 | Component | Current file or value |
 |---|---|
-| Firmware | `firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin` |
+| Firmware | `firmware/releases/l3_dump_hybrid_cadence_20260801.bin` |
 | Radar config | `config/iwr6843_l3dump_vTX2_hybrid.cfg` |
 | Reference array calibration | `config/iwr6843_calibration_reference.json` |
 | Transmitters / receivers | 3 TX / 4 RX |
@@ -42,7 +42,11 @@ variants will fail startup or produce the wrong capture geometry.
 | Saved range data | 32 complex bins pre-trigger; 53 complex bins during ball flight |
 | Default complete dump size | 783,508 bytes, including header and timed frame descriptors |
 
-The v6 firmware SHA-256 is:
+Release filenames follow `<feature_name>_<YYYYMMDD>.bin`. The dump-contract
+version and temperature capability are carried by the firmware and dump header,
+not repeated in the filename.
+
+The v7 firmware SHA-256 is:
 
 ```text
 d6664e12bf06522c281b9cb227cfae274ed0a2cf32efe809551f7653faba7fe7
@@ -51,7 +55,7 @@ d6664e12bf06522c281b9cb227cfae274ed0a2cf32efe809551f7653faba7fe7
 Verify it on the Pi before flashing:
 
 ```bash
-sha256sum firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin
+sha256sum firmware/releases/l3_dump_hybrid_cadence_20260801.bin
 ```
 
 The config's `captureCfg` line controls pre/post range windows and the
@@ -387,7 +391,7 @@ command will ask for another RESET after it opens the UART.
 
 ```bash
 uv run python firmware/flash_iwr6843.py \
-  firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin \
+  firmware/releases/l3_dump_hybrid_cadence_20260801.bin \
   --port /dev/ttyUSB0
 ```
 

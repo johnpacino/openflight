@@ -7,6 +7,7 @@ from pathlib import Path
 
 FIRMWARE = Path(__file__).parents[1] / "firmware" / "iwr6843" / "l3_dump.c"
 FIRMWARE_MAKEFILE = Path(__file__).parents[1] / "firmware" / "Makefile"
+RELEASE_DIR = Path(__file__).parents[1] / "firmware" / "releases"
 CONFIGURABLE_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_configurable.cfg"
 HYBRID_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_hybrid.cfg"
 
@@ -118,9 +119,17 @@ def test_production_build_uses_configurable_capture_and_single_release():
         "--define=SNAPSHOT_BINS=",
     ):
         assert fixed_geometry not in target
-    assert "RELEASE_NAME ?= l3_dump_vTX2_hybrid_cadence_v6.bin" in source
+    assert "RELEASE_NAME ?= l3_dump_hybrid_cadence_20260801.bin" in source
     assert '"$(RELEASE_DIR)/$(RELEASE_NAME)"' in target
     assert source.count("\nbuild-native:") == 1
+
+
+def test_release_filenames_use_feature_and_build_date_without_version_tokens():
+    pattern = re.compile(r"^[a-z0-9_]+_\d{8}\.bin$")
+
+    for release in RELEASE_DIR.glob("*.bin"):
+        assert pattern.fullmatch(release.name), release.name
+        assert not re.search(r"(?:^|_)v\d+(?:_|\.)", release.name), release.name
 
 
 def test_configurable_capture_config_requests_32_frames_at_3ms():
