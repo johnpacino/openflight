@@ -13,13 +13,21 @@ Step-by-step instructions for wiring the sound trigger that enables spin detecti
 
 The SparkFun SEN-14262 sound detector listens for club impact and triggers the OPS243-A radar to dump its I/Q buffer. That captured data is then analyzed for spin rate estimation.
 
-The wiring is simple — three wires:
+The wiring is simple — three wires off the detector, plus the radar's ground
+return:
 
 ```
 SEN-14262 GATE → OPS243-A HOST_INT (J3 Pin 3)
 SEN-14262 VCC  → Raspberry Pi 3.3V
-SEN-14262 GND  → Raspberry Pi GND (shared with OPS243-A GND)
+SEN-14262 GND  → Raspberry Pi GND
+OPS243-A GND   → Raspberry Pi GND (J3 Pin 10, shared rail)
 ```
+
+![Sound trigger wiring: the SEN-14262 sound detector runs on 3.3V from Raspberry Pi header pin 1 with ground on pin 6, its GATE output drives HOST_INT on OPS243 J3 pin 3, and OPS243 ground on J3 pin 10 returns to the Pi.](assets/sound-trigger-wiring.svg)
+
+*The OPS243 keeps its micro-USB connection for data and power here; only the
+trigger and ground are wired by hand. To take the radar off USB as well, see
+[the UART migration](ops243-uart-migration.md).*
 
 ## Before You Wire: Solder R17
 
@@ -40,22 +48,27 @@ Start with 47kΩ. If the GATE LED still stays lit without sound, switch to a low
 
 ### Step 1: Identify OPS243-A J3 Header Pins
 
+`J3` is the **10-pin** header on the OPS243-A. Pin 1 is at the **right** end, so
+the numbering runs right to left:
+
 ```
-OPS243-A J3 Header:
-┌───┬───┬───┬───┬───┬───┐
-│ 1 │ 2 │ 3 │ 4 │ 5 │ 6 │
-│GND│   │INT│   │   │   │
-└───┴───┴───┴───┴───┴───┘
+OPS243-A J3 header:
+┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┐
+│ 10 │  9 │  8 │  7 │  6 │  5 │  4 │  3 │  2 │  1 │
+│GND │ 5V │    │TxD │RxD │    │    │INT │    │IO  │
+└────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
 ```
 
-- **Pin 1** = GND
+The two pins this guide needs:
+
 - **Pin 3** = HOST_INT (trigger input)
+- **Pin 10** = GND
 
 ### Step 2: Connect Power
 
 1. Connect **SEN-14262 VCC** → **Pi 3.3V** (physical pin 1)
 2. Connect **SEN-14262 GND** → **Pi GND** (physical pin 6)
-3. Connect **OPS243-A GND (J3 Pin 1)** → same **Pi GND** rail
+3. Connect **OPS243-A GND (J3 Pin 10)** → same **Pi GND** rail
 
 All three boards must share a common ground.
 
@@ -73,7 +86,7 @@ SEN-14262               Raspberry Pi           OPS243-A
 │ GATE ─────┼──────────┼──────────┼──────────┤ HOST_INT │
 │           │          │          │          │ (J3 P3)  │
 │ GND ──────┼──────────┤ GND      ├──────────┤ GND      │
-│           │          │          │          │ (J3 P1)  │
+│           │          │          │          │ (J3 P10) │
 └───────────┘          └──────────┘          └──────────┘
 ```
 
@@ -85,7 +98,7 @@ SEN-14262               Raspberry Pi           OPS243-A
 - [ ] SEN-14262 VCC → Pi 3.3V (pin 1)
 - [ ] SEN-14262 GND → Pi GND (pin 6)
 - [ ] SEN-14262 GATE → OPS243-A HOST_INT (J3 Pin 3)
-- [ ] OPS243-A GND (J3 Pin 1) → Pi GND (shared ground)
+- [ ] OPS243-A GND (J3 Pin 10) → Pi GND (shared ground)
 
 ---
 

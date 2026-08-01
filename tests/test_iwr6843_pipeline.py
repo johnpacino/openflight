@@ -15,10 +15,13 @@ import pytest
 from openflight.iwr6843 import Calibration, estimate_lcmf_v1, lcmf, process_dump
 from openflight.iwr6843.dump import (
     HEADER,
+    MAGIC,
+    MAX_SUPPORTED_DUMP_VERSION,
     SAMPLE_RANGE_FFT_IQ16,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+    TEMP_REPORT_KEYS,
     pack_dump,
     parse_dump,
     parse_header,
@@ -180,6 +183,61 @@ def test_header_carries_period_and_trigger():
     geo = geometry_from_header(meta)
     assert geo.frame_period_s == pytest.approx(0.006)
     assert geo.n_loops == 16
+
+
+def test_parse_header_rejects_future_dump_version():
+    raw = synth_shot()
+    future = bytearray(raw[: HEADER.size])
+    future[4:6] = int(MAX_SUPPORTED_DUMP_VERSION + 1).to_bytes(2, "little")
+
+    with pytest.raises(ValueError, match="unsupported dump version"):
+        parse_header(bytes(future))
+
+
+def test_parse_header_rejects_short_temperature_extension():
+    raw = synth_shot()
+    v5_header_only = bytearray(raw[: HEADER.size])
+    v5_header_only[4:6] = int(MAX_SUPPORTED_DUMP_VERSION).to_bytes(2, "little")
+
+    with pytest.raises(ValueError, match="short temperature report extension"):
+        parse_header(bytes(v5_header_only))
+
+
+def test_pack_dump_rejects_temperature_version_mismatches():
+    cube = np.zeros((2, 4, 4, 8), dtype=complex)
+    report = {key: index for index, key in enumerate(TEMP_REPORT_KEYS)}
+
+    with pytest.raises(ValueError, match="temperature reports require dump version 5"):
+        pack_dump(cube, n_tx=2, version=4, temperature_report=report)
+
+    with pytest.raises(ValueError, match="dump version 5\\+ requires a temperature report"):
+        pack_dump(cube, n_tx=2, version=5)
+
+
+def test_parse_dump_rejects_short_window_table():
+    header = HEADER.pack(
+        MAGIC,
+        4,
+        4,
+        6,
+        3,
+        4,
+        53,
+        SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+        0,
+        0,
+        4000,
+    )
+
+    with pytest.raises(ValueError, match="short per-frame range-window table"):
+        parse_dump(header + b"\x14\x14")
+
+
+def test_parse_dump_rejects_truncated_payload():
+    raw = synth_shot()
+
+    with pytest.raises(ValueError, match="short payload"):
+        parse_dump(raw[:-1])
 
 
 def test_recovers_speed_and_launch_angle(cal):
@@ -519,6 +577,63 @@ def test_variable_width_snapshot_recovers_ball_track_and_launch(cal):
     assert shot.fits["tee"].launch_angle_deg == pytest.approx(truth_la, abs=1.5)
     assert shot.geometry.n_loops == 12
     assert shot.geometry.frame_period_s == pytest.approx(0.003)
+
+
+def test_windowed_snapshot_temperature_report_round_trip_and_projection():
+    rng = np.random.default_rng(24)
+    starts = (20, 20, 32, 32)
+    cube = rng.standard_normal((4, 6, 4, 53)) + 1j * rng.standard_normal((4, 6, 4, 53))
+    report = {key: index + 100 for index, key in enumerate(TEMP_REPORT_KEYS)}
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        trigger_frame=1,
+        version=5,
+        frame_period_us=4000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+        range_bin_starts=starts,
+        temperature_report=report,
+    )
+
+    header = parse_header(raw)
+    meta, parsed = parse_dump(raw)
+    projected_meta, projected = parse_dump(project_tx_pair(raw, (0, 2)))
+
+    assert header["temperature_report"] == report
+    assert header["header_nbytes"] == HEADER.size + 24
+    assert meta["range_bin_starts"] == starts
+    assert parsed.shape == cube.shape
+    assert projected_meta["temperature_report"] == report
+    assert projected_meta["range_bin_starts"] == starts
+    assert projected.shape == (4, 4, 4, 53)
+
+
+def test_hybrid_snapshot_temperature_report_round_trip_and_projection():
+    cube = np.ones((3, 36, 4, 7), dtype=complex)
+    report = {key: index + 30 for index, key in enumerate(TEMP_REPORT_KEYS)}
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=7,
+        frame_period_us=2000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        range_bin_starts=(20, 32, 47),
+        range_bin_counts=(4, 7, 7),
+        frame_time_offsets_us=(0, 2000, 6000),
+        temperature_report=report,
+    )
+
+    header = parse_header(raw)
+    meta, parsed = parse_dump(raw)
+    projected_meta, projected = parse_dump(project_tx_pair(raw, (0, 2)))
+
+    assert header["header_nbytes"] == HEADER.size + 24
+    assert meta["temperature_report"] == report
+    assert meta["range_bin_starts"] == (20, 32, 47)
+    assert meta["frame_time_offsets_us"] == (0, 2000, 6000)
+    assert parsed.shape == cube.shape
+    assert projected_meta["temperature_report"] == report
+    assert projected.shape == (3, 24, 4, 7)
 
 
 def test_windowed_snapshot_recovers_speed_and_launch_angle(cal):
@@ -970,9 +1085,7 @@ def test_lcmf_v1_rejects_when_every_channel_is_off_the_grid(cal, monkeypatch):
     """
     monkeypatch.setattr(lcmf, "grid_curvature", lambda objective: None)
 
-    result = estimate_lcmf_v1(
-        _range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i"
-    )
+    result = estimate_lcmf_v1(_range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i")
 
     assert result.status == "rejected_no_conditioned_channel"
     assert result.angle_deg is None
@@ -980,9 +1093,7 @@ def test_lcmf_v1_rejects_when_every_channel_is_off_the_grid(cal, monkeypatch):
     assert result.track_speed_mph is not None, "a rejection must keep its track evidence"
 
 
-def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(
-    cal, monkeypatch
-):
+def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(cal, monkeypatch):
     """A tie on evidence is not a licence to return whichever channel is first.
 
     ``max()`` yields the first key on a tie, and insertion order puts
@@ -993,9 +1104,7 @@ def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(
     monkeypatch.setattr(lcmf, "grid_curvature", lambda objective: 0.0)
     monkeypatch.setattr(lcmf, "CHANNEL_SPREAD_MAX_DEG", 0.0)
 
-    result = estimate_lcmf_v1(
-        _range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i"
-    )
+    result = estimate_lcmf_v1(_range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i")
 
     assert result.status == "rejected_no_conditioned_channel"
     assert result.angle_deg is None

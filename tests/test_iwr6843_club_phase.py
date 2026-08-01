@@ -1,4 +1,4 @@
-"""Wrapped interferometric phase is the only valid azimuth on this array.
+"""Wrapped interferometric phase is required by the production path fit.
 
 The horizontal aperture is a SINGLE lambda/2 baseline (TX2 against the
 TX1/TX3 row -- see openflight.iwr6843.lcmf's spatial dictionary, which places
@@ -12,10 +12,13 @@ unambiguous phase range is exactly +/-pi, so:
   20-144 degrees of azimuth travel in 9-16 ms -- impossible for a clubhead
   whose motion is 85-90% radial.
 
-So the estimator keeps the wrapped phase and rejects outliers against each
-frame's own circular median instead.
+So the production estimator keeps the wrapped phase and rejects outliers
+against each frame's own circular median instead. The debug-only continuity
+candidate is different: it retains TX2-to-TX1 and TX2-to-TX3 one-wavelength
+references separately and unwraps each through time before combining them.
 """
 
+import inspect
 import math
 
 import numpy as np
@@ -64,11 +67,8 @@ class TestPhaseOutlierRejection:
 class TestNoUnwrap:
     """The invalid unwrap must be gone, not merely tuned."""
 
-    def test_module_no_longer_unwraps(self):
-        source = (
-            club.__loader__.get_source("openflight.iwr6843.club")  # type: ignore[union-attr]
-            or ""
-        )
+    def test_production_estimator_no_longer_unwraps(self):
+        source = inspect.getsource(club.estimate_club_path)
         assert "np.unwrap" not in source, (
             "np.unwrap on a lambda/2 baseline invents angles outside the "
             "array's unambiguous +/-90 degree field of view"

@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="750" viewBox="0 0 680 750" role="img">
+<title>Sound trigger wiring</title>
+<desc>The SEN-14262 sound detector runs on 3.3V from Raspberry Pi header pin 1 and ground on pin 6, and its GATE output drives Host Interrupt on J3 pin 3 of the OPS243, whose ground on J3 pin 10 returns to the Pi.</desc>
+<style>
+  .ts { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 12px; fill: #3d3d3a; }
+  .th { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 500; fill: #3d3d3a; }
+</style>
+
+<rect x="0" y="0" width="680" height="750" fill="#FFFFFF"/>
+
+<rect x="40" y="40" width="190" height="117" rx="12" fill="#E23A34" stroke="#141414" stroke-width="2"/>
+<circle cx="72" cy="98" r="24" fill="#2A2A2A" stroke="#141414" stroke-width="2"/>
+<circle cx="72" cy="98" r="16" fill="#4A4A4A"/>
+<rect x="100" y="84" width="44" height="44" rx="2" fill="#3A3A3A" stroke="#141414" stroke-width="1.5"/>
+<rect x="76" y="52" width="20" height="7" rx="1" fill="#BFC4C7"/>
+<rect x="102" y="52" width="20" height="7" rx="1" fill="#BFC4C7"/>
+<rect x="128" y="50" width="14" height="11" rx="1" fill="#D8C9A6"/>
+<rect x="80" y="132" width="18" height="7" rx="1" fill="#BFC4C7"/>
+<text class="ts" x="110" y="150" text-anchor="middle" fill="#FFFFFF">SOUND DETECTOR</text>
+<rect x="196" y="48.5" width="26" height="15" rx="2" fill="#EDEDED" stroke="#141414" stroke-width="1.5"/><circle cx="209" cy="56" r="4" fill="#FFFFFF" stroke="#141414" stroke-width="1.5"/><rect x="222" y="53.5" width="22" height="5" fill="#D9B24C"/>
+<rect x="196" y="66.5" width="26" height="15" rx="2" fill="#EDEDED" stroke="#141414" stroke-width="1.5"/><circle cx="209" cy="74" r="4" fill="#FFFFFF" stroke="#141414" stroke-width="1.5"/><rect x="222" y="71.5" width="22" height="5" fill="#D9B24C"/>
+<rect x="196" y="84.5" width="26" height="15" rx="2" fill="#EDEDED" stroke="#141414" stroke-width="1.5"/><circle cx="209" cy="92" r="4" fill="#FFFFFF" stroke="#141414" stroke-width="1.5"/><rect x="222" y="89.5" width="22" height="5" fill="#D9B24C"/>
+<rect x="196" y="102.5" width="26" height="15" rx="2" fill="#EDEDED" stroke="#141414" stroke-width="1.5"/><circle cx="209" cy="110" r="4" fill="#FFFFFF" stroke="#141414" stroke-width="1.5"/><rect x="222" y="107.5" width="22" height="5" fill="#D9B24C"/>
+<rect x="196" y="120.5" width="26" height="15" rx="2" fill="#EDEDED" stroke="#141414" stroke-width="1.5"/><circle cx="209" cy="128" r="4" fill="#FFFFFF" stroke="#141414" stroke-width="1.5"/><rect x="222" y="125.5" width="22" height="5" fill="#D9B24C"/>
+<rect x="196" y="138.5" width="26" height="15" rx="2" fill="#EDEDED" stroke="#141414" stroke-width="1.5"/><circle cx="209" cy="146" r="4" fill="#FFFFFF" stroke="#141414" stroke-width="1.5"/><rect x="222" y="143.5" width="22" height="5" fill="#D9B24C"/>
+<text class="ts" x="190" y="56" text-anchor="end" dominant-baseline="central" fill="#FFFFFF">AUDIO</text>
+<text class="ts" x="190" y="74" text-anchor="end" dominant-baseline="central" fill="#FFFFFF">ENVELOPE</text>
+<text class="ts" x="190" y="110" text-anchor="end" dominant-baseline="central" fill="#FFFFFF">GATE</text>
+<text class="ts" x="190" y="128" text-anchor="end" dominant-baseline="central" fill="#FFFFFF">VCC</text>
+<text class="ts" x="190" y="146" text-anchor="end" dominant-baseline="central" fill="#FFFFFF">GND</text>
+
+<rect x="420" y="40" width="220" height="150" rx="12" fill="#1E8A4F" stroke="#0E5730" stroke-width="1.5"/>
+<circle cx="438" cy="58" r="9" fill="#FFFFFF" stroke="#D9B24C" stroke-width="4"/>
+<circle cx="622" cy="58" r="9" fill="#FFFFFF" stroke="#D9B24C" stroke-width="4"/>
+<circle cx="438" cy="172" r="9" fill="#FFFFFF" stroke="#D9B24C" stroke-width="4"/>
+<circle cx="622" cy="172" r="9" fill="#FFFFFF" stroke="#D9B24C" stroke-width="4"/>
+<text class="ts" x="492" y="58" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">OmniPreSense</text>
+<text class="ts" x="592" y="58" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">OPS243</text>
+<rect x="446" y="74" width="66" height="54" rx="2" fill="#E0B63C"/>
+<rect x="548" y="74" width="66" height="54" rx="2" fill="#E0B63C"/>
+<rect x="518" y="68" width="24" height="66" rx="1" fill="#B9BDC0"/>
+<rect x="466" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="467" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="480" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="481" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="494" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="495" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="508" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="509" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="522" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="523" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="536" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="537" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="550" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="551" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="564" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="565" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="578" y="168" width="8" height="6" fill="#EDEDED" stroke="#333333" stroke-width="1"/><rect x="579" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<rect x="592" y="168" width="8" height="6" fill="#F2F2EE" stroke="#111111" stroke-width="1.5"/><rect x="593" y="174" width="6" height="31" fill="#EDEDED" stroke="#333333" stroke-width="1"/>
+<text class="ts" x="452" y="182" text-anchor="end" dominant-baseline="central" fill="#FFFFFF">J3</text>
+<text class="ts" x="470" y="218" text-anchor="middle" dominant-baseline="central">10</text>
+<text class="ts" x="568" y="218" text-anchor="middle" dominant-baseline="central">3</text>
+<text class="ts" x="596" y="218" text-anchor="middle" dominant-baseline="central">1</text>
+
+<rect x="100" y="380" width="380" height="250" rx="14" fill="#23994C" stroke="#0E5730" stroke-width="1.5"/>
+<circle cx="116" cy="396" r="9" fill="#FFFFFF" stroke="#D9B24C" stroke-width="4"/>
+<circle cx="116" cy="614" r="9" fill="#FFFFFF" stroke="#D9B24C" stroke-width="4"/>
+<circle cx="464" cy="614" r="9" fill="#FFFFFF" stroke="#D9B24C" stroke-width="4"/>
+<rect x="142" y="396" width="230" height="28" rx="2" fill="#D9B24C" stroke="#A8842E" stroke-width="1"/>
+<rect x="145" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="145" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="156.4" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="156.4" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="167.8" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="167.8" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="179.2" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="179.2" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="190.6" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="190.6" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="202" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="202" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="213.4" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="213.4" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="224.8" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="224.8" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="236.2" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="236.2" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="247.6" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="247.6" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="259" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="259" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="270.4" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="270.4" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="281.8" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="281.8" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="293.2" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="293.2" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="304.6" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="304.6" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="316" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="316" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="327.4" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="327.4" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="338.8" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="338.8" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="350.2" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="350.2" y="413" width="6" height="6" fill="#2A2A2A"/>
+<rect x="361.6" y="401" width="6" height="6" fill="#2A2A2A"/><rect x="361.6" y="413" width="6" height="6" fill="#2A2A2A"/>
+<text class="ts" x="148" y="437" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">1</text>
+<text class="ts" x="170.8" y="437" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">6</text>
+<text class="ts" x="364.6" y="437" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">39</text>
+<rect x="146" y="466" width="60" height="34" rx="3" fill="#F2F2EE" stroke="#0E5730" stroke-width="1"/>
+<text class="ts" x="176" y="483" text-anchor="middle" dominant-baseline="central" fill="#1A1A1A">Wifi/BT</text>
+<text class="th" x="296" y="462" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">Raspberry Pi 5</text>
+<rect x="146" y="510" width="76" height="42" rx="3" fill="#F2F2EE" stroke="#0E5730" stroke-width="1"/>
+<text class="ts" x="184" y="524" text-anchor="middle" dominant-baseline="central" fill="#1A1A1A">LPDDR4X</text>
+<text class="ts" x="184" y="540" text-anchor="middle" dominant-baseline="central" fill="#1A1A1A">RAM</text>
+<rect x="240" y="496" width="102" height="56" rx="3" fill="#F2F2EE" stroke="#0E5730" stroke-width="1"/>
+<text class="ts" x="291" y="512" text-anchor="middle" dominant-baseline="central" fill="#1A1A1A">CPU/GPU</text>
+<text class="ts" x="291" y="530" text-anchor="middle" dominant-baseline="central" fill="#1A1A1A">BCM2712</text>
+<polygon points="382,500 404,522 382,544 360,522" fill="#8A9096" stroke="#0E5730" stroke-width="1"/>
+<rect x="404" y="398" width="72" height="56" rx="3" fill="#F2F2EE" stroke="#0E5730" stroke-width="1"/>
+<text class="ts" x="440" y="426" text-anchor="middle" dominant-baseline="central" fill="#1A1A1A">2x USB 2.0</text>
+<rect x="404" y="462" width="72" height="56" rx="3" fill="#2B5FA8" stroke="#0E5730" stroke-width="1"/>
+<text class="ts" x="440" y="490" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">2x USB 3.0</text>
+<rect x="404" y="526" width="72" height="70" rx="3" fill="#F2F2EE" stroke="#0E5730" stroke-width="1"/>
+<text class="ts" x="440" y="561" text-anchor="middle" dominant-baseline="central" fill="#1A1A1A">RJ45</text>
+<rect x="100" y="560" width="14" height="44" rx="2" fill="#2A2A2A"/>
+<rect x="296" y="558" width="12" height="40" rx="1" fill="#F2F2EE" stroke="#0E5730" stroke-width="1"/>
+<rect x="322" y="558" width="12" height="40" rx="1" fill="#F2F2EE" stroke="#0E5730" stroke-width="1"/>
+<text class="th" x="188" y="578" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">HDMI</text>
+<rect x="120" y="610" width="36" height="20" rx="3" fill="#4A4A4A"/>
+<text class="ts" x="138" y="600" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF">USB-C</text>
+<rect x="196" y="610" width="38" height="20" rx="2" fill="#2A2A2A"/>
+<rect x="248" y="610" width="38" height="20" rx="2" fill="#2A2A2A"/>
+
+<path d="M244 128 L285 128 L285 350 L148 350 L148 416" fill="none" stroke="#E8811F" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M244 146 L302 146 L302 368 L170.8 368 L170.8 404" fill="none" stroke="#1B1B1B" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M244 110 L340 110 L340 320 L568 320 L568 205" fill="none" stroke="#E8C21F" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M470 205 L470 300 L364.6 300 L364.6 416" fill="none" stroke="#1B1B1B" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="148" cy="416" r="6" fill="none" stroke="#FFFFFF" stroke-width="1.4"/>
+<circle cx="170.8" cy="404" r="6" fill="none" stroke="#FFFFFF" stroke-width="1.4"/>
+<circle cx="364.6" cy="416" r="6" fill="none" stroke="#FFFFFF" stroke-width="1.4"/>
+
+<path d="M40 668 L64 668" stroke="#E8811F" stroke-width="3.4" stroke-linecap="round"/>
+<text class="ts" x="72" y="668" dominant-baseline="central">3.3V — SEN VCC to Pi pin 1</text>
+<path d="M40 692 L64 692" stroke="#1B1B1B" stroke-width="3.4" stroke-linecap="round"/>
+<text class="ts" x="72" y="692" dominant-baseline="central">GND — SEN GND to Pi pin 6</text>
+<path d="M360 668 L384 668" stroke="#E8C21F" stroke-width="3.4" stroke-linecap="round"/>
+<text class="ts" x="392" y="668" dominant-baseline="central">GATE — SEN GATE to J3 pin 3</text>
+<path d="M360 692 L384 692" stroke="#1B1B1B" stroke-width="3.4" stroke-linecap="round"/>
+<text class="ts" x="392" y="692" dominant-baseline="central">GND — J3 pin 10 to Pi pin 39</text>
+<text class="ts" x="40" y="724" dominant-baseline="central">J3 pin 1 is at the right end of the header. Pin 1 is GPIO; ground is pin 10.</text>
+</svg>

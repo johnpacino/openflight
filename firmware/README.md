@@ -19,28 +19,28 @@ Use this firmware and runtime configuration together:
 
 | Component | Current value |
 |---|---|
-| Flash image | `firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin` |
+| Flash image | `firmware/releases/l3_dump_vTX2_hybrid_cadence_v7_temperature.bin` |
 | Runtime config | `config/iwr6843_l3dump_vTX2_hybrid.cfg` |
 | Reference calibration | `config/iwr6843_calibration_reference.json` |
 | Build target | `make -C firmware docker-build` (any host) |
-| Flash image size | 342,404 bytes |
-| Flash SHA-256 | `d6664e12bf06522c281b9cb227cfae274ed0a2cf32efe809551f7653faba7fe7` |
-| Dump format | Version 6, variable-width timed complex range-FFT snapshots |
-| Default complete dump size | 783,508 bytes |
+| Flash image size | 342,596 bytes |
+| Flash SHA-256 | `899a23742d349b1216be4330d65214d88b99b27258d53b2efa754c35053aae02` |
+| Dump format | Version 7, temperature report plus variable-width timed complex range-FFT snapshots |
+| Default complete dump size | 783,532 bytes |
 
 Verify the image before flashing:
 
 ```bash
-sha256sum firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin
+sha256sum firmware/releases/l3_dump_vTX2_hybrid_cadence_v7_temperature.bin
 ```
 
-The v6 image acquires all 12 loops every 2 ms. It retains every pre-trigger
+The v7 image acquires all 12 loops every 2 ms. It retains every pre-trigger
 frame in the narrow 32-bin club window, then retains alternate post-trigger
 acquisitions in the wider 53-bin ball window. The resulting capture contains
 16 dense pre-impact frames at 2 ms spacing and 16 full-quality ball snapshots
 at 4 ms spacing. The post frames still contain all 12 loops.
 
-This release has passed the container build, wire-format tests, and synthetic
+This release must pass the container build, wire-format tests, and synthetic
 end-to-end speed/angle processing. It has not yet passed a hardware smoke test
 or source-of-truth TrackMan validation. Keep
 `l3_dump_vTX2_configurable_v5.bin` and its matching config available as the
@@ -66,7 +66,8 @@ The loop count and acquisition cadence come from `frameCfg`. `captureCfg`
 supplies the pre/post window widths, start bins, retained post-trigger frame
 count, and post-trigger retention stride. The firmware uses all remaining L3
 for pre-trigger frames and prints the resolved plan during `sensorStart`;
-invalid or oversized plans fail before RF capture begins.
+invalid or oversized plans fail before RF capture begins. Immediately before
+streaming, the firmware also appends the TI temperature report to the dump.
 
 ## What The Current Firmware Captures
 
@@ -146,7 +147,7 @@ switches to the proven 53-bin ball-flight window after the trigger:
 | Late post-trigger flight | 8 | 47 | 47-99 | Retain farther flight and the net-side region |
 
 Each frame's start bin, valid bin count, and elapsed time from the previous
-retained frame are written into the v6 dump. The host therefore knows both the
+retained frame are written into the v7 dump. The host therefore knows both the
 absolute range and actual sampling time represented by every frame.
 
 ### L3 Memory Budget
@@ -165,10 +166,11 @@ The linker reserves the full 786,432-byte region as a flat arena. At
 remaining whole-frame space into a circular pre-trigger ring. The default plan
 leaves 3,072 bytes unused because another 18,432-byte pre frame cannot fit.
 
-The transfer adds a 20-byte header and 32 four-byte frame descriptors:
+The transfer adds a 20-byte header, a 24-byte temperature report, and 32
+four-byte frame descriptors:
 
 ```text
-783,360 + 20 + 128 = 783,508 bytes
+783,360 + 20 + 24 + 128 = 783,532 bytes
 ```
 
 At the saturated 1,041,667-baud link (measured 103,038 bytes/s) one dump takes
@@ -186,14 +188,15 @@ The wire format is defined in two places that must stay synchronized:
 - Firmware: [`iwr6843/dump_format.h`](iwr6843/dump_format.h)
 - Host parser: [`../src/openflight/iwr6843/dump.py`](../src/openflight/iwr6843/dump.py)
 
-The current version 6 transfer contains:
+The current version 7 transfer contains:
 
 1. A packed 20-byte little-endian `l3_dump_header_t`.
-2. One packed `(uint8 start bin, uint8 valid bin count, uint16 delta-us)`
+2. A packed 24-byte `l3_temperature_report_t` captured immediately before streaming.
+3. One packed `(uint8 start bin, uint8 valid bin count, uint16 delta-us)`
    descriptor for each frame.
-3. Only each frame's declared valid complex int16 range bins, ordered by frame,
+4. Only each frame's declared valid complex int16 range bins, ordered by frame,
    chirp, RX, and local range bin.
-4. Each complex sample in TI's native imaginary-then-real order.
+5. Each complex sample in TI's native imaginary-then-real order.
 
 The header carries:
 
@@ -206,8 +209,8 @@ The header carries:
 | `n_tx`, `n_rx` | Virtual-array geometry |
 | `n_samples` | Raw ADC count or maximum stored frame width |
 | `sample_fmt` | Raw ADC, fixed snapshot, fixed-width window, variable-width window, or timed variable-width window |
-| `trigger_frame` | Oldest circular slot for legacy formats; zero for chronological v5/v6 dumps |
-| `frame_period_us` | Base acquisition spacing; v6 descriptors carry retained-frame deltas |
+| `trigger_frame` | Oldest circular slot for legacy formats; zero for chronological v5/v6/v7 dumps |
+| `frame_period_us` | Base acquisition spacing; v6/v7 descriptors carry retained-frame deltas |
 
 Changing the header, sample order, frame metadata, or sample format requires a
 matching host-parser change and regression tests in the same commit.
@@ -426,12 +429,12 @@ The target performs the application build, generates the flashable TI
 meta-image, and copies the production image into `firmware/releases/`:
 
 ```text
-firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin
+firmware/releases/l3_dump_vTX2_hybrid_cadence_v7_temperature.bin
 ```
 
 Generated `.xer4f`, `.map`, and intermediate `.bin` files stay under
-`firmware/iwr6843/` and are ignored by Git. The file under `releases/` is the
-only image intended for installation.
+`firmware/iwr6843/` and are ignored by Git. Current production images and
+intentional rollback images live under `releases/`.
 
 ### 6. Copy Artifacts Out Of The VM
 
@@ -520,7 +523,7 @@ Leave the board in flash mode and run:
 
 ```bash
 uv run python firmware/flash_iwr6843.py \
-  firmware/releases/l3_dump_vTX2_hybrid_cadence_v6.bin \
+  firmware/releases/l3_dump_vTX2_hybrid_cadence_v7_temperature.bin \
   --port /dev/ttyUSB0
 ```
 
@@ -534,7 +537,7 @@ Expected completion:
 Erasing existing SFLASH...
 Opening firmware image...
 Writing firmware...
-Writing: 100% (341,956/341,956 bytes)
+Writing: 100% (342,596/342,596 bytes)
 Closing and verifying firmware...
 
 Flash verified by the IWR6843 ROM bootloader.
@@ -567,7 +570,7 @@ healthy capture reports:
 
 ```text
 [IWR6843] Trigger #1: dumping firmware-frozen L3 ring
-[IWR6843] Capture #1 complete: 549542 bytes
+[IWR6843] Capture #1 complete: 549566 bytes
 ```
 
 The firmware/config geometry is checked at `sensorStart`. A mismatch in TX
@@ -631,7 +634,7 @@ enough pre-trigger history for club work after trigger latency; see
 
 Changing loops or widths changes the resolved frame count and transfer size.
 The UART link is saturated at 1,041,667 baud (103,038 bytes/s measured), so the
-default 783,508-byte dump takes about 7.6 seconds, during which the radar is
+default 783,532-byte dump takes about 7.6 seconds, during which the radar is
 blind. Keep `--iwr6843-capture-timeout` comfortably above it.
 
 Do not reuse application objects after changing compile-time geometry. The
@@ -684,8 +687,8 @@ Also check:
 | Probe receives no ROM response | Wrong CP2105 interface or RESET timing | Use Enhanced/UARTA, type `READY`, then RESET only when prompted |
 | Flash fails after erase | Image transfer was interrupted | Leave flash mode enabled and rerun the full flash command; the ROM bootloader remains available |
 | No CLI after flashing | Board remains in flash mode or was not reset | Restore functional switches and press RESET |
-| Server rejects the config | Wrong firmware/config pair, invalid loop count/stride, or an L3 plan that does not fit | Use the v6 binary and `iwr6843_l3dump_vTX2_hybrid.cfg`; read the `Capture plan` or `Error` line |
-| Default dump is not 783,508 bytes | The pre-ring was not full, the config was changed, the UART transfer was interrupted, or the wrong firmware is flashed | Check the v6 frame descriptors and resolved plan before treating the size difference as corruption |
+| Server rejects the config | Wrong firmware/config pair, invalid loop count/stride, or an L3 plan that does not fit | Use the v7 binary and `iwr6843_l3dump_vTX2_hybrid.cfg`; read the `Capture plan` or `Error` line |
+| Default dump is not 783,532 bytes | The pre-ring was not full, the config was changed, the UART transfer was interrupted, the temperature read failed, or the wrong firmware is flashed | Check the v7 frame descriptors and resolved plan before treating the size difference as corruption |
 | First run works but restart hangs | Retired v1 image or incomplete shutdown | Flash the current image and reset in functional mode |
 | `docker-build` says the image does not exist | `docker-image` has not been run | `make -C firmware docker-image` (needs all five installers) |
 | Container build fails "cannot execute 32-bit i386 binaries" | Docker Desktop is using its Rosetta backend | Turn off **Use Rosetta for x86_64/amd64 emulation** so QEMU handles i386 |

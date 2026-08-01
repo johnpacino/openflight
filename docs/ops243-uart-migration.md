@@ -63,6 +63,11 @@ on the board before counting.
 | Pin 6 | `RxD` (in) | 8 | GPIO14 / `TXD0` |
 | Pin 3 | `HOST_INT` | — | sound detector `GATE` (unchanged) |
 
+![OPS243 UART migration wiring: the radar leaves USB and runs from the Raspberry Pi 5 header with 5V on J3 pin 9, ground on pin 10, and a crossed UART pair on pins 7 and 6, while the SEN-14262 GATE output is spliced three ways to J3 pin 3 and Pi physical pin 11.](assets/ops243-uart-wiring.svg)
+
+*The diagram picks physical pin 4 for 5V and pin 14 for ground; any 5V and any
+GND pin work as long as the ground is the same rail the sound detector uses.*
+
 TX and RX are **crossed**: the radar's transmit goes to the Pi's receive, and
 the Pi's transmit goes to the radar's receive. Getting pin 6 wrong is the
 quiet failure — the radar still talks, so you get readings at 19,200 baud, but

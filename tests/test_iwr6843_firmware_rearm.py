@@ -118,7 +118,7 @@ def test_production_build_uses_configurable_capture_and_single_release():
         "--define=SNAPSHOT_BINS=",
     ):
         assert fixed_geometry not in target
-    assert "RELEASE_NAME ?= l3_dump_vTX2_hybrid_cadence_v6.bin" in source
+    assert "RELEASE_NAME ?= l3_dump_vTX2_hybrid_cadence_v7_temperature.bin" in source
     assert '"$(RELEASE_DIR)/$(RELEASE_NAME)"' in target
     assert source.count("\nbuild-native:") == 1
 
