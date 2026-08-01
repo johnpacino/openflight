@@ -46,7 +46,7 @@ class InclinometerService:
         zero_offset_deg: float = 0.0,
         sample_hz: float = 10.0,
         window_samples: int = 8,
-        history_seconds: float = 15.0,
+        history_seconds: float = 60.0,
         max_snapshot_age_s: float = 2.0,
         max_pitch_std_deg: float = 0.5,
         gravity_range_g: tuple[float, float] = (0.85, 1.15),
