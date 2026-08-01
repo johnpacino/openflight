@@ -117,6 +117,11 @@ You need:
 - Measurements for radar-to-ball distance, radar-to-net distance, radar height,
   ball height, and radar tilt.
 
+An optional LIS3DH can measure enclosure pitch and apply a stable pre-impact
+tilt correction to each shot. See the [inclinometer setup and calibration
+guide](../inclinometer.md). The feature is opt-in and falls back to the
+configured IWR6843 tilt whenever the sensor is unavailable, moving, or stale.
+
 Run all commands from the OpenFlight repository root unless a section says
 otherwise.
 

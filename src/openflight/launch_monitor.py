@@ -295,6 +295,7 @@ class Shot:
     experimental_club_path_deg: Optional[float] = None
     experimental_club_path_status: Optional[str] = None
     spin_axis_deg: Optional[float] = None  # Spin axis tilt: 0=backspin, +right(fade), -left(draw)
+    inclinometer: Optional[dict] = None  # Stable enclosure orientation used for this shot
 
     @property
     def ball_speed_ms(self) -> float:
