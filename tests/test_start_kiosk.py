@@ -285,3 +285,21 @@ def test_iwr6843_azimuth_offset_is_forwarded():
 def test_iwr6843_azimuth_offset_omitted_by_default():
     command = _dry_run("--iwr6843").stdout.strip()
     assert "--iwr6843-azimuth-offset-deg" not in command
+
+
+def test_inclinometer_flags_are_forwarded():
+    command = _dry_run(
+        "--iwr6843",
+        "--inclinometer",
+        "--inclinometer-zero-offset",
+        "-1.25",
+    ).stdout.strip()
+
+    assert "--inclinometer" in command
+    assert "--inclinometer-zero-offset -1.25" in command
+
+
+def test_inclinometer_is_disabled_by_default():
+    command = _dry_run("--iwr6843").stdout.strip()
+
+    assert "--inclinometer" not in command
