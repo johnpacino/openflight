@@ -1,6 +1,7 @@
 """Tests for OPS243 radar driver."""
 
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -427,3 +428,34 @@ class TestWaitForHardwareTrigger:
         response = radar.wait_for_hardware_trigger(timeout=5.0)
         assert response == b"".join(self._DUMP).decode("ascii")
         assert time.time() - start < 1.0
+
+    def test_fragmented_usb_dump_is_not_throttled_per_chunk(self):
+        """Small CDC fragments must be drained without a sleep per fragment."""
+
+        class FragmentedSerial:
+            is_open = True
+
+            def __init__(self, response: bytes):
+                self.response = response
+
+            @property
+            def in_waiting(self):
+                return min(16, len(self.response))
+
+            def reset_input_buffer(self):
+                pass
+
+            def read(self, count):
+                chunk = self.response[:count]
+                self.response = self.response[count:]
+                return chunk
+
+        sleeps = []
+        serial_obj = FragmentedSerial(b"".join(self._DUMP))
+        radar = self._radar(serial_obj)
+
+        with patch("openflight.ops243.time.sleep", side_effect=sleeps.append):
+            response = radar.wait_for_hardware_trigger(timeout=1.0)
+
+        assert response == b"".join(self._DUMP).decode("ascii")
+        assert 0.01 not in sleeps

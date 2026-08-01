@@ -133,3 +133,17 @@ def test_service_does_not_reuse_old_position_after_movement():
     selection = service.snapshot_for_impact(1.35)
     assert selection.status == "moving"
     assert selection.snapshot is None
+
+
+def test_default_history_survives_a_delayed_radar_callback():
+    """OPS dump latency must not evict the orientation captured at impact."""
+    service = InclinometerService(sensor=None)
+
+    for index in range(400):
+        timestamp = index / 10.0
+        service.add_sample(AccelerationSample(timestamp, 0.0, 0.0, 1.0))
+
+    selection = service.snapshot_for_impact(5.0)
+
+    assert selection.status == "stable"
+    assert selection.snapshot.timestamp <= 5.0

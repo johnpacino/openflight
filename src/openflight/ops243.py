@@ -610,8 +610,7 @@ class OPS243Radar:
                 # mid-dump). Abandon the sync; the caller falls back to
                 # first-byte timing. Retrying writes would only re-block.
                 logger.warning(
-                    "[OPS] Clock sync C? write timed out — port jammed, "
-                    "abandoning clock sync"
+                    "[OPS] Clock sync C? write timed out — port jammed, abandoning clock sync"
                 )
                 return False
             buf = ""
@@ -1428,14 +1427,17 @@ class OPS243Radar:
                     ):
                         break
 
-                time.sleep(0.01)
             else:
                 # If we've started receiving data, use shorter timeout
                 if last_data_time and (time.time() - last_data_time) > 0.5:
                     full_response = "".join(response_lines)
                     if '"Q"' in full_response:
                         break
-                time.sleep(0.02)
+                # Before a trigger, a 20ms poll keeps idle CPU use low. Once
+                # a dump starts, poll quickly: some CDC firmware exposes only
+                # 16-20 bytes per fragment, and sleeping 10-20ms per fragment
+                # can throttle a 41KB dump to more than 20 seconds.
+                time.sleep(0.001 if last_data_time else 0.02)
 
         full_response = "".join(response_lines) if response_lines else ""
 
