@@ -15,7 +15,7 @@ import math
 import numpy as np
 import pytest
 
-from openflight.iwr6843 import club, doa, tracking
+from openflight.iwr6843 import club, doa, tracking, trajectory
 from openflight.iwr6843.calibration import Calibration
 from openflight.iwr6843.dump import SAMPLE_RANGE_FFT_IQ16, pack_dump, parse_dump
 from openflight.iwr6843.shot import (
@@ -227,6 +227,91 @@ def test_result_serialises():
     }
 
 
+def test_attack_window_uses_four_preceding_frames_and_full_impact_frame():
+    geo = tracking.Geometry(
+        n_frames=18,
+        chirps_per_frame=36,
+        n_tx=3,
+        n_rx=4,
+        n_samples=128,
+        frame_period_s=0.002,
+        trigger_frame=0,
+        loop_period_s=TX2_LOOP_PERIOD_S,
+        frame_time_offsets_s=tuple(frame * 0.002 for frame in range(18)),
+    )
+
+    window = club.impact_centered_attack_window_s(geo, 0.0188)
+
+    assert window is not None
+    lo_s, hi_s = window
+    assert lo_s == pytest.approx(0.010)
+    assert hi_s == pytest.approx(0.018 + 12 * TX2_LOOP_PERIOD_S)
+    assert hi_s < 0.020, "the first frame strictly after impact must be excluded"
+
+
+def test_attack_candidate_fits_only_the_impact_centered_window(monkeypatch):
+    geo = tracking.Geometry(
+        n_frames=18,
+        chirps_per_frame=36,
+        n_tx=3,
+        n_rx=4,
+        n_samples=128,
+        frame_period_s=0.002,
+        trigger_frame=0,
+        loop_period_s=TX2_LOOP_PERIOD_S,
+        frame_time_offsets_s=tuple(frame * 0.002 for frame in range(18)),
+    )
+    track = tracking.BallTrack(
+        speed_ms=30.0,
+        slope_bins=640.0,
+        intercept_bins=20.0,
+        rms_bins=0.1,
+        n_inliers=40,
+        t_first=0.006,
+        t_last=0.0188,
+        low_confidence=False,
+    )
+    points = [
+        doa.AnglePoint(t_s=t_s, range_m=1.0, theta_rad=0.0, snr=20.0, n_summed=1)
+        for t_s in (0.009, 0.010, 0.012, 0.014, 0.016, 0.0185, 0.0195, 0.020)
+    ]
+    seen = {}
+
+    def fake_angle_points(_mti, extended_track, _geo, _cal, **_kwargs):
+        seen["track_t_last"] = extended_track.t_last
+        return points
+
+    def fake_fit_tee(selected, _cal, *, min_points):
+        seen["times"] = [point.t_s for point in selected]
+        seen["min_points"] = min_points
+        return trajectory.TrajectoryFit(
+            method="tee",
+            launch_angle_deg=-4.5,
+            n_points=len(selected),
+            h_rms_m=0.01,
+            launch_cross_m=1.0,
+        )
+
+    monkeypatch.setattr(doa, "angle_points", fake_angle_points)
+    monkeypatch.setattr(trajectory, "fit_tee", fake_fit_tee)
+
+    angle, status, n_points, _rms = club.estimate_attack_angle_candidate(
+        np.zeros((18, 24, 4, 128), dtype=complex),
+        track,
+        geo,
+        _cal(),
+        impact_t_s=0.0188,
+        tdm_sign=1,
+    )
+
+    assert angle == pytest.approx(-4.5)
+    assert status == "candidate_available"
+    assert n_points == 6
+    assert seen["times"] == [0.010, 0.012, 0.014, 0.016, 0.0185, 0.0195]
+    assert seen["track_t_last"] == pytest.approx(0.018 + 12 * TX2_LOOP_PERIOD_S)
+    assert seen["min_points"] == 4
+
+
 # --- Failure modes -----------------------------------------------------
 #
 # Every rejection below must leave path_deg at None without corrupting the
@@ -387,6 +472,29 @@ def test_window_handed_to_the_tracker_ends_at_impact(monkeypatch):
     lo, hi = seen[0]
     assert hi == pytest.approx(impact_s), "window must end at impact"
     assert lo == pytest.approx(impact_s - club.PRE_IMPACT_FRAMES * FRAME_PERIOD_S)
+
+
+def test_club_path_samples_four_preceding_frames_and_full_impact_frame(monkeypatch):
+    """Path phase uses the impact window without widening club detection."""
+    sampled_frames: set[int] = set()
+    real_reference_phases = doa.tx2_reference_phases_at
+
+    def spy_reference_phases(tdm, frame, loop, local_bin, **kwargs):
+        sampled_frames.add(frame)
+        return real_reference_phases(tdm, frame, loop, local_bin, **kwargs)
+
+    monkeypatch.setattr(doa, "tx2_reference_phases_at", spy_reference_phases)
+    club.estimate_club_path(
+        _synth_club(5.0),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=IMPACT_S,
+        tdm_sign=1,
+    )
+
+    impact_frame = int(IMPACT_S / FRAME_PERIOD_S)
+    assert sampled_frames == set(range(impact_frame - 4, impact_frame + 1))
+    assert impact_frame + 1 not in sampled_frames
 
 
 def test_insufficient_snapshots_is_rejected(monkeypatch):

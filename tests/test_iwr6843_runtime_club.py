@@ -7,6 +7,7 @@ import pytest
 
 from openflight.iwr6843.calibration import Calibration
 from openflight.iwr6843.club import ClubPathResult
+from openflight.iwr6843.lcmf import LCMFResult
 from openflight.iwr6843.runtime import IWR6843Runtime
 
 
@@ -95,6 +96,25 @@ def test_club_path_receives_the_configured_azimuth_offset():
         )
 
     assert seen["aim_offset_deg"] == 1.5
+
+
+def test_azimuth_offset_corrects_horizontal_launch():
+    measurement = LCMFResult(
+        status="accepted",
+        angle_deg=18.0,
+        horizontal_deg=3.3,
+        horizontal_status="hlcmf_v0_accepted",
+    )
+    with patch("openflight.iwr6843.runtime.estimate_lcmf_v1", return_value=measurement):
+        result = _runtime(azimuth_offset_deg=-3.0).process_shot(
+            impact_timestamp=1.0,
+            ball_speed_mph=100.0,
+            club="9i",
+            club_speed_mph=None,
+        )
+
+    assert result.measurement.horizontal_deg == pytest.approx(0.3)
+    assert result.measurement.horizontal_raw_deg == pytest.approx(3.3)
 
 
 def test_falls_back_to_policy_sign_when_ball_has_none():

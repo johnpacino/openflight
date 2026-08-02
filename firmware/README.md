@@ -23,10 +23,10 @@ Use this firmware and runtime configuration together:
 | Runtime config | `config/iwr6843_l3dump_vTX2_hybrid.cfg` |
 | Reference calibration | `config/iwr6843_calibration_reference.json` |
 | Build target | `make -C firmware docker-build` (any host) |
-| Flash image size | 342,404 bytes |
-| Flash SHA-256 | `d6664e12bf06522c281b9cb227cfae274ed0a2cf32efe809551f7653faba7fe7` |
-| Dump format | Version 6, variable-width timed complex range-FFT snapshots |
-| Default complete dump size | 783,508 bytes |
+| Flash image size | 342,660 bytes |
+| Flash SHA-256 | `7187dcbed6328313eeee32ade9eccbaa33451e383fbc8205e81db4d9f431043c` |
+| Dump format | Version 7, temperature report plus variable-width timed complex range-FFT snapshots |
+| Default complete dump size | 783,532 bytes |
 
 Current release binaries use `<feature_name>_<YYYYMMDD>.bin`. Capabilities such
 as temperature reporting and the dump-contract version belong in source and
@@ -51,6 +51,36 @@ or source-of-truth TrackMan validation. Keep
 `l3_dump_configurable_capture_20260728.bin` and its matching config available
 as the immediate rollback.
 
+### Club16 Shelf Candidate
+
+The loop-heavy TrackMan A/B candidate is intentionally separate from the
+current hybrid configuration:
+
+| Component | Candidate value |
+|---|---|
+| Flash image | `firmware/releases/l3_dump_club_impact_20260801.bin` |
+| Runtime config | `config/iwr6843_l3dump_club16.cfg` |
+| Build target | `make -C firmware docker-build RELEASE_NAME=l3_dump_club_impact_20260801.bin` |
+| Flash image size | 344,324 bytes |
+| Flash SHA-256 | `10338e5fb72ac755ba14d998df950f5e6b6d8c12f8cc7abf4fd69bbb43f61369` |
+| RF configuration | 3 TX, 4 RX, 16 loops, 2.5 ms acquisition spacing |
+| L3 plan | 8 narrow pre + 6 narrow impact + 14 wide ball frames |
+| L3 use | 763,392 of 786,432 bytes |
+
+The narrow 18-bin phases nominally cover approximately 3.4-6.2 feet from the
+radar. The six impact frames retain every 2.5 ms acquisition. Ball storage then
+uses the established 53-bin middle/late windows and retains alternate
+acquisitions at 5 ms spacing. This candidate is built and parser-tested but
+must pass a board smoke test before it is used for hitting or TrackMan testing.
+
+Flash it with:
+
+```bash
+uv run python firmware/flash_iwr6843.py \
+  firmware/releases/l3_dump_club_impact_20260801.bin \
+  --port /dev/ttyUSB0
+```
+
 Building the firmware needs the TI mmWave SDK and ARM codegen tools, which ship
 as **Linux x86_64 installers only**, so it cannot be built directly on an Apple
 Silicon Mac or on the Pi. Use `make -C firmware docker-build` (see
@@ -68,10 +98,11 @@ grep -E "l3ring|L3_RAM" firmware/iwr6843/l3_dump_mss.map
 ```
 
 The loop count and acquisition cadence come from `frameCfg`. `captureCfg`
-supplies the pre/post window widths, start bins, retained post-trigger frame
-count, and post-trigger retention stride. The firmware uses all remaining L3
-for pre-trigger frames and prints the resolved plan during `sensorStart`;
-invalid or oversized plans fail before RF capture begins.
+supplies the standard pre/post windows and retention stride; `phaseCaptureCfg`
+explicitly reserves narrow pre/impact phases before a wide decimated ball
+phase. The firmware prints the resolved plan during `sensorStart`; invalid or
+oversized plans fail before RF capture begins. Immediately before streaming,
+the firmware also appends the TI temperature report to the dump.
 
 ## What The Current Firmware Captures
 
@@ -539,7 +570,7 @@ Expected completion:
 Erasing existing SFLASH...
 Opening firmware image...
 Writing firmware...
-Writing: 100% (341,956/341,956 bytes)
+Writing: 100% (342,660/342,660 bytes)
 Closing and verifying firmware...
 
 Flash verified by the IWR6843 ROM bootloader.

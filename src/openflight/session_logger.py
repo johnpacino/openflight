@@ -461,9 +461,11 @@ class SessionLogger:
             data["club_path_deg"] = club_path_deg
         if experimental_attack_angle_deg is not None:
             data["experimental_attack_angle_deg"] = experimental_attack_angle_deg
+        if experimental_attack_angle_status is not None:
             data["experimental_attack_angle_status"] = experimental_attack_angle_status
         if experimental_club_path_deg is not None:
             data["experimental_club_path_deg"] = experimental_club_path_deg
+        if experimental_club_path_status is not None:
             data["experimental_club_path_status"] = experimental_club_path_status
         if spin_axis_deg is not None:
             data["spin_axis_deg"] = spin_axis_deg

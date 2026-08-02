@@ -10,6 +10,7 @@ FIRMWARE_MAKEFILE = Path(__file__).parents[1] / "firmware" / "Makefile"
 RELEASE_DIR = Path(__file__).parents[1] / "firmware" / "releases"
 CONFIGURABLE_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_configurable.cfg"
 HYBRID_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_hybrid.cfg"
+CLUB16_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club16.cfg"
 
 
 def _function_source(source: str, name: str, next_name: str) -> str:
@@ -26,6 +27,16 @@ def test_hwa_dump_stops_at_boundary_before_streaming():
     stream = dump.index("UART_writePolling")
 
     assert stop < stream
+
+
+def test_hwa_dump_supports_cooperative_host_cancellation():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
+
+    assert "L3_DUMP_CANCEL_BYTE" in source
+    assert "L3_DUMP_CANCEL_ACK" in source
+    assert "l3_dumpCancelRequested" in dump
+    assert "UART_writePolling(gDataUart, L3_DUMP_CANCEL_ACK" in dump
 
 
 def test_hwa_chain_processes_and_rearms_one_frame_at_a_time():
@@ -154,7 +165,10 @@ def test_hybrid_config_acquires_12_loops_at_2ms_and_retains_alternate_post_frame
     }
 
     assert "frameCfg 0 2 12 0 2 1 0" in lines
-    assert "captureCfg 20 32 32 53 47 16 2" in lines
+    # Omit the optional stride so the config also works with the original
+    # hybrid image, which hardcodes the same every-other-frame post cadence.
+    assert "captureCfg 20 32 32 53 47 16" in lines
+    assert "captureCfg 20 32 32 53 47 16 2" not in lines
 
 
 def test_hybrid_timing_budget_and_retained_movie_length():
@@ -172,13 +186,69 @@ def test_hybrid_timing_budget_and_retained_movie_length():
     chirp_us = float(profile[3]) + float(profile[5])
     rf_occupancy_us = 3 * loops * chirp_us
     post_frames = int(capture[6])
-    post_stride = int(capture[7])
+    source = FIRMWARE.read_text(encoding="utf-8")
+    assert "#define L3_DEFAULT_POST_STRIDE 2U" in source
+    post_stride = int(capture[7]) if len(capture) > 7 else 2
     acquired_post_frames = 1 + (post_frames - 1) * post_stride
 
     assert rf_occupancy_us == 1620
     assert frame_period_us - rf_occupancy_us == 380
     assert acquired_post_frames == 31
     assert 16 * frame_period_us + acquired_post_frames * frame_period_us == 94_000
+
+
+def test_club16_config_uses_dense_impact_and_wide_late_flight_phases():
+    commands = {
+        line.split()[0]: line.split()
+        for line in CLUB16_CONFIG.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("%")
+    }
+
+    profile = commands["profileCfg"]
+    frame = commands["frameCfg"]
+    phased = commands["phaseCaptureCfg"]
+    loops = int(frame[3])
+    frame_period_us = round(float(frame[5]) * 1000)
+    chirp_us = float(profile[3]) + float(profile[5])
+    rf_occupancy_us = 3 * loops * chirp_us
+
+    assert loops == 16
+    assert frame_period_us == 2_500
+    assert rf_occupancy_us == 2_160
+    assert frame_period_us - rf_occupancy_us == 340
+    assert phased == [
+        "phaseCaptureCfg",
+        "23", "18", "8",       # pre: 3.4-6.2 ft, 8 frames
+        "23", "18", "6",       # impact: same window, 6 dense frames
+        "32", "53", "47",      # middle/late ball windows
+        "14", "2",              # 14 retained ball frames at 5 ms
+    ]
+
+    bytes_per_bin = 3 * loops * 4 * 4
+    used = (8 * 18 + 6 * 18 + 14 * 53) * bytes_per_bin
+    assert used == 763_392
+    assert used <= 768 * 1024
+
+
+def test_phased_capture_keeps_dense_impact_before_decimating_ball_frames():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    planner = _function_source(
+        source,
+        "static int32_t l3_finalizeCapturePlan",
+        "/* captureCfg",
+    )
+    output = _function_source(
+        source,
+        "static int32_t l3_configHwaFrameOutput",
+        "static void l3_drainHwaRearmSemaphore",
+    )
+
+    assert "gCapturePlan.impactFrames" in planner
+    assert "gCapturePlan.requestedPreFrames" in planner
+    assert "gCapturePlan.ballFrames" in planner
+    assert "gFrameBytes[slot]" in planner
+    assert "gPostFramesCaptured < gCapturePlan.impactFrames" in output
+    assert "gCapturePlan.postStride" in output
 
 
 def test_hybrid_firmware_counts_observed_and_retained_post_frames_separately():

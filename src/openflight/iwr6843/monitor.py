@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from openflight.gpio_factory import ensure_lgpio_pin_factory
-from openflight.iwr6843.driver import IWR6843Radar
+from openflight.iwr6843.driver import IWR6843DumpCancelled, IWR6843Radar
 from openflight.iwr6843.dump import HEADER, parse_header, payload_nbytes
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,8 @@ class IWR6843CaptureMonitor:
         self._captures: deque[IWR6843Capture] = deque()
         self._condition = threading.Condition()
         self._worker: threading.Thread | None = None
+        self._cancel_event = threading.Event()
+        self._cancel_reason: str | None = None
 
     @property
     def port(self) -> str:
@@ -199,6 +201,8 @@ class IWR6843CaptureMonitor:
                 break
             with self._condition:
                 self._capture_active = True
+                self._cancel_event.clear()
+                self._cancel_reason = None
                 self._sequence += 1
                 sequence = self._sequence
             start = time.time()
@@ -211,11 +215,17 @@ class IWR6843CaptureMonitor:
                     "[IWR6843] Trigger #%d: dumping firmware-frozen L3 ring",
                     sequence,
                 )
-                raw = self.radar.read_dump()
+                raw = self.radar.read_dump(cancel_event=self._cancel_event)
+                if self._cancel_event.is_set():
+                    raise IWR6843DumpCancelled(self._cancel_reason or "trigger rejected")
                 metadata = self._validate_dump(raw)
                 if self.save_dumps:
                     path = self._capture_path(sequence, edge_timestamp)
                     path.write_bytes(raw)
+            except IWR6843DumpCancelled as exc:
+                error = str(exc)
+                raw = None
+                logger.info("[IWR6843] Capture #%d cancelled: %s", sequence, error)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 error = str(exc)
                 raw = None
@@ -235,7 +245,8 @@ class IWR6843CaptureMonitor:
             )
             with self._condition:
                 self._capture_active = False
-                self._captures.append(capture)
+                if not self._cancel_event.is_set():
+                    self._captures.append(capture)
                 self._condition.notify_all()
             logger.info(
                 "[IWR6843] Capture #%d complete: %s in %.2fs",
@@ -243,6 +254,28 @@ class IWR6843CaptureMonitor:
                 f"{len(raw)} bytes" if raw is not None else error,
                 capture.dump_duration_s,
             )
+
+    def cancel_active_capture(self, reason: str) -> bool:
+        """Request cooperative firmware cancellation for a rejected OPS trigger."""
+        with self._condition:
+            if self._capture_active or not self._events.empty():
+                self._cancel_reason = reason
+                self._cancel_event.set()
+                self._condition.notify_all()
+                logger.info("[IWR6843] Cancelling active capture: %s", reason)
+                return True
+
+            # OPS can finish just after IWR. Remove the unmatched capture so it
+            # cannot be paired with the next accepted shot.
+            if self._captures:
+                capture = self._captures.pop()
+                logger.info(
+                    "[IWR6843] Discarded completed capture #%d: %s",
+                    capture.sequence,
+                    reason,
+                )
+                return True
+            return False
 
     def capture_for_shot(
         self,

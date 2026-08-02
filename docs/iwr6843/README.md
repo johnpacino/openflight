@@ -49,7 +49,7 @@ not repeated in the filename.
 The v7 firmware SHA-256 is:
 
 ```text
-d6664e12bf06522c281b9cb227cfae274ed0a2cf32efe809551f7653faba7fe7
+7187dcbed6328313eeee32ade9eccbaa33451e383fbc8205e81db4d9f431043c
 ```
 
 Verify it on the Pi before flashing:
