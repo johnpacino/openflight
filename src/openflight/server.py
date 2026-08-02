@@ -2136,21 +2136,19 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
         if debug_mode and club_path is not None:
             candidate_path = getattr(club_path, "candidate_path_deg", None)
             candidate_attack = getattr(club_path, "candidate_attack_angle_deg", None)
+            candidate_path_status = getattr(club_path, "candidate_path_status", None)
+            shot.experimental_club_path_status = (
+                candidate_path_status
+                if candidate_path_status not in (None, "candidate_available")
+                else club_path.status
+            )
+            shot.experimental_attack_angle_status = (
+                getattr(club_path, "attack_angle_status", None) or club_path.status
+            )
             if candidate_path is not None:
                 shot.experimental_club_path_deg = round(candidate_path, 1)
-                candidate_status = getattr(club_path, "candidate_path_status", None)
-                shot.experimental_club_path_status = (
-                    candidate_status
-                    if candidate_status not in (None, "candidate_available")
-                    else club_path.status
-                )
             if candidate_attack is not None:
                 shot.experimental_attack_angle_deg = round(candidate_attack, 1)
-                shot.experimental_attack_angle_status = getattr(
-                    club_path,
-                    "attack_angle_status",
-                    None,
-                )
     except Exception as error:  # pylint: disable=broad-exception-caught
         logger.warning("[SERVER] IWR6843 processing error: %s", error, exc_info=True)
         log_session_error(
@@ -2692,7 +2690,7 @@ def start_monitor(
         debug: Enable verbose debug output
         ops_baud: Target UART baud when the OPS243 is on the GPIO header
     """
-    global monitor, mock_mode  # pylint: disable=global-statement
+    global monitor, mock_mode, debug_mode  # pylint: disable=global-statement
 
     # Stop any existing monitor first
     if monitor is not None:
@@ -2700,6 +2698,7 @@ def start_monitor(
         stop_monitor()
 
     mock_mode = mock
+    debug_mode = debug
     if mock:
         # Mock mode for testing without radar
         monitor = MockLaunchMonitor()
@@ -2785,6 +2784,14 @@ def start_monitor(
 
         def on_trigger_diagnostic(data: dict):
             """Forward trigger diagnostics to connected UI clients."""
+            if (
+                iwr6843_runtime is not None
+                and not data.get("accepted", False)
+                and data.get("reason") == "no_outbound_speed"
+            ):
+                iwr6843_runtime.capture_monitor.cancel_active_capture(
+                    "OPS rejected trigger: no_outbound_speed"
+                )
             socketio.emit("trigger_diagnostic", data)
 
         monitor.start(  # pylint: disable=unexpected-keyword-arg
@@ -3248,8 +3255,9 @@ def main():
         default=0.0,
         help=(
             "Azimuth of the radar boresight relative to the target line, in degrees. "
-            "Positive means boresight points right of the target line. Added to the "
-            "measured club path; 0 reports club path relative to boresight."
+            "Positive means boresight points right of the target line. Added to "
+            "measured horizontal launch and club path; 0 reports both relative "
+            "to boresight."
         ),
     )
     parser.add_argument(

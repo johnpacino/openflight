@@ -391,6 +391,56 @@ class TestIWR6843ShotIntegration:
         assert shot.experimental_club_path_deg is None
         assert shot.experimental_attack_angle_deg is None
 
+    def test_debug_mode_exposes_club_rejection_without_candidate(self, monkeypatch):
+        measurement = SimpleNamespace(
+            accepted=False,
+            status="rejected_track_quality",
+            to_dict=lambda: {"status": "rejected_track_quality"},
+        )
+        club_path = SimpleNamespace(
+            accepted=False,
+            status="rejected_no_club_track",
+            path_deg=None,
+            candidate_path_deg=None,
+            candidate_path_status=None,
+            candidate_attack_angle_deg=None,
+            attack_angle_status=None,
+            to_dict=lambda: {"status": "rejected_no_club_track"},
+        )
+        capture = SimpleNamespace(
+            trigger_timestamp=100.01,
+            path=None,
+            raw=b"raw",
+            dump_duration_s=4.5,
+            error=None,
+            valid=True,
+            sequence=1,
+        )
+        runtime = SimpleNamespace(
+            process_shot=lambda **kwargs: SimpleNamespace(
+                capture=capture,
+                measurement=measurement,
+                club_path=club_path,
+            )
+        )
+        monkeypatch.setattr(server_module, "iwr6843_runtime", runtime)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(server_module, "debug_mode", True)
+        shot = Shot(
+            ball_speed_mph=100.0,
+            club_speed_mph=80.0,
+            timestamp=datetime.now(),
+            impact_timestamp=100.0,
+            club=ClubType.IRON_9,
+        )
+
+        server_module._process_iwr6843_angle(shot)
+
+        assert shot.experimental_club_path_deg is None
+        assert shot.experimental_club_path_status == "rejected_no_club_track"
+        assert shot.experimental_attack_angle_deg is None
+        assert shot.experimental_attack_angle_status == "rejected_no_club_track"
+
     def test_horizontal_fallback_does_not_invent_confidence_for_lcmf_angle(self):
         shot = Shot(
             ball_speed_mph=100.0,
@@ -664,6 +714,16 @@ class TestKLD7Initialization:
         assert started["config"]["kld7_experiments"]["raw_radc_payload_logging_enabled"] is True
         assert started["config"]["kld7_experiments"]["raw_radc_payload_logging_requested"] is True
         assert started["config"]["kld7_experiments"]["radc_tuning_params"] == tuning
+        server_module.stop_monitor()
+
+    def test_start_monitor_applies_cli_debug_mode(self, monkeypatch):
+        monkeypatch.setattr(server_module, "monitor", None)
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+
+        server_module.start_monitor(mock=True, trigger_type="sound", debug=True)
+
+        assert server_module.debug_mode is True
         server_module.stop_monitor()
 
     def test_init_kld7_passes_radc_tuning_parameters(self, monkeypatch):

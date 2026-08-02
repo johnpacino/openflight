@@ -37,6 +37,7 @@
 #include <ti/drivers/esm/esm.h>
 #include <ti/drivers/crc/crc.h>
 #include <ti/drivers/uart/UART.h>
+#include <ti/drivers/uart/include/uartsci.h>
 #include <ti/drivers/pinmux/pinmux.h>
 #include <ti/drivers/mailbox/mailbox.h>
 #include <ti/drivers/adcbuf/ADCBuf.h>
@@ -56,6 +57,13 @@
  * so the host only saw the echoed 7-byte "l3dump\n" command. */
 #define L3_SNAPSHOT_TASK_PRIORITY 1
 #define L3_CTRL_TASK_PRIORITY  5
+
+/* ASCII CAN is reserved as an out-of-band dump cancellation byte. The CLI
+ * task is executing l3dump synchronously, so RX interrupts are disabled and
+ * the byte remains in the SCI register until checked between frame writes. */
+#define L3_DUMP_CANCEL_BYTE 0x18U
+#define L3_DUMP_CANCEL_ACK  ((uint8_t *)"ILDCANCEL")
+#define L3_DUMP_CANCEL_ACK_BYTES 8U
 
 /* --- capture geometry: MUST match the .cfg the host sends ------------------
  * N_TX / N_SAMPLES / SAVE_SAMPLES / SAVE_OFFSET_SAMPLES / LOOPS /
@@ -206,6 +214,13 @@ typedef struct {
     uint32_t postFrameBytes;
     uint32_t postBaseOffset;
     uint32_t usedBytes;
+    uint8_t phased;
+    uint8_t requestedPreFrames;
+    uint8_t impactStart;
+    uint8_t impactBins;
+    uint8_t impactFrames;
+    uint8_t ballFrames;
+    uint32_t impactFrameBytes;
 } l3_capture_plan_t;
 
 #pragma DATA_SECTION(g_ring, ".l3ring")
@@ -219,12 +234,14 @@ static l3_capture_plan_t gCapturePlan = {
     L3_DEFAULT_LATE_START,
     L3_DEFAULT_POST_FRAMES,
     L3_DEFAULT_POST_STRIDE,
+    0U, 0U, 0U, 0U, 0U, 0U, 0U,
     0U, 0U, 0U, 0U, 0U, 0U, 0U
 };
 static uint8_t gFrameBinStart[L3_MAX_CAPTURE_FRAMES];
 static uint8_t gFrameBinCount[L3_MAX_CAPTURE_FRAMES];
 static uint16_t gFrameDeltaUs[L3_MAX_CAPTURE_FRAMES];
 static uint32_t gFrameOffset[L3_MAX_CAPTURE_FRAMES];
+static uint32_t gFrameBytes[L3_MAX_CAPTURE_FRAMES];
 #else
 #pragma DATA_SECTION(g_ring, ".l3ring")
 #pragma DATA_ALIGN(g_ring, 8)
@@ -349,6 +366,7 @@ static int32_t l3_cli_sensorStop(int32_t argc, char *argv[]);
 static int32_t l3_cli_stats(int32_t argc, char *argv[]);
 #ifdef CONFIGURABLE_CAPTURE
 static int32_t l3_cli_captureCfg(int32_t argc, char *argv[]);
+static int32_t l3_cli_phaseCaptureCfg(int32_t argc, char *argv[]);
 #endif
 #ifdef ENABLE_HWA_SMOKE
 static int32_t l3_cli_hwaStats(int32_t argc, char *argv[]);
@@ -383,6 +401,7 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
     uint32_t remaining;
     uint32_t preFrames;
     uint32_t frame;
+    uint32_t cursor;
 
     if (loops < L3_MIN_LOOPS || loops > L3_MAX_LOOPS || (loops & 1U) != 0U) {
         CLI_write("Error: loops must be even and between %u and %u\n",
@@ -398,7 +417,15 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
         ((uint32_t)gFramePeriodUs * gCapturePlan.postStride) > 0xFFFFU ||
         ((uint32_t)gCapturePlan.preStart + gCapturePlan.preBins) > N_SAMPLES ||
         ((uint32_t)gCapturePlan.postStart + gCapturePlan.postBins) > N_SAMPLES ||
-        ((uint32_t)gCapturePlan.lateStart + gCapturePlan.postBins) > N_SAMPLES) {
+        ((uint32_t)gCapturePlan.lateStart + gCapturePlan.postBins) > N_SAMPLES ||
+        (gCapturePlan.phased &&
+         (gCapturePlan.requestedPreFrames == 0U ||
+          gCapturePlan.impactBins == 0U ||
+          gCapturePlan.impactFrames == 0U ||
+          gCapturePlan.ballFrames == 0U ||
+          ((uint32_t)gCapturePlan.impactStart + gCapturePlan.impactBins) > N_SAMPLES ||
+          ((uint32_t)gCapturePlan.requestedPreFrames +
+           gCapturePlan.postFrames) > L3_MAX_CAPTURE_FRAMES))) {
         CLI_write("Error: captureCfg needs valid windows and 1-%u post frames\n",
                   (unsigned)(L3_MAX_CAPTURE_FRAMES - 1U));
         return -1;
@@ -410,23 +437,31 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
                   N_RX * 2U * (uint32_t)sizeof(int16_t);
     gCapturePlan.preFrameBytes = bytesPerBin * gCapturePlan.preBins;
     gCapturePlan.postFrameBytes = bytesPerBin * gCapturePlan.postBins;
-    postBytes = gCapturePlan.postFrameBytes * gCapturePlan.postFrames;
+    gCapturePlan.impactFrameBytes = bytesPerBin * gCapturePlan.impactBins;
+    postBytes = gCapturePlan.phased
+                    ? (gCapturePlan.impactFrameBytes * gCapturePlan.impactFrames) +
+                      (gCapturePlan.postFrameBytes * gCapturePlan.ballFrames)
+                    : gCapturePlan.postFrameBytes * gCapturePlan.postFrames;
     if (postBytes >= L3_CAPTURE_BYTES) {
         CLI_write("Error: post-trigger capture needs %u bytes; L3 has %u\n",
                   (unsigned)postBytes, (unsigned)L3_CAPTURE_BYTES);
         return -1;
     }
     remaining = L3_CAPTURE_BYTES - postBytes;
-    preFrames = remaining / gCapturePlan.preFrameBytes;
+    preFrames = gCapturePlan.phased
+                    ? gCapturePlan.requestedPreFrames
+                    : remaining / gCapturePlan.preFrameBytes;
     if (preFrames == 0U) {
         CLI_write("Error: capture plan leaves no pre-trigger frame\n");
         return -1;
     }
-    if (preFrames + gCapturePlan.postFrames > L3_MAX_CAPTURE_FRAMES) {
+    if (!gCapturePlan.phased &&
+        preFrames + gCapturePlan.postFrames > L3_MAX_CAPTURE_FRAMES) {
         preFrames = L3_MAX_CAPTURE_FRAMES - gCapturePlan.postFrames;
     }
-    if (preFrames == 0U) {
-        CLI_write("Error: too many post-trigger frames\n");
+    if (preFrames == 0U ||
+        preFrames * gCapturePlan.preFrameBytes > remaining) {
+        CLI_write("Error: capture plan exceeds L3 after pre-trigger reservation\n");
         return -1;
     }
 
@@ -434,44 +469,99 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
     gCapturePlan.totalFrames =
         (uint8_t)(preFrames + gCapturePlan.postFrames);
     gCapturePlan.postBaseOffset = preFrames * gCapturePlan.preFrameBytes;
-    gCapturePlan.usedBytes = gCapturePlan.postBaseOffset + postBytes;
+    cursor = 0U;
 
     for (frame = 0U; frame < preFrames; frame++) {
-        gFrameOffset[frame] = frame * gCapturePlan.preFrameBytes;
+        gFrameOffset[frame] = cursor;
         gFrameBinStart[frame] = gCapturePlan.preStart;
         gFrameBinCount[frame] = gCapturePlan.preBins;
         gFrameDeltaUs[frame] = gFramePeriodUs;
-    }
-    for (frame = 0U; frame < gCapturePlan.postFrames; frame++) {
-        uint32_t slot = preFrames + frame;
-        gFrameOffset[slot] =
-            gCapturePlan.postBaseOffset + frame * gCapturePlan.postFrameBytes;
-        gFrameBinStart[slot] =
-            (frame < (gCapturePlan.postFrames / 2U))
-                ? gCapturePlan.postStart : gCapturePlan.lateStart;
-        gFrameBinCount[slot] = gCapturePlan.postBins;
-        gFrameDeltaUs[slot] =
-            (frame == 0U)
-                ? gFramePeriodUs
-                : (uint16_t)(gFramePeriodUs * gCapturePlan.postStride);
+        gFrameBytes[frame] = gCapturePlan.preFrameBytes;
+        cursor += gCapturePlan.preFrameBytes;
     }
 
-    CLI_write("Capture plan: loops=%u pre=%ux%u@%uus post=%ux%u@%uus "
-              "frames=%u bytes=%u/%u starts=%u/%u/%u stride=%u\n",
-              (unsigned)gCapturePlan.loops,
-              (unsigned)gCapturePlan.preFrames,
-              (unsigned)gCapturePlan.preBins,
-              (unsigned)gFramePeriodUs,
-              (unsigned)gCapturePlan.postFrames,
-              (unsigned)gCapturePlan.postBins,
-              (unsigned)(gFramePeriodUs * gCapturePlan.postStride),
-              (unsigned)gCapturePlan.totalFrames,
-              (unsigned)gCapturePlan.usedBytes,
-              (unsigned)L3_CAPTURE_BYTES,
-              (unsigned)gCapturePlan.preStart,
-              (unsigned)gCapturePlan.postStart,
-              (unsigned)gCapturePlan.lateStart,
-              (unsigned)gCapturePlan.postStride);
+    if (gCapturePlan.phased) {
+        for (frame = 0U; frame < gCapturePlan.impactFrames; frame++) {
+            uint32_t slot = preFrames + frame;
+            gFrameOffset[slot] = cursor;
+            gFrameBinStart[slot] = gCapturePlan.impactStart;
+            gFrameBinCount[slot] = gCapturePlan.impactBins;
+            gFrameDeltaUs[slot] = gFramePeriodUs;
+            gFrameBytes[slot] = gCapturePlan.impactFrameBytes;
+            cursor += gCapturePlan.impactFrameBytes;
+        }
+        for (frame = 0U; frame < gCapturePlan.ballFrames; frame++) {
+            uint32_t slot = preFrames + gCapturePlan.impactFrames + frame;
+            gFrameOffset[slot] = cursor;
+            gFrameBinStart[slot] =
+                (frame < (gCapturePlan.ballFrames / 2U))
+                    ? gCapturePlan.postStart : gCapturePlan.lateStart;
+            gFrameBinCount[slot] = gCapturePlan.postBins;
+            gFrameDeltaUs[slot] =
+                (frame == 0U)
+                    ? gFramePeriodUs
+                    : (uint16_t)(gFramePeriodUs * gCapturePlan.postStride);
+            gFrameBytes[slot] = gCapturePlan.postFrameBytes;
+            cursor += gCapturePlan.postFrameBytes;
+        }
+    } else {
+        for (frame = 0U; frame < gCapturePlan.postFrames; frame++) {
+            uint32_t slot = preFrames + frame;
+            gFrameOffset[slot] = cursor;
+            gFrameBinStart[slot] =
+                (frame < (gCapturePlan.postFrames / 2U))
+                    ? gCapturePlan.postStart : gCapturePlan.lateStart;
+            gFrameBinCount[slot] = gCapturePlan.postBins;
+            gFrameDeltaUs[slot] =
+                (frame == 0U)
+                    ? gFramePeriodUs
+                    : (uint16_t)(gFramePeriodUs * gCapturePlan.postStride);
+            gFrameBytes[slot] = gCapturePlan.postFrameBytes;
+            cursor += gCapturePlan.postFrameBytes;
+        }
+    }
+    gCapturePlan.usedBytes = cursor;
+
+    if (gCapturePlan.phased) {
+        CLI_write("Capture plan: loops=%u pre=%ux%u@%uus impact=%ux%u@%uus "
+                  "ball=%ux%u@%uus frames=%u bytes=%u/%u starts=%u/%u/%u/%u "
+                  "stride=%u\n",
+                  (unsigned)gCapturePlan.loops,
+                  (unsigned)gCapturePlan.preFrames,
+                  (unsigned)gCapturePlan.preBins,
+                  (unsigned)gFramePeriodUs,
+                  (unsigned)gCapturePlan.impactFrames,
+                  (unsigned)gCapturePlan.impactBins,
+                  (unsigned)gFramePeriodUs,
+                  (unsigned)gCapturePlan.ballFrames,
+                  (unsigned)gCapturePlan.postBins,
+                  (unsigned)(gFramePeriodUs * gCapturePlan.postStride),
+                  (unsigned)gCapturePlan.totalFrames,
+                  (unsigned)gCapturePlan.usedBytes,
+                  (unsigned)L3_CAPTURE_BYTES,
+                  (unsigned)gCapturePlan.preStart,
+                  (unsigned)gCapturePlan.impactStart,
+                  (unsigned)gCapturePlan.postStart,
+                  (unsigned)gCapturePlan.lateStart,
+                  (unsigned)gCapturePlan.postStride);
+    } else {
+        CLI_write("Capture plan: loops=%u pre=%ux%u@%uus post=%ux%u@%uus "
+                  "frames=%u bytes=%u/%u starts=%u/%u/%u stride=%u\n",
+                  (unsigned)gCapturePlan.loops,
+                  (unsigned)gCapturePlan.preFrames,
+                  (unsigned)gCapturePlan.preBins,
+                  (unsigned)gFramePeriodUs,
+                  (unsigned)gCapturePlan.postFrames,
+                  (unsigned)gCapturePlan.postBins,
+                  (unsigned)(gFramePeriodUs * gCapturePlan.postStride),
+                  (unsigned)gCapturePlan.totalFrames,
+                  (unsigned)gCapturePlan.usedBytes,
+                  (unsigned)L3_CAPTURE_BYTES,
+                  (unsigned)gCapturePlan.preStart,
+                  (unsigned)gCapturePlan.postStart,
+                  (unsigned)gCapturePlan.lateStart,
+                  (unsigned)gCapturePlan.postStride);
+    }
     return 0;
 }
 
@@ -526,6 +616,80 @@ static int32_t l3_cli_captureCfg(int32_t argc, char *argv[])
     gCapturePlan.lateStart = values[4];
     gCapturePlan.postFrames = values[5];
     gCapturePlan.postStride = values[6];
+    gCapturePlan.phased = 0U;
+    gCapturePlan.requestedPreFrames = 0U;
+    gCapturePlan.impactStart = 0U;
+    gCapturePlan.impactBins = 0U;
+    gCapturePlan.impactFrames = 0U;
+    gCapturePlan.ballFrames = values[5];
+    gCapturePlan.preFrames = 0U;
+    gCapturePlan.totalFrames = 0U;
+    gCapturePlan.usedBytes = 0U;
+    return 0;
+}
+
+/* phaseCaptureCfg <preStart> <preBins> <preFrames>
+ *                 <impactStart> <impactBins> <impactFrames>
+ *                 <postStart> <postBins> <lateStart> <ballFrames>
+ *                 <ballStride>
+ *
+ * The pre and impact phases retain every acquisition. The ball phase retains
+ * its first acquisition, then every ballStride acquisition. Its first half
+ * uses postStart and its second half uses lateStart.
+ */
+static int32_t l3_cli_phaseCaptureCfg(int32_t argc, char *argv[])
+{
+    uint8_t values[11];
+    uint32_t i;
+    uint32_t totalPost;
+
+    if (gCaptureActive) {
+        CLI_write("Error: stop the sensor before phaseCaptureCfg\n");
+        return -1;
+    }
+    if (argc != 12) {
+        CLI_write("Error: phaseCaptureCfg needs 11 values: preStart preBins "
+                  "preFrames impactStart impactBins impactFrames postStart "
+                  "postBins lateStart ballFrames ballStride\n");
+        return -1;
+    }
+    for (i = 0U; i < 11U; i++) {
+        if (l3_parseU8(argv[i + 1U], &values[i]) != 0) {
+            CLI_write("Error: phaseCaptureCfg values must be uint8 integers\n");
+            return -1;
+        }
+    }
+    totalPost = (uint32_t)values[5] + values[9];
+    if (values[1] == 0U || values[2] == 0U ||
+        values[4] == 0U || values[5] == 0U ||
+        values[7] == 0U || values[9] == 0U ||
+        values[10] == 0U || values[10] > L3_MAX_POST_STRIDE ||
+        totalPost >= L3_MAX_CAPTURE_FRAMES ||
+        ((uint32_t)values[2] + totalPost) > L3_MAX_CAPTURE_FRAMES ||
+        ((uint32_t)values[0] + values[1]) > N_SAMPLES ||
+        ((uint32_t)values[3] + values[4]) > N_SAMPLES ||
+        ((uint32_t)values[6] + values[7]) > N_SAMPLES ||
+        ((uint32_t)values[8] + values[7]) > N_SAMPLES) {
+        CLI_write("Error: phaseCaptureCfg needs valid %u-bin windows and "
+                  "1-%u total frames\n",
+                  (unsigned)N_SAMPLES,
+                  (unsigned)(L3_MAX_CAPTURE_FRAMES - 1U));
+        return -1;
+    }
+
+    gCapturePlan.preStart = values[0];
+    gCapturePlan.preBins = values[1];
+    gCapturePlan.requestedPreFrames = values[2];
+    gCapturePlan.impactStart = values[3];
+    gCapturePlan.impactBins = values[4];
+    gCapturePlan.impactFrames = values[5];
+    gCapturePlan.postStart = values[6];
+    gCapturePlan.postBins = values[7];
+    gCapturePlan.lateStart = values[8];
+    gCapturePlan.ballFrames = values[9];
+    gCapturePlan.postFrames = (uint8_t)totalPost;
+    gCapturePlan.postStride = values[10];
+    gCapturePlan.phased = 1U;
     gCapturePlan.preFrames = 0U;
     gCapturePlan.totalFrames = 0U;
     gCapturePlan.usedBytes = 0U;
@@ -1065,7 +1229,15 @@ static uint32_t l3_snapshotBinStartForNextFrame(void)
     if (!gPostCaptureStarted) {
         return gCapturePlan.preStart;
     }
-    if (gPostFramesCaptured < (gCapturePlan.postFrames / 2U)) {
+    if (gCapturePlan.phased &&
+        gPostFramesCaptured < gCapturePlan.impactFrames) {
+        return gCapturePlan.impactStart;
+    }
+    if ((!gCapturePlan.phased &&
+         gPostFramesCaptured < (gCapturePlan.postFrames / 2U)) ||
+        (gCapturePlan.phased &&
+         (gPostFramesCaptured - gCapturePlan.impactFrames) <
+             (gCapturePlan.ballFrames / 2U))) {
         return gCapturePlan.postStart;
     }
     return gCapturePlan.lateStart;
@@ -1100,10 +1272,20 @@ static int32_t l3_configHwaFrameOutput(uint32_t ringSlot)
 #ifdef CONFIGURABLE_CAPTURE
     if (gPostCaptureStarted) {
         ringSlot = gCapturePlan.preFrames + gPostFramesCaptured;
-        binCount = gCapturePlan.postBins;
         gActiveFrameIsPost = 1U;
-        gActiveFrameShouldKeep =
-            ((gPostFramesObserved % gCapturePlan.postStride) == 0U);
+        if (gCapturePlan.phased &&
+            gPostFramesCaptured < gCapturePlan.impactFrames) {
+            binCount = gCapturePlan.impactBins;
+            gActiveFrameShouldKeep = 1U;
+        } else {
+            uint32_t ballObserved = gCapturePlan.phased
+                                        ? gPostFramesObserved -
+                                              gCapturePlan.impactFrames
+                                        : gPostFramesObserved;
+            binCount = gCapturePlan.postBins;
+            gActiveFrameShouldKeep =
+                ((ballObserved % gCapturePlan.postStride) == 0U);
+        }
     } else {
         ringSlot = gPreFramesCaptured % gCapturePlan.preFrames;
         binCount = gCapturePlan.preBins;
@@ -1386,9 +1568,13 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
     h->version          = L3_DUMP_VERSION_VARIABLE;
     h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE;
 #endif
-    h->n_samples        =
-        (gCapturePlan.preBins > gCapturePlan.postBins)
-            ? gCapturePlan.preBins : gCapturePlan.postBins;
+    h->n_samples = gCapturePlan.preBins;
+    if (gCapturePlan.impactBins > h->n_samples) {
+        h->n_samples = gCapturePlan.impactBins;
+    }
+    if (gCapturePlan.postBins > h->n_samples) {
+        h->n_samples = gCapturePlan.postBins;
+    }
     h->_pad             = 0U;
 #else
     h->n_samples        = SNAPSHOT_BINS;
@@ -1506,6 +1692,23 @@ static int32_t l3_startFrontEnd(void)
     return MMWave_start(gMMWaveHandle, &calibrationCfg, &errCode);
 }
 
+static uint8_t l3_dumpCancelRequested(void)
+{
+    UART_Config *uartConfig = (UART_Config *)gCliUart;
+    UartSci_HwCfg *hwCfg;
+    uint8_t value;
+
+    if (uartConfig == NULL || uartConfig->hwAttrs == NULL) {
+        return 0U;
+    }
+    hwCfg = (UartSci_HwCfg *)uartConfig->hwAttrs;
+    if (CSL_FEXTR(hwCfg->ptrSCIRegs->SCIFLR, 9U, 9U) == 0U) {
+        return 0U;
+    }
+    value = (uint8_t)CSL_FEXTR(hwCfg->ptrSCIRegs->SCIRD, 7U, 0U);
+    return (value == L3_DUMP_CANCEL_BYTE) ? 1U : 0U;
+}
+
 /* CLI "l3dump": record the current circular position, retain the configured
  * post-trigger frames, stop at that completed frame boundary, stream the ring,
  * then restart from slot zero. */
@@ -1513,6 +1716,7 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
 {
     l3_dump_header_t h;
     uint32_t         i;
+    uint8_t          dumpCancelled = 0U;
 #ifdef CONFIGURABLE_CAPTURE
     uint32_t actualPre;
     uint32_t actualPost;
@@ -1583,12 +1787,20 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
     for (i = 0U; i < actualPre; i++) {
         uint32_t slot = (oldestPre + i) % gCapturePlan.preFrames;
         UART_writePolling(gDataUart, &g_ring[gFrameOffset[slot]],
-                          gCapturePlan.preFrameBytes);
+                          gFrameBytes[slot]);
+        if (l3_dumpCancelRequested()) {
+            dumpCancelled = 1U;
+            break;
+        }
     }
-    for (i = 0U; i < actualPost; i++) {
+    for (i = 0U; !dumpCancelled && i < actualPost; i++) {
         uint32_t slot = gCapturePlan.preFrames + i;
         UART_writePolling(gDataUart, &g_ring[gFrameOffset[slot]],
-                          gCapturePlan.postFrameBytes);
+                          gFrameBytes[slot]);
+        if (l3_dumpCancelRequested()) {
+            dumpCancelled = 1U;
+            break;
+        }
     }
 #else
     for (i = 0; i < RING_FRAMES; i++) {
@@ -1662,6 +1874,9 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
         CLI_write("Error: RF restart failed\n");
         gCaptureActive = 0U;
         return -1;
+    }
+    if (dumpCancelled) {
+        UART_writePolling(gDataUart, L3_DUMP_CANCEL_ACK, L3_DUMP_CANCEL_ACK_BYTES);
     }
     return 0;
 }
@@ -2430,6 +2645,11 @@ static void l3_initTask(UArg arg0, UArg arg1)
     cliCfg.tableEntry[7].helpString    =
         "captureCfg preStart preBins postStart postBins lateStart postFrames [postStride]";
     cliCfg.tableEntry[7].cmdHandlerFxn = l3_cli_captureCfg;
+    cliCfg.tableEntry[8].cmd           = "phaseCaptureCfg";
+    cliCfg.tableEntry[8].helpString    =
+        "phaseCaptureCfg preStart preBins preFrames impactStart impactBins "
+        "impactFrames postStart postBins lateStart ballFrames ballStride";
+    cliCfg.tableEntry[8].cmdHandlerFxn = l3_cli_phaseCaptureCfg;
 #endif
     CLI_open(&cliCfg);
 }

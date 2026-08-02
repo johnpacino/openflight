@@ -219,7 +219,7 @@ docker-build:
 	fi
 	docker run --rm --platform linux/amd64 \
 		-v "$(REPO_ROOT):/work" -w /work \
-		"$(DOCKER_IMAGE)" make -C firmware build-native
+		"$(DOCKER_IMAGE)" make -C firmware build-native RELEASE_NAME="$(RELEASE_NAME)"
 
 docker-shell:
 	docker run --rm -it --platform linux/amd64 \

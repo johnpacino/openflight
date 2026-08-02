@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import asdict, dataclass
+from bisect import bisect_right
+from dataclasses import asdict, dataclass, replace
 
 import numpy as np
 
@@ -71,10 +72,12 @@ CLUB_MIN_SNAPSHOTS = 24
 
 # How many frames of approach history to fit, counting BACK from impact -- not
 # a ring slot. The clubhead's useful range walk spans 0.90-1.33 m (measured,
-# 2026-07-25), which it covers in 9-16 ms, so six frames at 4 ms brackets it
-# with headroom. Reaching further back only adds samples from below the search
+# 2026-07-25), which it covers in 9-16 ms. Six frames provide 12 ms of history
+# with the hybrid firmware's dense 2 ms pre-impact cadence, or 24 ms with the
+# older 4 ms cadence. Reaching further back adds samples from below the search
 # gate's 0.772 m floor, where the club is still swinging down and around.
 PRE_IMPACT_FRAMES = 6
+ATTACK_PRE_IMPACT_FRAMES = 4
 
 # Provisional. Cannot be derived analytically; set from the observed residual
 # distribution across local captures during bring-up.
@@ -246,29 +249,66 @@ def find_club(
     )
 
 
+def impact_centered_attack_window_s(
+    geo: tracking.Geometry,
+    impact_t_s: float | None,
+    *,
+    pre_frames: int = ATTACK_PRE_IMPACT_FRAMES,
+) -> tuple[float, float] | None:
+    """Four preceding frames plus the complete frame containing impact.
+
+    The end is the impact frame's final loop, not the next frame's start. This
+    deliberately admits chirps after the exact impact instant when impact
+    falls inside a burst, while excluding the first strictly post-impact frame.
+    """
+    if impact_t_s is None or impact_t_s <= 0.0 or impact_t_s > geo.capture_duration_s:
+        return None
+    frame_starts = geo.frame_time_offsets_s or tuple(
+        frame * geo.frame_period_s for frame in range(geo.n_frames)
+    )
+    impact_frame = bisect_right(frame_starts, impact_t_s) - 1
+    if impact_frame < 0:
+        return None
+    lo_s = frame_starts[max(0, impact_frame - pre_frames)]
+    hi_s = min(
+        geo.capture_duration_s,
+        frame_starts[impact_frame] + geo.n_loops * geo.loop_period_s,
+    )
+    if hi_s <= lo_s:
+        return None
+    return float(lo_s), float(hi_s)
+
+
 def estimate_attack_angle_candidate(
     mti: np.ndarray,
     track: tracking.BallTrack,
     geo: tracking.Geometry,
     cal: Calibration,
     *,
+    impact_t_s: float,
     tdm_sign: int,
 ) -> tuple[float | None, str, int, float | None]:
-    """Fit the clubhead's pre-impact vertical direction.
+    """Fit AoA from four approach frames and the complete impact frame.
 
     The TX1/TX3 pair is the calibrated eight-element vertical aperture.
-    ``track`` is already restricted to the club's pre-impact range walk, so
-    fitting its Cartesian height against down-range position estimates the
-    direction of travel: negative is descending, positive is ascending.
+    ``track`` is identified only from the six-frame pre-impact range walk,
+    then extrapolated through the end of the impact-containing frame. A
+    floor-referenced tee anchor turns those selected bearings into the local
+    direction through impact: negative is descending, positive is ascending.
 
     This remains an experimental candidate. The ball pipeline's strict SNR
     and MUSIC/Bartlett agreement checks are retained, but four points are
-    sufficient because this short club window cannot offer the ball
-    trajectory's usual eight-point minimum.
+    sufficient because this impact-centered club window cannot offer the
+    ball trajectory's usual eight-point minimum.
     """
+    window_s = impact_centered_attack_window_s(geo, impact_t_s)
+    if window_s is None:
+        return None, "rejected_no_impact_frame", 0, None
+    lo_s, hi_s = window_s
+    extended_track = replace(track, t_last=max(track.t_last, hi_s))
     points = doa.angle_points(
         mti,
-        track,
+        extended_track,
         geo,
         cal,
         coherent_loops=1,
@@ -276,7 +316,8 @@ def estimate_attack_angle_candidate(
         tdm_sign=tdm_sign,
         tdm_tau_s=doa.TX2_VERTICAL_TDM_TAU_S,
     )
-    fit = trajectory.fit_free(points, cal, min_points=4)
+    points = [point for point in points if lo_s <= point.t_s < hi_s]
+    fit = trajectory.fit_tee(points, cal, min_points=4)
     if fit is None:
         return None, "rejected_insufficient_vertical_points", len(points), None
     status = "candidate_available"
@@ -306,7 +347,7 @@ def experimental_path_candidate(
     TX2 is one wavelength from the TX1/TX3 vertical midpoint. Each reference
     phase is unwrapped independently in chronological frame order, then their
     midpoint is formed. A robust pairwise-slope Cartesian fit limits the
-    damage from one noisy frame in the short pre-impact window.
+    damage from one noisy frame in the impact-centered measurement window.
     """
     rows = []
     for frame in np.unique(frames):
@@ -372,12 +413,14 @@ def estimate_club_path(
     aim_offset_deg: float = 0.0,
     tdm_sign: int = 1,
 ) -> ClubPathResult:
-    """Estimate club path from the approach history ending at ``impact_t_s``.
+    """Estimate club path from four approach frames and the impact frame.
 
     ``impact_t_s`` is seconds from the oldest retained frame, as located by
     ``shot.impact_time_s`` from the ball's own range walk. It is a required
     argument with no default on purpose: impact's ring slot varies shot to
-    shot, so there is no safe value to assume.
+    shot, so there is no safe value to assume. Club detection remains strictly
+    pre-impact; only the already-identified track is extrapolated through the
+    complete frame containing impact for phase measurement.
     """
     meta0, _ = parse_dump(raw)
     if meta0.get("n_tx") != 3:
@@ -398,6 +441,16 @@ def estimate_club_path(
     track = find_club(mti, geo, tee_range_m=cal.tee_range_m, window_s=window_s)
     if track is None:
         return ClubPathResult(status="rejected_no_club_track")
+
+    path_window_s = impact_centered_attack_window_s(geo, impact_t_s)
+    if path_window_s is None:
+        return ClubPathResult(status="rejected_no_impact_frame")
+    path_lo_s, path_hi_s = path_window_s
+    phase_track = replace(
+        track,
+        t_first=min(track.t_first, path_lo_s),
+        t_last=max(track.t_last, path_hi_s),
+    )
 
     result = ClubPathResult(
         status="pending",
@@ -421,6 +474,7 @@ def estimate_club_path(
         track,
         geo,
         cal,
+        impact_t_s=impact_t_s,
         tdm_sign=tdm_sign,
     )
 
@@ -450,9 +504,9 @@ def estimate_club_path(
     for frame in range(geo.n_frames):
         for loop in range(geo.n_loops):
             t_s = geo.loop_time(frame, loop)
-            if not track.t_first <= t_s <= track.t_last:
+            if not path_lo_s <= t_s < path_hi_s:
                 continue
-            absolute_bin = int(round(track.bin_at(t_s)))
+            absolute_bin = int(round(phase_track.bin_at(t_s)))
             if not geo.contains_bin(absolute_bin, margin=1, frame=frame):
                 continue
             local_bin = geo.local_bin(absolute_bin, frame)
@@ -463,14 +517,14 @@ def estimate_club_path(
                 frame,
                 loop,
                 local_bin,
-                velocity_ms=track.speed_ms_at(t_s, res),
+                velocity_ms=phase_track.speed_ms_at(t_s, res),
                 tdm_sign=tdm_sign,
                 n_rx=n_rx,
             )
             if phase_pair is not None:
                 phase_tx1, phase_tx3, _candidate_weight = phase_pair
                 candidate_times.append(t_s)
-                candidate_ranges.append(float(track.range_at(t_s, res)))
+                candidate_ranges.append(float(phase_track.range_at(t_s, res)))
                 candidate_phase_tx1.append(phase_tx1)
                 candidate_phase_tx3.append(phase_tx3)
                 candidate_frames.append(frame)
@@ -479,7 +533,7 @@ def estimate_club_path(
                 frame,
                 loop,
                 local_bin,
-                velocity_ms=track.speed_ms_at(t_s, res),
+                velocity_ms=phase_track.speed_ms_at(t_s, res),
                 tdm_sign=tdm_sign,
                 n_rx=n_rx,
             )
@@ -537,7 +591,7 @@ def estimate_club_path(
     # Per-sample position in Cartesian coordinates: x along boresight, y
     # cross-range. r comes from the track's own range-vs-time fit (smooth;
     # de-noises the per-loop range), az from this sample's own phase.
-    r_i = track.range_at(t_array, res)
+    r_i = phase_track.range_at(t_array, res)
     x_i = r_i * np.cos(azimuth_rad)
     y_i = r_i * np.sin(azimuth_rad)
 
@@ -603,5 +657,6 @@ __all__ = [
     "ClubPathResult",
     "estimate_club_path",
     "find_club",
+    "impact_centered_attack_window_s",
     "pre_impact_window_s",
 ]

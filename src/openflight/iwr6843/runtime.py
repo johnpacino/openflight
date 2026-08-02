@@ -68,6 +68,13 @@ class IWR6843Runtime:
             tx_order=self.tx_order,
             tdm_sign_policy=self.tdm_sign_policy,
         )
+        horizontal_deg = getattr(measurement, "horizontal_deg", None)
+        if horizontal_deg is not None:
+            measurement = replace(
+                measurement,
+                horizontal_deg=horizontal_deg + self.azimuth_offset_deg,
+                horizontal_raw_deg=horizontal_deg,
+            )
         club_path = None
         # No OPS club speed means no identity gate to distinguish the club
         # track from hands, body, or the ball itself, so an estimate here

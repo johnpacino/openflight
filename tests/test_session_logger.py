@@ -274,6 +274,28 @@ class TestLogShot:
         assert entry["experimental_club_path_status"] == "rejected_phase_span"
         assert entry["impact_timestamp"] == 1234567890.25
 
+    def test_shot_logs_experimental_club_status_without_candidate(self, tmp_path):
+        logger = SessionLogger(log_dir=tmp_path, enabled=True)
+        logger.start_session(mode="rolling-buffer", trigger_type="sound")
+
+        logger.log_shot(
+            ball_speed_mph=100.0,
+            club_speed_mph=80.0,
+            smash_factor=1.25,
+            estimated_carry_yards=130,
+            club="9_iron",
+            peak_magnitude=None,
+            readings_count=0,
+            experimental_attack_angle_status="rejected_no_club_track",
+            experimental_club_path_status="rejected_no_pre_impact_frames",
+        )
+
+        entry = json.loads(logger.session_path.read_text().strip().split("\n")[-1])
+        assert "experimental_attack_angle_deg" not in entry
+        assert entry["experimental_attack_angle_status"] == "rejected_no_club_track"
+        assert "experimental_club_path_deg" not in entry
+        assert entry["experimental_club_path_status"] == "rejected_no_pre_impact_frames"
+
     def test_rolling_buffer_capture_logs_trigger_timing(self, tmp_path):
         """Rolling-buffer captures should preserve host trigger timing fields."""
         logger = SessionLogger(log_dir=tmp_path, enabled=True)

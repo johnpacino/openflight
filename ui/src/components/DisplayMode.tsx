@@ -100,7 +100,8 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
       value: formatOptionalNumber(shot.club_path_deg ?? shot.experimental_club_path_deg ?? null, 1, true),
       unit: shot.club_path_deg === null && shot.experimental_club_path_deg == null ? undefined : 'deg',
       detail:
-        shot.club_path_deg === null && shot.experimental_club_path_deg != null
+        shot.club_path_deg === null &&
+        (shot.experimental_club_path_deg != null || shot.experimental_club_path_status != null)
           ? experimentalStatus(shot.experimental_club_path_status)
           : undefined,
     },
@@ -109,7 +110,8 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
       value: formatOptionalNumber(shot.club_angle_deg ?? shot.experimental_attack_angle_deg ?? null),
       unit: shot.club_angle_deg === null && shot.experimental_attack_angle_deg == null ? undefined : 'deg',
       detail:
-        shot.club_angle_deg === null && shot.experimental_attack_angle_deg != null
+        shot.club_angle_deg === null &&
+        (shot.experimental_attack_angle_deg != null || shot.experimental_attack_angle_status != null)
           ? experimentalStatus(shot.experimental_attack_angle_status)
           : undefined,
     },

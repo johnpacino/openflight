@@ -76,6 +76,7 @@ class LCMFResult:
     impact_t_s: float | None = None
     tdm_sign_used: int | None = None
     horizontal_deg: float | None = None
+    horizontal_raw_deg: float | None = None
     horizontal_confidence: float | None = None
     horizontal_status: str | None = None
     effective_tdm_tau_s: float = doa.TDM_TAU_S
@@ -108,6 +109,7 @@ class LCMFResult:
             "impact_t_s": self.impact_t_s,
             "tdm_sign_used": self.tdm_sign_used,
             "horizontal_deg": self.horizontal_deg,
+            "horizontal_raw_deg": self.horizontal_raw_deg,
             "horizontal_confidence": self.horizontal_confidence,
             "horizontal_status": self.horizontal_status,
             "effective_tdm_tau_s": self.effective_tdm_tau_s,
@@ -345,9 +347,7 @@ def measured_channels(
     agreement metric reported to the caller.
     """
     return {
-        name: float(value)
-        for name, value in components.items()
-        if evidence.get(name) is not None
+        name: float(value) for name, value in components.items() if evidence.get(name) is not None
     }
 
 
