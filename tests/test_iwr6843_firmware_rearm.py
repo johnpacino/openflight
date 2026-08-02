@@ -11,6 +11,7 @@ RELEASE_DIR = Path(__file__).parents[1] / "firmware" / "releases"
 CONFIGURABLE_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_configurable.cfg"
 HYBRID_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_hybrid.cfg"
 CLUB16_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club16.cfg"
+CLUB14_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club14.cfg"
 
 
 def _function_source(source: str, name: str, next_name: str) -> str:
@@ -227,6 +228,39 @@ def test_club16_config_uses_dense_impact_and_wide_late_flight_phases():
     bytes_per_bin = 3 * loops * 4 * 4
     used = (8 * 18 + 6 * 18 + 14 * 53) * bytes_per_bin
     assert used == 763_392
+    assert used <= 768 * 1024
+
+
+def test_club14_config_uses_validated_2_25ms_cadence_with_l3_headroom():
+    commands = {
+        line.split()[0]: line.split()
+        for line in CLUB14_CONFIG.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("%")
+    }
+
+    profile = commands["profileCfg"]
+    frame = commands["frameCfg"]
+    phased = commands["phaseCaptureCfg"]
+    loops = int(frame[3])
+    frame_period_us = round(float(frame[5]) * 1000)
+    chirp_us = float(profile[3]) + float(profile[5])
+    rf_occupancy_us = 3 * loops * chirp_us
+
+    assert loops == 14
+    assert frame_period_us == 2_250
+    assert rf_occupancy_us == 1_890
+    assert frame_period_us - rf_occupancy_us == 360
+    assert phased == [
+        "phaseCaptureCfg",
+        "23", "18", "8",       # pre: 3.4-6.2 ft, 8 frames
+        "23", "18", "6",       # impact: same window, 6 dense frames
+        "32", "53", "47",      # middle/late ball windows
+        "14", "2",              # 14 retained ball frames at 4.5 ms
+    ]
+
+    bytes_per_bin = 3 * loops * 4 * 4
+    used = (8 * 18 + 6 * 18 + 14 * 53) * bytes_per_bin
+    assert used == 667_968
     assert used <= 768 * 1024
 
 
