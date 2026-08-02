@@ -103,6 +103,25 @@ describe('ShotDisplay', () => {
       expect(html.match(/metric-card__confidence--experimental/g)).toHaveLength(3);
     });
 
+    it('keeps status-only experimental club metrics visible', () => {
+      const html = renderToString(
+        <ShotDisplay
+          shot={{
+            ...withAngles,
+            club_angle_deg: null,
+            club_path_deg: null,
+            experimental_attack_angle_status: 'rejected_no_club_track',
+            experimental_club_path_status: 'rejected_no_club_track',
+          }}
+        />,
+      );
+
+      expect(html).toContain('Club AoA');
+      expect(html).toContain('Club Path');
+      expect(html.match(/rejected: no club track/g)).toHaveLength(2);
+      expect(html.match(/metric-card__confidence--experimental/g)).toHaveLength(3);
+    });
+
     it('omits each card when the radar produced no measurement', () => {
       const html = renderToString(
         <ShotDisplay

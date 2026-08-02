@@ -27,7 +27,8 @@ class FakeRadar:
     def send_config(self, path: str):
         self.configs.append(path)
 
-    def read_dump(self):
+    def read_dump(self, cancel_event=None):
+        del cancel_event
         self.read_started_at = time.monotonic()
         if self.error is not None:
             raise self.error
@@ -187,7 +188,8 @@ def test_capture_monitor_finishes_active_dump_before_closing_serial(tmp_path):
             self.release_read = threading.Event()
             self.closed_before_read_finished = False
 
-        def read_dump(self):
+        def read_dump(self, cancel_event=None):
+            del cancel_event
             self.read_started.set()
             self.release_read.wait(timeout=1.0)
             return self.raw
@@ -244,6 +246,41 @@ def test_capture_monitor_closes_serial_when_sensor_stop_fails(tmp_path):
 
     assert radar.shutdown_events == ["sensorStop", "close"]
     assert radar.closed
+
+
+def test_capture_monitor_cancels_active_false_trigger_dump(tmp_path):
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+
+    class CancellableRadar(FakeRadar):
+        def __init__(self, raw):
+            super().__init__(raw)
+            self.read_started = threading.Event()
+            self.cancel_seen = threading.Event()
+
+        def read_dump(self, cancel_event=None):
+            self.read_started.set()
+            assert cancel_event is not None
+            assert cancel_event.wait(timeout=1.0)
+            self.cancel_seen.set()
+            return b""
+
+    radar = CancellableRadar(_raw_dump())
+    monitor = IWR6843CaptureMonitor(
+        config_path=config,
+        output_dir=tmp_path / "dumps",
+        radar=radar,
+        button_factory=FakeButton,
+    )
+    monitor.start()
+    assert monitor.notify_trigger(time.time())
+    assert radar.read_started.wait(timeout=0.5)
+
+    assert monitor.cancel_active_capture("no_outbound_speed")
+    assert radar.cancel_seen.wait(timeout=0.5)
+    time.sleep(0.05)
+    assert not monitor._captures  # pylint: disable=protected-access
+    monitor.stop()
 
 
 def test_capture_monitor_discards_stale_false_trigger(tmp_path):

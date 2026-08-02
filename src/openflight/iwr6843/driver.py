@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import glob
 import logging
+import threading
 import time
 
 import serial
@@ -23,9 +24,15 @@ import serial
 from openflight.iwr6843.dump import HEADER, MAGIC, parse_header, payload_nbytes
 
 BAUD = 1_041_667
+_DUMP_CANCEL_BYTE = b"\x18"
+_DUMP_CANCEL_ACK = b"ILDCANCEL"
 _PORT_GLOBS = ("/dev/ttyUSB*", "/dev/tty.SLAB_USBtoUART*")
 
 logger = logging.getLogger(__name__)
+
+
+class IWR6843DumpCancelled(RuntimeError):
+    """The firmware stopped an in-flight dump and safely re-armed capture."""
 
 
 def open_port(port: str, baud: int = BAUD, timeout: float = 0.3) -> serial.Serial:
@@ -166,7 +173,12 @@ class IWR6843Radar:
         else:
             raise RuntimeError(f"IWR6843 did not enter active capture mode: {health.strip()}")
 
-    def read_dump(self, timeout_s: float = 40.0, stall_tolerance_s: float = 4.0) -> bytes:
+    def read_dump(
+        self,
+        timeout_s: float = 40.0,
+        stall_tolerance_s: float = 4.0,
+        cancel_event: threading.Event | None = None,
+    ) -> bytes:
         """Fire `l3dump` and return one complete dump (best effort on stalls).
 
         Syncs on the ILD1 magic past the CLI echo and sizes the read from the
@@ -178,12 +190,18 @@ class IWR6843Radar:
         expected: int | None = None
         start = time.time()
         last = start
+        cancel_sent = False
         while time.time() - start < timeout_s:
+            if cancel_event is not None and cancel_event.is_set() and not cancel_sent:
+                self.ser.write(_DUMP_CANCEL_BYTE)
+                cancel_sent = True
             waiting = self.ser.in_waiting
             chunk = self.ser.read(waiting if waiting else 1)
             if chunk:
                 buf += chunk
                 last = time.time()
+                if cancel_sent and _DUMP_CANCEL_ACK in buf:
+                    raise IWR6843DumpCancelled("OPS rejected the shared sound trigger")
             elif buf and time.time() - last > stall_tolerance_s:
                 break
             if expected is None:

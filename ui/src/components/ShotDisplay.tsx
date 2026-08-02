@@ -227,10 +227,12 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
   const hasLaunchAngle = shot.launch_angle_vertical !== null;
   const attackAngle = shot.club_angle_deg ?? shot.experimental_attack_angle_deg ?? null;
   const attackIsExperimental =
-    shot.club_angle_deg === null && shot.experimental_attack_angle_deg != null;
+    shot.club_angle_deg === null &&
+    (shot.experimental_attack_angle_deg != null || shot.experimental_attack_angle_status != null);
   const clubPath = shot.club_path_deg ?? shot.experimental_club_path_deg ?? null;
   const clubPathIsExperimental =
-    shot.club_path_deg === null && shot.experimental_club_path_deg != null;
+    shot.club_path_deg === null &&
+    (shot.experimental_club_path_deg != null || shot.experimental_club_path_status != null);
 
   return (
     <div className={`shot-display ${animate ? 'shot-display--animate' : ''}`}>
@@ -267,10 +269,10 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
             variant="secondary"
             confidence={hasLaunchAngle ? getLaunchAngleQuality(shot.launch_angle_confidence) : null}
           />
-          {attackAngle !== null && (
+          {(attackAngle !== null || attackIsExperimental) && (
             <MetricCard
-              value={attackAngle.toFixed(1)}
-              unit="°"
+              value={attackAngle !== null ? attackAngle.toFixed(1) : '—'}
+              unit={attackAngle !== null ? '°' : undefined}
               label="Club AoA"
               subtext={
                 attackIsExperimental
@@ -281,10 +283,10 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
               confidence={attackIsExperimental ? 'experimental' : null}
             />
           )}
-          {clubPath !== null && (
+          {(clubPath !== null || clubPathIsExperimental) && (
             <MetricCard
-              value={(clubPath >= 0 ? '+' : '') + clubPath.toFixed(1)}
-              unit="°"
+              value={clubPath !== null ? (clubPath >= 0 ? '+' : '') + clubPath.toFixed(1) : '—'}
+              unit={clubPath !== null ? '°' : undefined}
               label="Club Path"
               subtext={
                 clubPathIsExperimental
