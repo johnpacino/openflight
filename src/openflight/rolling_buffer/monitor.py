@@ -436,6 +436,7 @@ class RollingBufferMonitor:
                             self._current_club,
                         )
                     ),
+                    club_type=self._current_club,
                 )
                 process_ms = (time.time() - process_start) * 1000
                 logger.info("[MONITOR] process_capture: %.1fms", process_ms)
