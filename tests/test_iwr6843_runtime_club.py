@@ -117,6 +117,23 @@ def test_azimuth_offset_corrects_horizontal_launch():
     assert result.measurement.horizontal_raw_deg == pytest.approx(3.3)
 
 
+def test_lcmf_receives_the_configured_horizontal_phase_reference():
+    seen = {}
+
+    def fake_lcmf(raw, cal, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    with patch("openflight.iwr6843.runtime.estimate_lcmf_v1", side_effect=fake_lcmf):
+        _runtime(horizontal_phase_reference_rad=-0.493587).process_shot(
+            impact_timestamp=1.0,
+            ball_speed_mph=100.0,
+            club="7i",
+        )
+
+    assert seen["horizontal_phase_reference_rad"] == pytest.approx(-0.493587)
+
+
 def test_falls_back_to_policy_sign_when_ball_has_none():
     seen = {}
 

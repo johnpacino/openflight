@@ -38,6 +38,7 @@ class IWR6843Runtime:
     # 1,041,667 baud (measured 103,038 B/s), so one dump takes 7.4 s.
     capture_timeout_s: float = 16.0
     azimuth_offset_deg: float = 0.0
+    horizontal_phase_reference_rad: float | None = None
     tdm_sign_policy: str = "positive"
 
     def process_shot(  # pylint: disable=too-many-arguments
@@ -67,6 +68,7 @@ class IWR6843Runtime:
             net_range_m=self.net_range_m,
             tx_order=self.tx_order,
             tdm_sign_policy=self.tdm_sign_policy,
+            horizontal_phase_reference_rad=self.horizontal_phase_reference_rad,
         )
         horizontal_deg = getattr(measurement, "horizontal_deg", None)
         if horizontal_deg is not None:

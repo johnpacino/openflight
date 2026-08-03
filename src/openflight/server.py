@@ -1021,6 +1021,7 @@ def init_iwr6843(
     radar_height_m: float | None = None,
     ball_height_m: float = 0.04,
     azimuth_offset_deg: float = 0.0,
+    horizontal_phase_reference_rad: float | None = None,
     save_dumps: bool = False,
 ) -> bool:
     """Initialize GPIO-triggered TI capture and the frozen LCMF-v1 estimator."""
@@ -1063,6 +1064,7 @@ def init_iwr6843(
             tx_order=resolved_order,
             capture_timeout_s=capture_timeout_s,
             azimuth_offset_deg=azimuth_offset_deg,
+            horizontal_phase_reference_rad=horizontal_phase_reference_rad,
         )
         iwr6843_runtime_config = {
             "enabled": True,
@@ -1078,6 +1080,7 @@ def init_iwr6843(
             "radar_height_m": calibration.radar_height_m,
             "ball_height_m": calibration.tee_ball_height_m,
             "azimuth_offset_deg": azimuth_offset_deg,
+            "horizontal_phase_reference_rad": horizontal_phase_reference_rad,
             "capture_timeout_s": capture_timeout_s,
             "freeze_delay_ms": 0.0,
             "raw_dump_saved": save_dumps,
@@ -3261,6 +3264,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--iwr6843-horizontal-phase-reference-rad",
+        type=float,
+        default=None,
+        help=(
+            "Static target-line phase measured by horizontal aim calibration. "
+            "Subtracted from the TX2 horizontal proxy before angle conversion."
+        ),
+    )
+    parser.add_argument(
         "--kld7",
         action="store_true",
         help="[DEPRECATED] Enable K-LD7 vertical angle radar (launch angle)",
@@ -3576,6 +3588,7 @@ def main():
             radar_height_m=args.iwr6843_radar_height_m,
             ball_height_m=args.iwr6843_ball_height_m,
             azimuth_offset_deg=args.iwr6843_azimuth_offset_deg,
+            horizontal_phase_reference_rad=args.iwr6843_horizontal_phase_reference_rad,
             save_dumps=args.debug,
         ):
             calibration = iwr6843_runtime.calibration

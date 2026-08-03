@@ -37,6 +37,7 @@ IWR6843_TX_ORDER=""
 IWR6843_CAPTURE_TIMEOUT=""
 IWR6843_OUTPUT_DIR=""
 IWR6843_AZIMUTH_OFFSET=""
+IWR6843_HORIZONTAL_PHASE_REFERENCE_RAD=""
 INCLINOMETER=false
 INCLINOMETER_ZERO_OFFSET=""
 KLD7=false
@@ -185,6 +186,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --iwr6843-azimuth-offset-deg)
             IWR6843_AZIMUTH_OFFSET="$2"
+            shift 2
+            ;;
+        --iwr6843-horizontal-phase-reference-rad)
+            IWR6843_HORIZONTAL_PHASE_REFERENCE_RAD="$2"
             shift 2
             ;;
         --inclinometer)
@@ -479,6 +484,7 @@ if [ "$IWR6843" = true ]; then
     [ -n "$IWR6843_CAPTURE_TIMEOUT" ] && SERVER_CMD="$SERVER_CMD --iwr6843-capture-timeout $IWR6843_CAPTURE_TIMEOUT"
     [ -n "$IWR6843_OUTPUT_DIR" ] && SERVER_CMD="$SERVER_CMD --iwr6843-output-dir $IWR6843_OUTPUT_DIR"
     [ -n "$IWR6843_AZIMUTH_OFFSET" ] && SERVER_CMD="$SERVER_CMD --iwr6843-azimuth-offset-deg $IWR6843_AZIMUTH_OFFSET"
+    [ -n "$IWR6843_HORIZONTAL_PHASE_REFERENCE_RAD" ] && SERVER_CMD="$SERVER_CMD --iwr6843-horizontal-phase-reference-rad $IWR6843_HORIZONTAL_PHASE_REFERENCE_RAD"
 fi
 
 if [ "$INCLINOMETER" = true ]; then
