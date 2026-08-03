@@ -136,9 +136,17 @@ for details.
 OpenFlight also serves a fullscreen-friendly browser display for tablets, TV browsers, or a Chrome tab cast to Chromecast.
 
 1. Start OpenFlight as usual with `scripts/start-kiosk.sh`.
-2. Find the OpenFlight host IP address on your LAN.
-3. Open `http://<openflight-host-ip>:8080/display` from another laptop, tablet, or TV browser.
+2. Find the OpenFlight host on your LAN — its hostname (see below) or its IP address.
+3. Open `http://<openflight-host>:8080/display` from another laptop, tablet, or TV browser.
 4. For Chromecast, open the display page in Chrome and use Chrome's built-in **Cast** feature to cast the tab.
+
+> **Prefer the hostname over the IP.** Raspberry Pi OS broadcasts its hostname over
+> mDNS (Avahi), so `http://openflight.local:8080/display` keeps working even when the
+> Pi's DHCP lease expires and it comes back on a different address — a bookmarked IP
+> breaks unless you reserved it on your router. Set the name in Raspberry Pi Imager's
+> **Hostname** field when you flash the card; the default is `raspberrypi`, i.e.
+> `raspberrypi.local`. The viewing device has to support mDNS — macOS, iOS, Windows 10+
+> and most Linux desktops do, but some smart-TV browsers don't, so use the IP there.
 
 This is browser/tab casting only. OpenFlight does not include native Cast SDK support yet.
 
