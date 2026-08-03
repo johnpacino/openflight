@@ -454,9 +454,16 @@ def test_window_handed_to_the_tracker_ends_at_impact(monkeypatch):
     seen: list[tuple[float, float]] = []
     real_find_club = club.find_club
 
-    def spy(mti, geo, *, tee_range_m, window_s):
+    def spy(mti, geo, *, tee_range_m, window_s, ops_club_speed_mph, impact_t_s):
         seen.append(window_s)
-        return real_find_club(mti, geo, tee_range_m=tee_range_m, window_s=window_s)
+        return real_find_club(
+            mti,
+            geo,
+            tee_range_m=tee_range_m,
+            window_s=window_s,
+            ops_club_speed_mph=ops_club_speed_mph,
+            impact_t_s=impact_t_s,
+        )
 
     monkeypatch.setattr(club, "find_club", spy)
     impact_s = 0.030  # far enough in that the window start is not clamped to 0
@@ -472,6 +479,119 @@ def test_window_handed_to_the_tracker_ends_at_impact(monkeypatch):
     lo, hi = seen[0]
     assert hi == pytest.approx(impact_s), "window must end at impact"
     assert lo == pytest.approx(impact_s - club.PRE_IMPACT_FRAMES * FRAME_PERIOD_S)
+
+
+def test_club_search_uses_ops_speed_before_selecting_track(monkeypatch):
+    """The improved OPS reading must narrow candidate generation, not only reject later."""
+    geo = tracking.Geometry(
+        n_frames=18,
+        chirps_per_frame=36,
+        n_tx=3,
+        n_rx=4,
+        n_samples=128,
+        frame_period_s=FRAME_PERIOD_S,
+        trigger_frame=0,
+    )
+    impact_s = 0.030
+    ops_speed_ms = 80.0 / club.MPH_PER_MS
+    track = tracking.BallTrack(
+        speed_ms=ops_speed_ms * 0.95,
+        slope_bins=ops_speed_ms * 0.95 / geo.range_res_m,
+        intercept_bins=(1.372 / geo.range_res_m)
+        - (ops_speed_ms * 0.95 / geo.range_res_m) * impact_s,
+        rms_bins=0.15,
+        n_inliers=30,
+        t_first=0.018,
+        t_last=impact_s,
+        low_confidence=False,
+    )
+    calls = []
+
+    def fake_find_ball(_mti, _geo, **kwargs):
+        calls.append(kwargs)
+        return track
+
+    monkeypatch.setattr(tracking, "find_ball", fake_find_ball)
+    selection = club.find_club(
+        np.zeros((18, 2, 12, 4, 128), dtype=complex),
+        geo,
+        tee_range_m=1.372,
+        window_s=(0.018, impact_s),
+        ops_club_speed_mph=80.0,
+        impact_t_s=impact_s,
+    )
+
+    assert selection is not None
+    assert selection.mode == "ops_speed_prior"
+    assert len(calls) == 1
+    assert calls[0]["speed_bounds_ms"] == pytest.approx(
+        tuple(ops_speed_ms * ratio for ratio in club.CLUB_SPEED_PROJECTION_RANGE)
+    )
+    assert calls[0]["min_ball_ms"] == pytest.approx(ops_speed_ms * club.CLUB_PREFERRED_SPEED_RATIO)
+    assert selection.speed_ratio == pytest.approx(0.95)
+    assert selection.impact_error_m == pytest.approx(0.0, abs=1e-9)
+
+
+def test_club_search_falls_back_when_ops_prior_finds_no_track(monkeypatch):
+    """A sparse speed-prior search may fall back without hiding its provenance."""
+    geo = tracking.Geometry(18, 36, 3, 4, 128, FRAME_PERIOD_S, 0)
+    impact_s = 0.030
+    fallback_track = tracking.BallTrack(
+        speed_ms=25.0,
+        slope_bins=25.0 / geo.range_res_m,
+        intercept_bins=(1.372 / geo.range_res_m) - (25.0 / geo.range_res_m) * impact_s,
+        rms_bins=0.2,
+        n_inliers=18,
+        t_first=0.018,
+        t_last=impact_s,
+        low_confidence=False,
+    )
+    calls = []
+
+    def fake_find_ball(_mti, _geo, **kwargs):
+        calls.append(kwargs)
+        return None if len(calls) == 1 else fallback_track
+
+    monkeypatch.setattr(tracking, "find_ball", fake_find_ball)
+    selection = club.find_club(
+        np.zeros((18, 2, 12, 4, 128), dtype=complex),
+        geo,
+        tee_range_m=1.372,
+        window_s=(0.018, impact_s),
+        ops_club_speed_mph=80.0,
+        impact_t_s=impact_s,
+    )
+
+    assert selection is not None
+    assert selection.mode == "broad_fallback"
+    assert len(calls) == 2
+    assert calls[1]["speed_bounds_ms"] == club.CLUB_SPEED_BOUNDS_MS
+
+
+def test_impact_contact_mismatch_is_rejected_but_retains_candidates(monkeypatch):
+    """A track that cannot reach the tee at impact is not promoted as club data."""
+    real_find_club = club.find_club
+
+    def shifted_selection(*args, **kwargs):
+        selection = real_find_club(*args, **kwargs)
+        assert selection is not None
+        selection.impact_error_m = club.CLUB_MAX_IMPACT_ERROR_M + 0.01
+        return selection
+
+    monkeypatch.setattr(club, "find_club", shifted_selection)
+    result = club.estimate_club_path(
+        _synth_club(4.0),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=IMPACT_S,
+        tdm_sign=1,
+    )
+
+    assert result.status == "rejected_impact_contact_mismatch"
+    assert result.path_deg is None
+    assert result.candidate_path_deg is not None
+    assert result.candidate_attack_angle_deg is not None
+    assert result.track_impact_error_m > club.CLUB_MAX_IMPACT_ERROR_M
 
 
 def test_club_path_samples_four_preceding_frames_and_full_impact_frame(monkeypatch):

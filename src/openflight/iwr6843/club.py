@@ -98,6 +98,19 @@ CLUB_MAX_AZIMUTH_FIT_RESIDUAL_DEG = 0.5
 # start admitting the ball. PROVISIONAL on one session; revalidate at the next.
 CLUB_SPEED_PROJECTION_RANGE = (0.70, 1.20)
 
+# The OPS transition selector measures the club-head branch near impact. Use
+# that result while selecting the IWR range walk, not only as a rejection after
+# the tracker has already chosen hands or shaft. The preferred ratio is a
+# fastest-credible threshold rather than an equality target because IWR sees
+# radial speed while OPS estimates total club speed.
+CLUB_PREFERRED_SPEED_RATIO = 0.82
+CLUB_TRACK_SPEED_LIMIT_MS = (12.0, 60.0)
+
+# A real club track must extrapolate to the known ball position at impact.
+# Four 4.7 cm range bins leave room for range quantisation and a slightly
+# imperfect impact timestamp without admitting a mover that misses the tee.
+CLUB_MAX_IMPACT_ERROR_M = 0.20
+
 # Ceiling on the azimuth swing across the window, measured on PER-FRAME medians
 # (see phase_span_rad). Tangential speed is at most ~20 m/s at a ~1.1 m range,
 # so the azimuth rate stays under ~18 rad/s; over six 4 ms frames that is
@@ -136,6 +149,10 @@ class ClubPathResult:
     track_rms_bins: float | None = None
     track_inliers: int | None = None
     track_span_s: float | None = None
+    ops_club_speed_mph: float | None = None
+    track_speed_ratio: float | None = None
+    track_impact_error_m: float | None = None
+    track_selection_mode: str | None = None
 
     @property
     def accepted(self) -> bool:
@@ -145,6 +162,16 @@ class ClubPathResult:
     def to_dict(self) -> dict:
         """JSON-safe diagnostics for the session log."""
         return asdict(self)
+
+
+@dataclass
+class ClubTrackSelection:
+    """Club range track plus the identity evidence used to select it."""
+
+    track: tracking.BallTrack
+    mode: str
+    speed_ratio: float
+    impact_error_m: float
 
 
 def pre_impact_window_s(
@@ -224,7 +251,9 @@ def find_club(
     *,
     tee_range_m: float,
     window_s: tuple[float, float],
-):
+    ops_club_speed_mph: float,
+    impact_t_s: float,
+) -> ClubTrackSelection | None:
     """Track the clubhead's approach inside the pre-impact window.
 
     Two constraints do the separating, and both are load-bearing:
@@ -239,13 +268,45 @@ def find_club(
     """
     lo = max(0.35, tee_range_m - CLUB_APPROACH_DEPTH_M)
     hi = tee_range_m + CLUB_GATE_TEE_MARGIN_M
-    return tracking.find_ball(
+    ops_speed_ms = ops_club_speed_mph / MPH_PER_MS
+    projection_lo, projection_hi = CLUB_SPEED_PROJECTION_RANGE
+    speed_bounds_ms = (
+        max(CLUB_TRACK_SPEED_LIMIT_MS[0], ops_speed_ms * projection_lo),
+        min(CLUB_TRACK_SPEED_LIMIT_MS[1], ops_speed_ms * projection_hi),
+    )
+
+    track = tracking.find_ball(
         mti,
         geo,
         gates_m=((lo, hi),),
-        speed_bounds_ms=CLUB_SPEED_BOUNDS_MS,
-        min_ball_ms=CLUB_SPEED_BOUNDS_MS[0],
+        speed_bounds_ms=speed_bounds_ms,
+        min_ball_ms=max(speed_bounds_ms[0], ops_speed_ms * CLUB_PREFERRED_SPEED_RATIO),
         time_window_s=window_s,
+    )
+    mode = "ops_speed_prior"
+    if track is None:
+        # Preserve coverage for sparse/aliased captures, but expose that the
+        # broad legacy search supplied the candidate. The downstream speed and
+        # impact-contact gates still prevent it from being promoted.
+        track = tracking.find_ball(
+            mti,
+            geo,
+            gates_m=((lo, hi),),
+            speed_bounds_ms=CLUB_SPEED_BOUNDS_MS,
+            min_ball_ms=CLUB_SPEED_BOUNDS_MS[0],
+            time_window_s=window_s,
+        )
+        mode = "broad_fallback"
+    if track is None:
+        return None
+
+    speed_ratio = abs(track.speed_ms) / max(ops_speed_ms, 1e-6)
+    impact_range_m = track.range_at(impact_t_s, geo.range_res_m)
+    return ClubTrackSelection(
+        track=track,
+        mode=mode,
+        speed_ratio=speed_ratio,
+        impact_error_m=abs(impact_range_m - tee_range_m),
     )
 
 
@@ -438,9 +499,17 @@ def estimate_club_path(
         return ClubPathResult(status="rejected_no_pre_impact_frames")
 
     mti = tracking.mti_filter(cube, range_domain=is_range_snapshot(meta), geometry=geo)
-    track = find_club(mti, geo, tee_range_m=cal.tee_range_m, window_s=window_s)
-    if track is None:
+    selection = find_club(
+        mti,
+        geo,
+        tee_range_m=cal.tee_range_m,
+        window_s=window_s,
+        ops_club_speed_mph=ops_club_speed_mph,
+        impact_t_s=impact_t_s,
+    )
+    if selection is None:
         return ClubPathResult(status="rejected_no_club_track")
+    track = selection.track
 
     path_window_s = impact_centered_attack_window_s(geo, impact_t_s)
     if path_window_s is None:
@@ -458,11 +527,26 @@ def estimate_club_path(
         track_rms_bins=track.rms_bins,
         track_inliers=track.n_inliers,
         track_span_s=track.t_last - track.t_first,
+        ops_club_speed_mph=ops_club_speed_mph,
+        track_speed_ratio=selection.speed_ratio,
+        track_impact_error_m=selection.impact_error_m,
+        track_selection_mode=selection.mode,
+    )
+    logger.info(
+        "[CLUB] track=%s OPS=%.1f mph radial=%.1f m/s ratio=%.2f "
+        "impact_error=%.3f m inliers=%d rms=%.2f bins",
+        selection.mode,
+        ops_club_speed_mph,
+        abs(track.speed_ms),
+        selection.speed_ratio,
+        selection.impact_error_m,
+        track.n_inliers,
+        track.rms_bins,
     )
 
-    projection = abs(result.range_rate_ms) / max(ops_club_speed_mph / MPH_PER_MS, 1e-6)
     low, high = CLUB_SPEED_PROJECTION_RANGE
-    speed_mismatch = not low <= projection <= high
+    speed_mismatch = not low <= selection.speed_ratio <= high
+    impact_mismatch = selection.impact_error_m > CLUB_MAX_IMPACT_ERROR_M
 
     (
         result.candidate_attack_angle_deg,
@@ -477,6 +561,10 @@ def estimate_club_path(
         impact_t_s=impact_t_s,
         tdm_sign=tdm_sign,
     )
+    if speed_mismatch:
+        result.attack_angle_status = "candidate_club_speed_mismatch"
+    elif impact_mismatch:
+        result.attack_angle_status = "candidate_impact_contact_mismatch"
 
     # TX2 phase needs all three transmitters, so re-split the ORIGINAL dump.
     _meta3, cube3 = parse_dump(raw)
@@ -624,6 +712,9 @@ def estimate_club_path(
     path_deg = math.degrees(math.atan2(v_y, v_x))
     if speed_mismatch:
         result.status = "rejected_club_speed_mismatch"
+        return result
+    if impact_mismatch:
+        result.status = "rejected_impact_contact_mismatch"
         return result
     if phase_span_rejected:
         result.status = "rejected_phase_span"

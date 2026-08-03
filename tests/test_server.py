@@ -436,7 +436,7 @@ class TestIWR6843ShotIntegration:
         assert shot.experimental_attack_angle_deg == pytest.approx(-4.9)
         assert shot.experimental_attack_angle_status == "candidate_available"
 
-    def test_non_debug_mode_does_not_emit_experimental_club_candidates(self, monkeypatch):
+    def test_non_debug_mode_emits_experimental_club_candidates(self, monkeypatch):
         measurement = SimpleNamespace(
             accepted=False,
             status="rejected_track_quality",
@@ -481,8 +481,66 @@ class TestIWR6843ShotIntegration:
 
         server_module._process_iwr6843_angle(shot)
 
-        assert shot.experimental_club_path_deg is None
-        assert shot.experimental_attack_angle_deg is None
+        assert shot.club_path_deg is None
+        assert shot.club_angle_deg is None
+        assert shot.experimental_club_path_deg == pytest.approx(5.8)
+        assert shot.experimental_club_path_status == "candidate_noisy_fit"
+        assert shot.experimental_attack_angle_deg == pytest.approx(-4.9)
+        assert shot.experimental_attack_angle_status == "candidate_available"
+
+    def test_accepted_iwr_club_path_remains_experimental(self, monkeypatch):
+        measurement = SimpleNamespace(
+            accepted=False,
+            status="rejected_track_quality",
+            to_dict=lambda: {"status": "rejected_track_quality"},
+        )
+        club_path = SimpleNamespace(
+            accepted=True,
+            status="accepted",
+            path_deg=0.0,
+            confidence=0.82,
+            n_frames=5,
+            candidate_path_deg=2.6,
+            candidate_path_status="candidate_available",
+            candidate_attack_angle_deg=-4.1,
+            attack_angle_status="candidate_available",
+            to_dict=lambda: {"status": "accepted", "path_deg": 0.0},
+        )
+        capture = SimpleNamespace(
+            trigger_timestamp=100.01,
+            path=None,
+            raw=b"raw",
+            dump_duration_s=4.5,
+            error=None,
+            valid=True,
+            sequence=1,
+        )
+        runtime = SimpleNamespace(
+            process_shot=lambda **kwargs: SimpleNamespace(
+                capture=capture,
+                measurement=measurement,
+                club_path=club_path,
+            )
+        )
+        monkeypatch.setattr(server_module, "iwr6843_runtime", runtime)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(server_module, "debug_mode", False)
+        shot = Shot(
+            ball_speed_mph=100.0,
+            club_speed_mph=80.0,
+            timestamp=datetime.now(),
+            impact_timestamp=100.0,
+            club=ClubType.IRON_9,
+        )
+
+        server_module._process_iwr6843_angle(shot)
+
+        assert shot.club_path_deg is None
+        assert shot.club_angle_deg is None
+        assert shot.experimental_club_path_deg == pytest.approx(0.0)
+        assert shot.experimental_club_path_status == "accepted"
+        assert shot.experimental_attack_angle_deg == pytest.approx(-4.1)
+        assert shot.experimental_attack_angle_status == "candidate_available"
 
     def test_debug_mode_exposes_club_rejection_without_candidate(self, monkeypatch):
         measurement = SimpleNamespace(
