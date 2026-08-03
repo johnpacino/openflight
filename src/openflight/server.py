@@ -2268,26 +2268,27 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
                 measurement.status,
             )
 
-        # Club path is independent of the ball measurement's acceptance --
-        # it is derived from the club track and OPS club speed, not from
-        # LCMF-v1's vertical angle -- so it is published whenever the
-        # runtime produced one, even if the ball angle above was withheld.
-        if club_path is not None and club_path.accepted:
-            shot.club_path_deg = round(club_path.path_deg, 1)
-            logger.info(
-                "[SERVER] IWR6843 club path: %.2f° (confidence %.2f, %d frames)",
-                club_path.path_deg,
-                club_path.confidence or 0.0,
-                club_path.n_frames,
+        # IWR club path/AoA remain experimental even when their internal
+        # quality gates accept them. Publish them through the normal UI path,
+        # but never populate the canonical club fields or silently label them
+        # as production radar measurements.
+        if club_path is not None:
+            accepted_path = club_path.path_deg if club_path.accepted else None
+            candidate_path = (
+                accepted_path
+                if accepted_path is not None
+                else getattr(club_path, "candidate_path_deg", None)
             )
-        if debug_mode and club_path is not None:
-            candidate_path = getattr(club_path, "candidate_path_deg", None)
             candidate_attack = getattr(club_path, "candidate_attack_angle_deg", None)
             candidate_path_status = getattr(club_path, "candidate_path_status", None)
             shot.experimental_club_path_status = (
-                candidate_path_status
-                if candidate_path_status not in (None, "candidate_available")
-                else club_path.status
+                club_path.status
+                if accepted_path is not None
+                else (
+                    candidate_path_status
+                    if candidate_path_status not in (None, "candidate_available")
+                    else club_path.status
+                )
             )
             shot.experimental_attack_angle_status = (
                 getattr(club_path, "attack_angle_status", None) or club_path.status
@@ -2296,6 +2297,13 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
                 shot.experimental_club_path_deg = round(candidate_path, 1)
             if candidate_attack is not None:
                 shot.experimental_attack_angle_deg = round(candidate_attack, 1)
+            if accepted_path is not None:
+                logger.info(
+                    "[SERVER] Experimental IWR6843 club path: %.2f° (confidence %.2f, %d frames)",
+                    accepted_path,
+                    club_path.confidence or 0.0,
+                    club_path.n_frames,
+                )
     except Exception as error:  # pylint: disable=broad-exception-caught
         logger.warning("[SERVER] IWR6843 processing error: %s", error, exc_info=True)
         log_session_error(
