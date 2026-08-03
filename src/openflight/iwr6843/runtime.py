@@ -96,6 +96,7 @@ class IWR6843Runtime:
                 # nothing to anchor to and club path declines.
                 impact_t_s=getattr(measurement, "impact_t_s", None),
                 aim_offset_deg=self.azimuth_offset_deg,
+                phase_reference_rad=self.horizontal_phase_reference_rad,
                 tdm_sign=policy_sign if fallback else ball_sign,
             )
             if fallback:

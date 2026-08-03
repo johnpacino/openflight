@@ -28,7 +28,7 @@ def _static_horizontal_dump(angle_deg: float) -> bytes:
     n_rx = 4
     n_bins = 128
     cube = np.ones((frames, loops * n_tx, n_rx, n_bins), dtype=complex)
-    phase = -2.0 * np.pi * np.sin(np.radians(angle_deg))
+    phase = -np.pi * np.sin(np.radians(angle_deg))
     target_bin = 40
     for frame in range(frames):
         for loop in range(loops):
@@ -117,7 +117,7 @@ def _static_scene_dump(
 
     if holder:
         holder_bin = 41
-        holder_phase = -2.0 * np.pi * np.sin(np.radians(-4.0))
+        holder_phase = -np.pi * np.sin(np.radians(-4.0))
         for frame in range(frames):
             for loop in range(loops):
                 cube[frame, loop * n_tx + 0, :, holder_bin] += 1200.0
@@ -126,7 +126,7 @@ def _static_scene_dump(
 
     if sphere_angle_deg is not None:
         sphere_bin = 40
-        sphere_phase = -2.0 * np.pi * np.sin(np.radians(sphere_angle_deg))
+        sphere_phase = -np.pi * np.sin(np.radians(sphere_angle_deg))
         for frame in range(frames):
             for loop in range(loops):
                 cube[frame, loop * n_tx + 0, :, sphere_bin] += 700.0
@@ -374,7 +374,7 @@ def test_live_alignment_applies_known_azimuth_offset():
 def _aim_estimate(range_m: float, raw_bearing_deg: float) -> AimEstimate:
     return AimEstimate(
         range_m=range_m,
-        phase_rad=-2.0 * math.pi * math.sin(math.radians(raw_bearing_deg)),
+        phase_rad=-math.pi * math.sin(math.radians(raw_bearing_deg)),
         raw_bearing_deg=raw_bearing_deg,
         bearing_stability_deg=0.1,
         coherence=0.95,

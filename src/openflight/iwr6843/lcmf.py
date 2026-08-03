@@ -580,10 +580,9 @@ def _fast_estimates(
     return estimates
 
 
-def _phase_to_angle_deg(phase_rad: float, *, baseline_lambda: float = 1.0) -> float:
-    """Convert an uncalibrated baseline phase into a signed proxy angle."""
-    sin_angle = phase_rad / (2.0 * np.pi * baseline_lambda)
-    return float(np.degrees(np.arcsin(np.clip(sin_angle, -1.0, 1.0))))
+def _phase_to_angle_deg(phase_rad: float) -> float:
+    """Convert LEVM TX2 residual phase into a signed one-axis proxy angle."""
+    return float(np.degrees(doa.tx2_phase_to_axis_angle_rad(phase_rad)))
 
 
 def _weighted_circular_mean(phases: list[float], weights: list[float]) -> tuple[float, float]:

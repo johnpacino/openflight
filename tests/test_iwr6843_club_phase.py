@@ -14,7 +14,7 @@ unambiguous phase range is exactly +/-pi, so:
 
 So the production estimator keeps the wrapped phase and rejects outliers
 against each frame's own circular median instead. The debug-only continuity
-candidate is different: it retains TX2-to-TX1 and TX2-to-TX3 one-wavelength
+candidate is different: it retains the two TX2-to-outer-TX phase references
 references separately and unwraps each through time before combining them.
 """
 

@@ -20,12 +20,11 @@ the problem rather than correcting for it: path_deg = atan2(v_y, v_x) is
 then exact for straight-line motion, independent of where in the window the
 samples happen to sit.
 
-Absolute azimuth enters additively via ``aim_offset_deg``, not as an
-estimator input: v_x and v_y come from per-sample DIFFERENCES against the
-same track's range, so a constant per-element phase error from the shipped
-array calibration (measured on a different board) cancels out of the path
-itself and only shifts azimuth's absolute origin -- which is exactly what
-``--iwr6843-azimuth-offset-deg`` (a later task) calibrates out.
+The LEVM's board-specific electrical phase zero is removed first via
+``phase_reference_rad``. Installation yaw remains a separate additive
+``aim_offset_deg``. Keeping those corrections separate is important: a
+constant phase bias rotates every recovered Cartesian position, so it also
+rotates the fitted velocity direction and does not cancel out of club path.
 """
 
 from __future__ import annotations
@@ -402,10 +401,11 @@ def experimental_path_candidate(
     frames: np.ndarray,
     *,
     aim_offset_deg: float = 0.0,
+    phase_reference_rad: float | None = None,
 ) -> tuple[float | None, str, float | None]:
     """Fuse TX2 horizontal motion through time without midpoint branch flips.
 
-    TX2 is one wavelength from the TX1/TX3 vertical midpoint. Each reference
+    TX2 is half a wavelength from the TX1/TX3 vertical midpoint. Each reference
     phase is unwrapped independently in chronological frame order, then their
     midpoint is formed. A robust pairwise-slope Cartesian fit limits the
     damage from one noisy frame in the impact-centered measurement window.
@@ -432,9 +432,14 @@ def experimental_path_candidate(
     midpoint = 0.5 * (unwrapped_tx1 + unwrapped_tx3)
     midpoint -= round(float(midpoint[0]) / math.pi) * math.pi
 
+    if phase_reference_rad is not None:
+        if not math.isfinite(phase_reference_rad):
+            raise ValueError("horizontal phase reference must be finite")
+        midpoint -= phase_reference_rad
+
     # Board convention: positive TrackMan path is the negative TX2 phase
-    # direction. The one-wavelength baseline gives phase=2*pi*sin(azimuth).
-    azimuth = -np.arcsin(np.clip(midpoint / math.tau, -1.0, 1.0))
+    # direction. LEVM TX2 is displaced lambda/2 from the TX1/TX3 phase center.
+    azimuth = -doa.tx2_phase_to_axis_angle_rad(midpoint)
     x_m = r_array * np.cos(azimuth)
     y_m = r_array * np.sin(azimuth)
 
@@ -472,6 +477,7 @@ def estimate_club_path(
     ops_club_speed_mph: float,
     impact_t_s: float | None,
     aim_offset_deg: float = 0.0,
+    phase_reference_rad: float | None = None,
     tdm_sign: int = 1,
 ) -> ClubPathResult:
     """Estimate club path from four approach frames and the impact frame.
@@ -483,6 +489,8 @@ def estimate_club_path(
     pre-impact; only the already-identified track is extrapolated through the
     complete frame containing impact for phase measurement.
     """
+    if phase_reference_rad is not None and not math.isfinite(phase_reference_rad):
+        raise ValueError("horizontal phase reference must be finite")
     meta0, _ = parse_dump(raw)
     if meta0.get("n_tx") != 3:
         return ClubPathResult(status="rejected_requires_three_tx")
@@ -645,12 +653,18 @@ def estimate_club_path(
         np.asarray(candidate_phase_tx3),
         np.asarray(candidate_frames),
         aim_offset_deg=aim_offset_deg,
+        phase_reference_rad=phase_reference_rad,
     )
 
     # Discard snapshots that disagree with their own frame before counting, so
     # the reported counts are the evidence the fit actually used.
     phase_array = np.asarray(phases)
     frame_array = np.asarray(frame_ids)
+    # Remove the static LEVM electrical phase zero before spatial conversion.
+    # Circular wrapping preserves the lambda/2 baseline's physical +/-pi
+    # field of view.
+    if phase_reference_rad is not None:
+        phase_array = np.angle(np.exp(1j * (phase_array - phase_reference_rad)))
     if phase_array.size:
         keep = phase_outlier_mask(phase_array, frame_array)
         result.n_rejected_snapshots = int((~keep).sum())
@@ -672,7 +686,7 @@ def estimate_club_path(
     # Phase -> azimuth. The wrapped phase is used as-is: a lambda/2 baseline is
     # unambiguous over exactly +/-pi, which arcsin maps onto the full +/-90
     # degree field of view. Unwrapping would invent angles beyond it.
-    azimuth_rad = np.arcsin(np.clip(phase_array / math.pi, -1.0, 1.0))
+    azimuth_rad = doa.tx2_phase_to_axis_angle_rad(phase_array)
     t_array = np.asarray(times)
     weight_array = np.asarray(weights)
 

@@ -134,6 +134,31 @@ def test_lcmf_receives_the_configured_horizontal_phase_reference():
     assert seen["horizontal_phase_reference_rad"] == pytest.approx(-0.493587)
 
 
+def test_club_path_receives_the_configured_horizontal_phase_reference():
+    seen = {}
+
+    def fake_club(raw, cal, **kwargs):
+        seen.update(kwargs)
+        return ClubPathResult(status="accepted", path_deg=2.0, confidence=0.8)
+
+    class Measurement:
+        tdm_sign_used = 1
+        impact_t_s = 0.04
+
+    with (
+        patch("openflight.iwr6843.runtime.estimate_lcmf_v1", return_value=Measurement()),
+        patch("openflight.iwr6843.runtime.estimate_club_path", side_effect=fake_club),
+    ):
+        _runtime(horizontal_phase_reference_rad=-0.493587).process_shot(
+            impact_timestamp=1.0,
+            ball_speed_mph=100.0,
+            club="7i",
+            club_speed_mph=74.0,
+        )
+
+    assert seen["phase_reference_rad"] == pytest.approx(-0.493587)
+
+
 def test_falls_back_to_policy_sign_when_ball_has_none():
     seen = {}
 
