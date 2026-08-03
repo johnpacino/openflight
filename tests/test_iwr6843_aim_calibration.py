@@ -245,14 +245,35 @@ def test_differential_reflector_rejects_changed_background():
         )
 
 
-def test_three_stage_cli_saves_isolated_sphere_reference(monkeypatch, tmp_path):
-    captures = iter(
-        [
-            _static_scene_dump(holder=False, sphere_angle_deg=None),
-            _static_scene_dump(holder=True, sphere_angle_deg=None),
-            _static_scene_dump(holder=True, sphere_angle_deg=6.0),
-        ]
-    )
+@pytest.mark.parametrize(
+    ("sphere_flag", "expected_method", "expected_capture_count"),
+    [
+        (
+            "--sphere-three-stage",
+            "three_stage_complex_background_subtraction",
+            3,
+        ),
+        (
+            "--sphere-two-stage",
+            "two_stage_complex_holder_subtraction",
+            2,
+        ),
+    ],
+)
+def test_sphere_cli_saves_isolated_sphere_reference(
+    monkeypatch,
+    tmp_path,
+    sphere_flag,
+    expected_method,
+    expected_capture_count,
+):
+    captures_list = [
+        _static_scene_dump(holder=True, sphere_angle_deg=None),
+        _static_scene_dump(holder=True, sphere_angle_deg=6.0),
+    ]
+    if sphere_flag == "--sphere-three-stage":
+        captures_list.insert(0, _static_scene_dump(holder=False, sphere_angle_deg=None))
+    captures = iter(captures_list)
 
     class FakeRadar:
         port = "/dev/fake"
@@ -304,7 +325,7 @@ def test_three_stage_cli_saves_isolated_sphere_reference(monkeypatch, tmp_path):
             "1",
             "--interval-s",
             "0",
-            "--sphere-three-stage",
+            sphere_flag,
             "--no-prompt",
             "--outdir",
             str(outdir),
@@ -316,9 +337,11 @@ def test_three_stage_cli_saves_isolated_sphere_reference(monkeypatch, tmp_path):
     assert aim_script.main() == 0
 
     saved = json.loads(reference_path.read_text(encoding="utf-8"))
-    assert saved["method"] == "three_stage_complex_background_subtraction"
+    assert saved["method"] == expected_method
     assert saved["raw_bearing_deg"] == pytest.approx(6.0, abs=0.05)
-    assert len(list(outdir.glob("*.l3dump"))) == 3
+    assert len(list(outdir.glob("*.l3dump"))) == expected_capture_count
+    if sphere_flag == "--sphere-two-stage":
+        assert not list(outdir.glob("*empty_scene*.l3dump"))
 
 
 def test_saved_target_phase_removes_electrical_offset():
