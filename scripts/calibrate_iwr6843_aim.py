@@ -5,9 +5,10 @@ Run this with OpenFlight stopped. The script configures the custom L3 firmware,
 captures repeated ring dumps, and reads the stationary reflector directly from
 the range snapshots without MTI. With two reflector positions, their measured
 vector defines the TrackMan target line and diagnoses lateral radar placement.
-For a sphere on a reflective holder, the three-stage mode captures the empty
-scene, holder, and sphere so the holder can be coherently subtracted. A saved
-result is not an RF factory boresight calibration.
+For a sphere on a reflective holder, subtraction modes capture the holder and
+sphere so the holder can be coherently removed. The optional three-stage mode
+also captures an empty-scene holder diagnostic. A saved result is not an RF
+factory boresight calibration.
 """
 
 from __future__ import annotations
@@ -757,12 +758,21 @@ def main() -> int:
         action="store_true",
         help="Continuously report target bearing and left/right miss until Ctrl-C",
     )
-    parser.add_argument(
+    sphere_mode = parser.add_mutually_exclusive_group()
+    sphere_mode.add_argument(
         "--sphere-three-stage",
         action="store_true",
         help=(
             "Capture empty scene, holder only, then sphere on the unchanged holder; "
             "subtract the holder to isolate the sphere"
+        ),
+    )
+    sphere_mode.add_argument(
+        "--sphere-two-stage",
+        action="store_true",
+        help=(
+            "Capture holder only, then sphere on the unchanged holder; skip the "
+            "empty-scene holder diagnostic"
         ),
     )
     parser.add_argument(
@@ -795,10 +805,11 @@ def main() -> int:
         parser.error("use either --reference or --azimuth-offset-deg, not both")
     if args.live_align and args.second_reflector_range_m is not None:
         parser.error("--live-align supports one reflector range")
-    if args.sphere_three_stage and args.live_align:
-        parser.error("--sphere-three-stage cannot be combined with --live-align")
-    if args.sphere_three_stage and args.second_reflector_range_m is not None:
-        parser.error("--sphere-three-stage supports one sphere position")
+    sphere_subtraction = args.sphere_three_stage or args.sphere_two_stage
+    if sphere_subtraction and args.live_align:
+        parser.error("sphere subtraction cannot be combined with --live-align")
+    if sphere_subtraction and args.second_reflector_range_m is not None:
+        parser.error("sphere subtraction supports one sphere position")
     if args.live_align and args.save_reference:
         parser.error("--live-align cannot save a calibration reference")
     if args.live_align and args.outdir:
@@ -821,26 +832,40 @@ def main() -> int:
     with IWR6843Radar(port=args.port) as radar:
         radar.send_config(args.cfg)
         print(f"Radar running on {radar.port}.")
-        if args.sphere_three_stage:
-            prompts = (
-                (
-                    "empty_scene",
-                    "\nStage 1/3 — EMPTY SCENE: Remove the box, cup, sphere, and any "
-                    "other objects from the target area. Do not move the radar. Step "
-                    "away, then press Enter.",
-                ),
-                (
-                    "holder_only",
-                    "\nStage 2/3 — HOLDER ONLY: Place the box corner-facing and cup in "
-                    "their final marked positions. Leave the sphere off. Step away, "
-                    "then press Enter.",
-                ),
-                (
-                    "sphere_present",
-                    "\nStage 3/3 — SPHERE: Add only the sphere to the unchanged holder, "
-                    f"centered on the target line near {args.reflector_range_m:.2f} m. "
-                    "Step away, then press Enter.",
-                ),
+        if sphere_subtraction:
+            prompts = []
+            if args.sphere_three_stage:
+                prompts.append(
+                    (
+                        "empty_scene",
+                        "\nStage 1/3 — EMPTY SCENE: Remove the box, cup, sphere, and any "
+                        "other objects from the target area. Do not move the radar. "
+                        "Step away, then press Enter.",
+                    )
+                )
+                holder_stage = 2
+                sphere_stage = 3
+                stage_count = 3
+            else:
+                holder_stage = 1
+                sphere_stage = 2
+                stage_count = 2
+            prompts.extend(
+                [
+                    (
+                        "holder_only",
+                        f"\nStage {holder_stage}/{stage_count} — HOLDER ONLY: Leave the "
+                        "holder in its final marked position with the sphere off. Step "
+                        "away, then press Enter.",
+                    ),
+                    (
+                        "sphere_present",
+                        f"\nStage {sphere_stage}/{stage_count} — SPHERE: Add only the "
+                        "sphere to the unchanged holder, centered on the target line "
+                        f"near {args.reflector_range_m:.2f} m. Step away, then press "
+                        "Enter.",
+                    ),
+                ]
             )
             stage_captures: dict[str, list[bytes]] = {}
             try:
@@ -859,22 +884,27 @@ def main() -> int:
             except UnsafeCalibrationError as error:
                 raise SystemExit(str(error)) from error
 
-            print("\nThree-stage subtraction")
-            try:
-                holder_readings = differential_reflector_readings(
-                    stage_captures["empty_scene"],
-                    stage_captures["holder_only"],
-                    cal,
-                    expected_range_m=args.reflector_range_m,
-                    gate_half_m=args.gate_half_m,
-                )
-                _print_estimate(
-                    "Holder contribution",
-                    fuse_readings(holder_readings),
-                    None,
-                )
-            except ValueError as error:
-                print(f"Holder diagnostic unavailable: {error}")
+            print(
+                "\nThree-stage subtraction"
+                if args.sphere_three_stage
+                else "\nTwo-stage holder subtraction"
+            )
+            if args.sphere_three_stage:
+                try:
+                    holder_readings = differential_reflector_readings(
+                        stage_captures["empty_scene"],
+                        stage_captures["holder_only"],
+                        cal,
+                        expected_range_m=args.reflector_range_m,
+                        gate_half_m=args.gate_half_m,
+                    )
+                    _print_estimate(
+                        "Holder contribution",
+                        fuse_readings(holder_readings),
+                        None,
+                    )
+                except ValueError as error:
+                    print(f"Holder diagnostic unavailable: {error}")
             try:
                 sphere_readings = differential_reflector_readings(
                     stage_captures["holder_only"],
@@ -913,7 +943,7 @@ def main() -> int:
                 print("\nLive alignment stopped.")
             return 0
         for index, expected_range_m in enumerate(ranges, start=1):
-            if args.sphere_three_stage:
+            if sphere_subtraction:
                 break
             label = f"position_{index}"
             if not args.no_prompt:
@@ -947,7 +977,7 @@ def main() -> int:
 
     print("\nCombined")
     for index, estimate in enumerate(estimates, start=1):
-        label = "Isolated sphere" if args.sphere_three_stage else f"Position {index}"
+        label = "Isolated sphere" if sphere_subtraction else f"Position {index}"
         _print_estimate(label, estimate, reference)
 
     if len(estimates) == 2:
@@ -994,7 +1024,11 @@ def main() -> int:
             "method": (
                 "three_stage_complex_background_subtraction"
                 if args.sphere_three_stage
-                else "static_single_position"
+                else (
+                    "two_stage_complex_holder_subtraction"
+                    if args.sphere_two_stage
+                    else "static_single_position"
+                )
             ),
             "created_unix": time.time(),
             "target_line_phase_rad": estimate.phase_rad,
