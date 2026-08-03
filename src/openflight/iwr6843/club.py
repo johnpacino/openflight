@@ -686,7 +686,11 @@ def estimate_club_path(
     # Phase -> azimuth. The wrapped phase is used as-is: a lambda/2 baseline is
     # unambiguous over exactly +/-pi, which arcsin maps onto the full +/-90
     # degree field of view. Unwrapping would invent angles beyond it.
-    azimuth_rad = doa.tx2_phase_to_axis_angle_rad(phase_array)
+    # With the validated TX-above-RX board rotation, TX2 is physically left
+    # of the TX1/TX3 phase center. A target to the right therefore produces a
+    # negative residual phase; negate it so positive cross-range and positive
+    # club path follow TrackMan's in-to-out convention.
+    azimuth_rad = -doa.tx2_phase_to_axis_angle_rad(phase_array)
     t_array = np.asarray(times)
     weight_array = np.asarray(weights)
 
