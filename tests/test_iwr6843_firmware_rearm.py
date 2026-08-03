@@ -12,6 +12,9 @@ CONFIGURABLE_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX
 HYBRID_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_hybrid.cfg"
 CLUB16_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club16.cfg"
 CLUB14_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club14.cfg"
+CLUB14_PRE17_CONFIG = (
+    Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club14_pre17.cfg"
+)
 
 
 def _function_source(source: str, name: str, next_name: str) -> str:
@@ -262,6 +265,34 @@ def test_club14_config_uses_validated_2_25ms_cadence_with_l3_headroom():
     used = (8 * 18 + 6 * 18 + 14 * 53) * bytes_per_bin
     assert used == 667_968
     assert used <= 768 * 1024
+
+
+def test_club14_pre17_config_spends_headroom_on_trigger_history():
+    commands = {
+        line.split()[0]: line.split()
+        for line in CLUB14_PRE17_CONFIG.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("%")
+    }
+
+    frame = commands["frameCfg"]
+    phased = commands["phaseCaptureCfg"]
+    loops = int(frame[3])
+    frame_period_us = round(float(frame[5]) * 1000)
+
+    assert loops == 14
+    assert frame_period_us == 2_250
+    assert phased == [
+        "phaseCaptureCfg",
+        "23", "18", "17",      # 38.25 ms circular pre-trigger history
+        "23", "18", "6",       # near-range frames after the freeze request
+        "32", "53", "47",      # middle/late ball windows
+        "14", "2",              # 14 retained ball frames at 4.5 ms
+    ]
+
+    bytes_per_bin = 3 * loops * 4 * 4
+    used = (17 * 18 + 6 * 18 + 14 * 53) * bytes_per_bin
+    assert used == 776_832
+    assert 768 * 1024 - used == 9_600
 
 
 def test_phased_capture_keeps_dense_impact_before_decimating_ball_frames():
