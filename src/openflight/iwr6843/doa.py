@@ -30,8 +30,10 @@ from openflight.iwr6843.tracking import BallTrack, Geometry
 
 TDM_TAU_S = 45e-6  # first -> second chirp offset inside one loop
 TX2_VERTICAL_TDM_TAU_S = 2 * TDM_TAU_S  # TX1 -> TX3 offset in the 3-TX loop
-# IWR6843LEVM TX2 is displaced lambda/2 from the TX1/TX3 phase center on
-# the orthogonal axis (SWRU585). The enclosure rotates that axis horizontal.
+# IWR6843LEVM antenna geometry (SWRU585): TX2 is displaced D=lambda/2
+# from the TX1/TX3 phase center on the board's orthogonal axis. The OpenFlight
+# enclosure rotates that axis into horizontal, but rotation does not change
+# the electrical baseline length.
 LEVM_TX2_AXIS_BASELINE_LAMBDA = 0.5
 TX_ORDERS = frozenset({"normal", "reversed"})
 TDM_SIGN_POLICIES = frozenset({"auto", "negative", "positive"})
@@ -42,15 +44,41 @@ def tx2_phase_to_axis_angle_rad(
     *,
     orthogonal_angle_rad: float | np.ndarray = 0.0,
 ) -> float | np.ndarray:
-    """Convert LEVM TX2 residual phase to its displaced-axis angle."""
+    """Convert LEVM TX2 residual phase to its displaced-axis angle.
+
+    The measured phase is ``2*pi*(D/lambda)*direction_cosine``. For the
+    LEVM's ``D=lambda/2`` TX2 baseline this becomes ``pi*direction_cosine``.
+    ``orthogonal_angle_rad`` optionally removes the other axis' projection;
+    leaving it at zero returns the usual one-axis direction-cosine proxy.
+    """
     phase = np.asarray(phase_rad, dtype=float)
     orthogonal = np.asarray(orthogonal_angle_rad, dtype=float)
     projection = np.cos(orthogonal)
     if np.any(np.abs(projection) < 1e-6):
         raise ValueError("orthogonal angle is too close to 90 degrees")
-    axis_sine = phase / (2.0 * np.pi * LEVM_TX2_AXIS_BASELINE_LAMBDA * projection)
+    axis_sine = phase / (
+        2.0 * np.pi * LEVM_TX2_AXIS_BASELINE_LAMBDA * projection
+    )
     angle = np.arcsin(np.clip(axis_sine, -1.0, 1.0))
     return float(angle) if angle.ndim == 0 else angle
+
+
+def tx2_axis_angle_to_phase_rad(
+    angle_rad: float | np.ndarray,
+    *,
+    orthogonal_angle_rad: float | np.ndarray = 0.0,
+) -> float | np.ndarray:
+    """Inverse of :func:`tx2_phase_to_axis_angle_rad` for LEVM geometry."""
+    angle = np.asarray(angle_rad, dtype=float)
+    orthogonal = np.asarray(orthogonal_angle_rad, dtype=float)
+    phase = (
+        2.0
+        * np.pi
+        * LEVM_TX2_AXIS_BASELINE_LAMBDA
+        * np.sin(angle)
+        * np.cos(orthogonal)
+    )
+    return float(phase) if phase.ndim == 0 else phase
 
 
 def validate_tx_order(tx_order: str) -> str:

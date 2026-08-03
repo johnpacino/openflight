@@ -615,26 +615,38 @@ operator trusting ±0.3° there would be relying on a number nobody measured.
 
 ### Set the target-line reference
 
-Club path is relative to the target line, and the array calibration cannot
-supply where the radar's boresight points. Measure the angle between boresight
-and your target line, then pass it:
+The LEVM TX2 channel has a board-specific electrical phase zero that the
+vertical-array calibration does not remove. A static horizontal calibration
+stores that zero as `target_line_phase_rad`. Pass the saved value to both the
+horizontal-launch and club-path estimators:
+
+```bash
+REF_RAD=$(jq -r .target_line_phase_rad /path/to/reference.json)
+scripts/start-kiosk.sh --iwr6843 \
+  --iwr6843-horizontal-phase-reference-rad "$REF_RAD"
+```
+
+This is an experimental per-installation reference, not a universal LEVM
+default. Re-measure it after the board, enclosure, mount tilt, or target-line
+alignment changes. A stable radian reference is still required even when the
+calibration tool prints a convenient angle in degrees.
+
+Mechanical enclosure yaw is a separate correction. If the calibrated radar
+axis is known to point away from the target line, pass that measured angle as
+well:
 
 ```bash
 scripts/start-kiosk.sh --iwr6843 --iwr6843-azimuth-offset-deg 1.5
 ```
 
 Positive means boresight points right of the target line. The value is added
-to the measured path. Left at 0, club path is reported relative to boresight
-rather than the target line, which is fine for separation testing but not for
-absolute numbers.
+after phase-to-angle conversion. Leave it at 0 when the static reference was
+captured on the actual target line and no independent yaw correction is known.
 
-This flag is not optional trim. The estimator fits `x(t)` and `y(t)` in
-Cartesian coordinates and reports `path = atan2(v_y, v_x)`, so absolute
-azimuth enters *additively* rather than cancelling out: a constant
-per-element phase error from the shipped array calibration (measured on a
-different board than the one it ships on) shifts the reported path by a
-constant. `--iwr6843-azimuth-offset-deg` is what absorbs that shift, not a
-convenience for aiming.
+Do not use the degree offset to absorb the LEVM electrical phase. Phase is
+nonlinear under `asin`, so subtracting a degree constant is only a local
+approximation. The phase reference must be removed before angle conversion;
+the degree offset is reserved for physical enclosure yaw.
 
 ### Why this can't be the ball
 

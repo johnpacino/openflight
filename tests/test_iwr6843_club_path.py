@@ -38,7 +38,13 @@ OPS_CLUB_MPH = CLUB_SPEED_MS * 2.23694
 
 
 def _synth_club(
-    path_deg, *, club_speed_ms=CLUB_SPEED_MS, tee_range_m=1.372, n_samples=128, t_impact_s=None
+    path_deg,
+    *,
+    club_speed_ms=CLUB_SPEED_MS,
+    tee_range_m=1.372,
+    n_samples=128,
+    t_impact_s=None,
+    phase_bias_rad=0.0,
 ):
     """A club head on a straight line through the tee at the moment of impact.
 
@@ -103,7 +109,7 @@ def _synth_club(
             if not 0 <= bin_at < n_samples:
                 continue
             az_rad = math.atan2(y, x)
-            phase_az = math.pi * math.sin(az_rad)
+            phase_az = math.pi * math.sin(az_rad) + phase_bias_rad
             v_r = (x * v_x + y * v_y) / range_m  # true local radial speed
             doppler_phase = 4.0 * math.pi * range_m / doa.LAM
             for tx in range(n_tx):
@@ -170,7 +176,7 @@ def test_experimental_path_candidate_unwraps_vertical_references_through_time():
     ranges = 1.0 + 25.0 * times
     y = np.tan(np.radians(path_deg)) * (ranges - 1.0)
     azimuth = np.arctan2(y, ranges)
-    horizontal_phase = -math.tau * np.sin(azimuth)
+    horizontal_phase = -math.pi * np.sin(azimuth)
     vertical_phase = np.linspace(2.6, 3.8, times.size)
     phase_tx1 = np.angle(np.exp(1j * (horizontal_phase + vertical_phase / 2.0)))
     phase_tx3 = np.angle(np.exp(1j * (horizontal_phase - vertical_phase / 2.0)))
@@ -201,6 +207,21 @@ def test_aim_offset_is_added():
         aim_offset_deg=2.0,
     )
     assert with_offset.path_deg == pytest.approx(without.path_deg + 2.0, abs=0.01)
+
+
+def test_phase_reference_removes_board_electrical_phase_bias():
+    phase_bias_rad = -0.621138
+    result = club.estimate_club_path(
+        _synth_club(4.0, phase_bias_rad=phase_bias_rad),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=IMPACT_S,
+        phase_reference_rad=phase_bias_rad,
+        tdm_sign=1,
+    )
+
+    assert result.status == "accepted"
+    assert result.path_deg == pytest.approx(4.0, abs=0.35)
 
 
 def test_result_serialises():

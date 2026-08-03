@@ -12,8 +12,10 @@ unambiguous phase range is exactly +/-pi, so:
   20-144 degrees of azimuth travel in 9-16 ms -- impossible for a clubhead
   whose motion is 85-90% radial.
 
-So the estimator keeps the wrapped phase and rejects outliers against each
-frame's own circular median instead.
+So the production estimator keeps the wrapped phase and rejects outliers
+against each frame's own circular median instead. The debug-only continuity
+candidate is different: it retains the two TX2-to-outer-TX phase references
+references separately and unwraps each through time before combining them.
 """
 
 import math
