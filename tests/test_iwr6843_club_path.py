@@ -53,7 +53,7 @@ def _synth_club(
     has magnitude club_speed_ms and direction path_deg off the target line
     (the boresight / x-axis). Range and azimuth at each (frame, loop) are the
     exact polar coordinates of that position — range becomes the bin index,
-    azimuth becomes the TX2-vs-(TX1,TX3) phase (phase = pi*sin(az)), which
+    azimuth becomes the TX2-vs-(TX1,TX3) phase (phase = -pi*sin(az)), which
     estimate_club_path inverts exactly with arcsin. The raw TX2/TX3 values
     also carry the TDM-Doppler phase that tx2_phase_at's own motion
     correction expects to remove (using this same target's true local radial
@@ -109,7 +109,10 @@ def _synth_club(
             if not 0 <= bin_at < n_samples:
                 continue
             az_rad = math.atan2(y, x)
-            phase_az = math.pi * math.sin(az_rad) + phase_bias_rad
+            # The validated enclosure has TX above RX. After that rotation,
+            # TX2 is physically left of the TX1/TX3 phase center, so a target
+            # to the right produces a negative residual phase.
+            phase_az = -math.pi * math.sin(az_rad) + phase_bias_rad
             v_r = (x * v_x + y * v_y) / range_m  # true local radial speed
             doppler_phase = 4.0 * math.pi * range_m / doa.LAM
             for tx in range(n_tx):
