@@ -594,11 +594,29 @@ def _weighted_circular_mean(phases: list[float], weights: list[float]) -> tuple[
     return float(np.angle(z)), float(abs(z) / weight_sum)
 
 
+def _referenced_horizontal_mean(
+    phases: list[float],
+    weights: list[float],
+    *,
+    phase_reference_rad: float | None,
+) -> tuple[float, float]:
+    """Apply the calibrated target-line phase before angle conversion."""
+    if phase_reference_rad is not None:
+        if not math.isfinite(phase_reference_rad):
+            raise ValueError("horizontal phase reference must be finite")
+        phases = [
+            float(np.angle(np.exp(1j * (phase - phase_reference_rad)))) for phase in phases
+        ]
+    phase_rad, coherence = _weighted_circular_mean(phases, weights)
+    return -_phase_to_angle_deg(phase_rad), coherence
+
+
 def _tx2_horizontal_proxy(
     raw: bytes,
     shot: ShotMeasurement,
     *,
     tdm_sign: int,
+    phase_reference_rad: float | None = None,
 ) -> tuple[float | None, float | None, str | None]:
     """HLCMF-v0: experimental TX2 horizontal launch proxy.
 
@@ -650,8 +668,11 @@ def _tx2_horizontal_proxy(
         return None, None, "hlcmf_v0_insufficient_tail_snapshots"
     phases = [phase for _frame, phase, _weight in snapshots]
     weights = [weight for _frame, _phase, weight in snapshots]
-    phase_rad, coherence = _weighted_circular_mean(phases, weights)
-    angle_deg = -_phase_to_angle_deg(phase_rad)
+    angle_deg, coherence = _referenced_horizontal_mean(
+        phases,
+        weights,
+        phase_reference_rad=phase_reference_rad,
+    )
     status = "hlcmf_v0_accepted" if coherence >= 0.25 else "hlcmf_v0_low_coherence"
     return angle_deg, coherence, status
 
@@ -666,6 +687,7 @@ def estimate_lcmf_v1(
     tx_order: str = "normal",
     tdm_sign_policy: str = "positive",
     grid_step_deg: float = 0.5,
+    horizontal_phase_reference_rad: float | None = None,
 ) -> LCMFResult:
     """Estimate vertical launch from one TI dump and OPS ball speed."""
     if ball_speed_mph <= 0:
@@ -721,6 +743,7 @@ def estimate_lcmf_v1(
             full_raw,
             shot,
             tdm_sign=shot.tdm_sign_used,
+            phase_reference_rad=horizontal_phase_reference_rad,
         )
         cache, radar_geometry, cube = _snapshot_cache(
             raw,

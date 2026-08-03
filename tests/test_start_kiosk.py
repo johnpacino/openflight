@@ -287,6 +287,21 @@ def test_iwr6843_azimuth_offset_omitted_by_default():
     assert "--iwr6843-azimuth-offset-deg" not in command
 
 
+def test_iwr6843_horizontal_phase_reference_is_forwarded():
+    command = _dry_run(
+        "--iwr6843",
+        "--iwr6843-horizontal-phase-reference-rad",
+        "-0.493587",
+    ).stdout.strip()
+
+    assert "--iwr6843-horizontal-phase-reference-rad -0.493587" in command
+
+
+def test_iwr6843_horizontal_phase_reference_is_omitted_by_default():
+    command = _dry_run("--iwr6843").stdout.strip()
+    assert "--iwr6843-horizontal-phase-reference-rad" not in command
+
+
 def test_inclinometer_flags_are_forwarded():
     command = _dry_run(
         "--iwr6843",
