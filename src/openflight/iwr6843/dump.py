@@ -21,6 +21,10 @@ the header-declared maximum width and leaves the invalid tail as zeros. Earlier
 dump versions remain parseable so recorded sessions can still be replayed.
 Fixed-width version 5 and configurable-capture version 7 append a temperature
 report. The older variable-width v5/v6 formats remain parseable without one.
+Experimental sample_fmt=5 keeps the version 6 timed descriptors but stores each
+frame as int8 I/Q plus a uint16 frame scale.
+Versions 8/9 append one fixed-width on-chip shadow candidate per retained frame;
+version 9 also carries the temperature extension.
 """
 
 from __future__ import annotations
@@ -34,7 +38,8 @@ from openflight.iwr6843.music import est_music_fbss, steer
 MAGIC = b"ILD1"
 HEADER = struct.Struct("<4sHHHBBHBBHH")
 TEMP_REPORT = struct.Struct("<Ihhhhhhhhhh")
-MAX_SUPPORTED_DUMP_VERSION = 7
+SHADOW_CANDIDATE = struct.Struct("<BBBBIhhhhhhhh")
+MAX_SUPPORTED_DUMP_VERSION = 9
 # TI mmWaveLink rlRfTempData_t temperature fields are signed, 1 LSB = 1 deg C.
 TEMP_REPORT_KEYS = (
     "device_time_ms",
@@ -54,17 +59,49 @@ SAMPLE_RANGE_FFT_IQ16 = 1
 SAMPLE_RANGE_FFT_IQ16_WINDOWED = 2
 SAMPLE_RANGE_FFT_IQ16_VARIABLE = 3
 SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED = 4
+SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED = 5
 TIMED_FRAME_DESCRIPTOR = struct.Struct("<BBH")
 
 _VARIABLE_SAMPLE_FORMATS = (
     SAMPLE_RANGE_FFT_IQ16_VARIABLE,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+    SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
+)
+_TIMED_SAMPLE_FORMATS = (
+    SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+    SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
 )
 
 
 def _has_temperature_extension(version: int, sample_fmt: int) -> bool:
     """Identify schemas that append the temperature report after the header."""
-    return version >= 7 or (version == 5 and sample_fmt not in _VARIABLE_SAMPLE_FORMATS)
+    return version in (7, 9) or (version == 5 and sample_fmt not in _VARIABLE_SAMPLE_FORMATS)
+
+
+def _has_shadow_extension(version: int) -> bool:
+    """Versions 8/9 carry one fixed-width candidate for every retained frame."""
+    return version in (8, 9)
+
+
+def _pack_shadow_candidates(candidates, n_frames: int) -> bytes:
+    if candidates is None or len(candidates) != n_frames:
+        raise ValueError("shadow dumps require one candidate per frame")
+    packed = bytearray()
+    for candidate in candidates:
+        rx_iq = tuple(candidate["rx_iq"])
+        if len(rx_iq) != 4 or any(len(pair) != 2 for pair in rx_iq):
+            raise ValueError("shadow candidate rx_iq must contain four (Im, Re) pairs")
+        packed.extend(
+            SHADOW_CANDIDATE.pack(
+                int(bool(candidate["valid"])),
+                int(candidate["range_bin"]),
+                int(candidate["tx_index"]),
+                int(candidate["peak_loop"]),
+                int(candidate["power"]),
+                *(int(value) for pair in rx_iq for value in pair),
+            )
+        )
+    return bytes(packed)
 
 
 def pack_dump(
@@ -80,6 +117,7 @@ def pack_dump(
     range_bin_counts: tuple[int, ...] | list[int] | None = None,
     frame_time_offsets_us: tuple[int, ...] | list[int] | None = None,
     temperature_report: dict[str, int] | None = None,
+    shadow_candidates: tuple[dict, ...] | list[dict] | None = None,
 ) -> bytes:
     """Complex cube [n_frames, chirps_per_frame, n_rx, n_samples] -> dump bytes.
 
@@ -93,6 +131,7 @@ def pack_dump(
         SAMPLE_RANGE_FFT_IQ16_WINDOWED,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
     ):
         raise ValueError(f"unsupported sample_fmt {sample_fmt}")
     temp_prefix = b""
@@ -109,15 +148,25 @@ def pack_dump(
         temp_prefix = TEMP_REPORT.pack(*temp_values)
     elif _has_temperature_extension(version, sample_fmt):
         raise ValueError("dump version 5+ requires a temperature report")
+    if _has_shadow_extension(version) and sample_fmt not in _TIMED_SAMPLE_FORMATS:
+        raise ValueError("shadow candidates require a timed variable-width sample format")
+    if shadow_candidates is not None and not _has_shadow_extension(version):
+        raise ValueError("shadow candidates require dump version 8 or 9")
+    shadow_prefix = (
+        _pack_shadow_candidates(shadow_candidates, n_frames)
+        if _has_shadow_extension(version)
+        else b""
+    )
     frame_prefix = b""
     if sample_fmt in (
         SAMPLE_RANGE_FFT_IQ16_WINDOWED,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
     ):
         minimum_version = (
             6
-            if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED
+            if sample_fmt in _TIMED_SAMPLE_FORMATS
             else 5
             if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE
             else 4
@@ -133,7 +182,7 @@ def pack_dump(
                 raise ValueError("variable range snapshots require one bin count per frame")
             if any(count <= 0 or count > n_samples or count > 255 for count in range_bin_counts):
                 raise ValueError("frame range-bin counts must fit in uint8 and cube width")
-            if sample_fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED:
+            if sample_fmt in _TIMED_SAMPLE_FORMATS:
                 if frame_time_offsets_us is None or len(frame_time_offsets_us) != n_frames:
                     raise ValueError("timed range snapshots require one time offset per frame")
                 if not frame_time_offsets_us or frame_time_offsets_us[0] != 0:
@@ -178,10 +227,28 @@ def pack_dump(
         )
     else:
         flat = cube.reshape(-1)
+    if sample_fmt == SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED:
+        scales: list[int] = []
+        chunks: list[bytes] = []
+        for frame, count in enumerate(range_bin_counts):
+            frame_flat = cube[frame, ..., :count].reshape(-1)
+            max_abs = max(
+                float(np.max(np.abs(frame_flat.real), initial=0.0)),
+                float(np.max(np.abs(frame_flat.imag), initial=0.0)),
+            )
+            scale = max(1, int(np.ceil(max_abs / 127.0)))
+            scales.append(scale)
+            iq8 = np.empty(frame_flat.size * 2, dtype=np.int8)
+            iq8[0::2] = np.clip(np.round(frame_flat.imag / scale), -128, 127).astype(np.int8)
+            iq8[1::2] = np.clip(np.round(frame_flat.real / scale), -128, 127).astype(np.int8)
+            chunks.append(iq8.tobytes())
+        scale_prefix = np.asarray(scales, dtype="<u2").tobytes()
+        return hdr + temp_prefix + frame_prefix + scale_prefix + shadow_prefix + b"".join(chunks)
+
     iq = np.empty(flat.size * 2, dtype="<i2")
     iq[0::2] = np.clip(np.round(flat.imag), -32768, 32767).astype("<i2")  # Im first (TI ImRe)
     iq[1::2] = np.clip(np.round(flat.real), -32768, 32767).astype("<i2")
-    return hdr + temp_prefix + frame_prefix + iq.tobytes()
+    return hdr + temp_prefix + frame_prefix + shadow_prefix + iq.tobytes()
 
 
 def parse_header(raw: bytes) -> dict:
@@ -204,8 +271,11 @@ def parse_header(raw: bytes) -> dict:
         SAMPLE_RANGE_FFT_IQ16_WINDOWED,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
     ):
         raise ValueError(f"unsupported sample_fmt {fmt}")
+    if _has_shadow_extension(ver) and fmt not in _TIMED_SAMPLE_FORMATS:
+        raise ValueError("shadow dump requires a timed variable-width sample format")
     header_nbytes = HEADER.size
     temperature_report = None
     if _has_temperature_extension(ver, fmt):
@@ -214,6 +284,18 @@ def parse_header(raw: bytes) -> dict:
         temp = TEMP_REPORT.unpack_from(raw, HEADER.size)
         temperature_report = dict(zip(TEMP_REPORT_KEYS, temp, strict=True))
         header_nbytes += TEMP_REPORT.size
+    range_metadata_nbytes = (
+        TIMED_FRAME_DESCRIPTOR.size * nf + (2 * nf)
+        if fmt == SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED
+        else TIMED_FRAME_DESCRIPTOR.size * nf
+        if fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED
+        else 2 * nf
+        if fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE
+        else nf
+        if fmt == SAMPLE_RANGE_FFT_IQ16_WINDOWED
+        else 0
+    )
+    shadow_metadata_nbytes = SHADOW_CANDIDATE.size * nf if _has_shadow_extension(ver) else 0
     return dict(
         version=ver,
         n_frames=nf,
@@ -225,15 +307,9 @@ def parse_header(raw: bytes) -> dict:
         frame_period_us=period_us,
         sample_fmt=fmt,
         range_bin_start=_pad if fmt == SAMPLE_RANGE_FFT_IQ16 else 0,
-        frame_metadata_nbytes=(
-            TIMED_FRAME_DESCRIPTOR.size * nf
-            if fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED
-            else 2 * nf
-            if fmt == SAMPLE_RANGE_FFT_IQ16_VARIABLE
-            else nf
-            if fmt == SAMPLE_RANGE_FFT_IQ16_WINDOWED
-            else 0
-        ),
+        range_metadata_nbytes=range_metadata_nbytes,
+        shadow_metadata_nbytes=shadow_metadata_nbytes,
+        frame_metadata_nbytes=range_metadata_nbytes + shadow_metadata_nbytes,
         header_nbytes=header_nbytes,
         temperature_report=temperature_report,
     )
@@ -243,21 +319,25 @@ def _parse_frame_metadata(raw: bytes, meta: dict) -> None:
     """Populate per-frame range-window metadata once its table has arrived."""
     metadata_nbytes = meta.get("frame_metadata_nbytes", 0)
     start = meta.get("header_nbytes", HEADER.size)
+    range_stop = start + meta.get("range_metadata_nbytes", metadata_nbytes)
     stop = start + metadata_nbytes
     if len(raw) < stop:
         if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_WINDOWED:
             raise ValueError("short per-frame range-window table")
         raise ValueError("short per-frame range-window metadata")
     if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_WINDOWED:
-        meta["range_bin_starts"] = tuple(raw[start:stop])
+        meta["range_bin_starts"] = tuple(raw[start:range_stop])
     elif meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_VARIABLE:
-        table = raw[start:stop]
+        table = raw[start:range_stop]
         meta["range_bin_starts"] = tuple(table[0::2])
         meta["range_bin_counts"] = tuple(table[1::2])
         if any(count <= 0 or count > meta["n_samples"] for count in meta["range_bin_counts"]):
             raise ValueError("invalid per-frame range-bin count")
-    elif meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED:
-        descriptors = tuple(TIMED_FRAME_DESCRIPTOR.iter_unpack(raw[start:stop]))
+    elif meta["sample_fmt"] in _TIMED_SAMPLE_FORMATS:
+        descriptor_stop = start + TIMED_FRAME_DESCRIPTOR.size * meta["n_frames"]
+        if len(raw) < descriptor_stop:
+            raise ValueError("short per-frame range-window metadata")
+        descriptors = tuple(TIMED_FRAME_DESCRIPTOR.iter_unpack(raw[start:descriptor_stop]))
         meta["range_bin_starts"] = tuple(item[0] for item in descriptors)
         meta["range_bin_counts"] = tuple(item[1] for item in descriptors)
         deltas_us = tuple(item[2] for item in descriptors)
@@ -271,6 +351,31 @@ def _parse_frame_metadata(raw: bytes, meta: dict) -> None:
             elapsed += delta
             offsets.append(elapsed)
         meta["frame_time_offsets_us"] = tuple(offsets)
+        if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED:
+            scale_start = descriptor_stop
+            scale_stop = range_stop
+            if len(raw) < scale_stop:
+                raise ValueError("short per-frame IQ8 scale metadata")
+            scales = np.frombuffer(raw, dtype="<u2", offset=scale_start, count=meta["n_frames"])
+            if scales.size < meta["n_frames"] or np.any(scales == 0):
+                raise ValueError("invalid per-frame IQ8 scale")
+            meta["iq8_scales"] = tuple(int(scale) for scale in scales)
+    if meta.get("shadow_metadata_nbytes", 0):
+        candidates = []
+        for values in SHADOW_CANDIDATE.iter_unpack(raw[range_stop:stop]):
+            candidates.append(
+                {
+                    "valid": bool(values[0]),
+                    "range_bin": values[1],
+                    "tx_index": values[2],
+                    "peak_loop": values[3],
+                    "power": values[4],
+                    "rx_iq": tuple((values[5 + 2 * rx], values[6 + 2 * rx]) for rx in range(4)),
+                }
+            )
+        if len(candidates) != meta["n_frames"]:
+            raise ValueError("invalid shadow candidate metadata")
+        meta["shadow_candidates"] = tuple(candidates)
 
 
 def payload_nbytes(meta: dict, raw: bytes | None = None) -> int:
@@ -283,7 +388,8 @@ def payload_nbytes(meta: dict, raw: bytes | None = None) -> int:
         sample_count = sum(meta["range_bin_counts"])
     else:
         sample_count = meta["n_frames"] * meta["n_samples"]
-    iq_nbytes = sample_count * meta["chirps_per_frame"] * meta["n_rx"] * 4
+    bytes_per_complex = 2 if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED else 4
+    iq_nbytes = sample_count * meta["chirps_per_frame"] * meta["n_rx"] * bytes_per_complex
     return meta.get("frame_metadata_nbytes", 0) + iq_nbytes
 
 
@@ -296,7 +402,18 @@ def parse_dump(raw: bytes):
     expected_nbytes = meta["header_nbytes"] + payload_nbytes(meta, raw)
     if len(raw) < expected_nbytes:
         raise ValueError(f"short payload: {len(raw)} bytes < {expected_nbytes} needed")
-    if meta["sample_fmt"] in _VARIABLE_SAMPLE_FORMATS:
+    if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED:
+        cube = np.zeros((nf, cpf, nrx, ns), dtype=np.complex128)
+        byte_offset = payload_offset
+        for frame, count in enumerate(meta["range_bin_counts"]):
+            n = cpf * nrx * count
+            body = np.frombuffer(raw, dtype=np.int8, offset=byte_offset, count=2 * n)
+            if body.size < 2 * n:
+                raise ValueError(f"short frame {frame} payload: {body.size} i8 < {2 * n} needed")
+            iq = body.astype(np.float64) * meta["iq8_scales"][frame]
+            cube[frame, ..., :count] = (iq[1::2] + 1j * iq[0::2]).reshape(cpf, nrx, count)
+            byte_offset += 2 * n * np.dtype(np.int8).itemsize
+    elif meta["sample_fmt"] in _VARIABLE_SAMPLE_FORMATS:
         cube = np.zeros((nf, cpf, nrx, ns), dtype=np.complex128)
         word_offset = payload_offset
         for frame, count in enumerate(meta["range_bin_counts"]):
@@ -315,6 +432,73 @@ def parse_dump(raw: bytes):
         iq = body.astype(np.float64)
         cube = (iq[1::2] + 1j * iq[0::2]).reshape(nf, cpf, nrx, ns)  # ImRe: Q,I pairs
     return meta, cube
+
+
+def compute_shadow_candidate(
+    frame: np.ndarray,
+    *,
+    n_tx: int,
+    range_bin_start: int,
+    gate_start: int,
+    gate_count: int,
+    min_power: int = 0,
+) -> dict:
+    """Reference implementation of the firmware's per-frame shadow selector.
+
+    ``frame`` is one decoded ``[chirp, rx, local_bin]`` IQ16 snapshot. The
+    selector integrates shifted IQ power across loops for each TX/bin, then
+    retains the four native Im/Re samples from the strongest loop. This is a
+    parity oracle for static-reflector testing, not the final moving-club model.
+    """
+    if frame.ndim != 3 or frame.shape[1] != 4:
+        raise ValueError("shadow selector requires [chirp, 4 RX, bin] data")
+    if n_tx <= 0 or frame.shape[0] % n_tx:
+        raise ValueError("chirp count must contain complete TDM loops")
+    if gate_count <= 0:
+        raise ValueError("gate_count must be positive")
+
+    n_loops = frame.shape[0] // n_tx
+    n_bins = frame.shape[2]
+    gate_end = gate_start + gate_count
+    scaled_re = np.trunc(frame.real / 16.0).astype(np.int64)
+    scaled_im = np.trunc(frame.imag / 16.0).astype(np.int64)
+    sample_power = scaled_re * scaled_re + scaled_im * scaled_im
+
+    best_power = 0
+    best_tx = 0
+    best_local_bin = 0
+    for tx in range(n_tx):
+        for local_bin in range(n_bins):
+            absolute_bin = range_bin_start + local_bin
+            if absolute_bin < gate_start or absolute_bin >= gate_end:
+                continue
+            chirps = np.arange(tx, frame.shape[0], n_tx)
+            power = int(sample_power[chirps, :, local_bin].sum())
+            if power > best_power:
+                best_power = power
+                best_tx = tx
+                best_local_bin = local_bin
+
+    valid = best_power > 0 and best_power >= min_power
+    peak_loop = 0
+    rx_iq = ((0, 0), (0, 0), (0, 0), (0, 0))
+    if valid:
+        loop_powers = []
+        for loop in range(n_loops):
+            chirp = loop * n_tx + best_tx
+            loop_powers.append(int(sample_power[chirp, :, best_local_bin].sum()))
+        peak_loop = int(np.argmax(loop_powers))
+        peak = frame[peak_loop * n_tx + best_tx, :, best_local_bin]
+        rx_iq = tuple((int(round(value.imag)), int(round(value.real))) for value in peak)
+
+    return {
+        "valid": valid,
+        "range_bin": range_bin_start + best_local_bin,
+        "tx_index": best_tx,
+        "peak_loop": peak_loop,
+        "power": best_power,
+        "rx_iq": rx_iq,
+    }
 
 
 def select_tdm_loops(raw: bytes, *, start: int, count: int) -> bytes:
@@ -369,6 +553,7 @@ def is_range_snapshot(meta: dict) -> bool:
         SAMPLE_RANGE_FFT_IQ16_WINDOWED,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE,
         SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
     )
 
 

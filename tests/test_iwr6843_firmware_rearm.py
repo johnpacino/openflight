@@ -12,9 +12,7 @@ CONFIGURABLE_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX
 HYBRID_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_vTX2_hybrid.cfg"
 CLUB16_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club16.cfg"
 CLUB14_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club14.cfg"
-CLUB14_PRE17_CONFIG = (
-    Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club14_pre17.cfg"
-)
+CLUB14_PRE17_CONFIG = Path(__file__).parents[1] / "config" / "iwr6843_l3dump_club14_pre17.cfg"
 
 
 def _function_source(source: str, name: str, next_name: str) -> str:
@@ -139,6 +137,39 @@ def test_production_build_uses_configurable_capture_and_single_release():
     assert source.count("\nbuild-native:") == 1
 
 
+def test_iq8_build_is_separate_from_production_firmware():
+    source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
+    production_target = _function_source(source, "build-native:", "build-iq8-native:")
+    iq8_target = _function_source(source, "build-iq8-native:", "# --- Containerised build")
+
+    assert "--define=L3_DUMP_IQ8=1" not in production_target
+    assert "--define=L3_DUMP_IQ8=1" in iq8_target
+    assert "IQ8_RELEASE_NAME ?= l3_dump_hybrid_cadence_iq8_20260804.bin" in source
+    assert "docker-build-iq8:" in source
+
+
+def test_l3_resident_iq8_build_uses_scratch_then_packs_the_ring():
+    source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
+    target = _function_source(
+        source,
+        "build-iq8-ring-native:",
+        "build-shadow-native:",
+    )
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+
+    assert "--define=L3_RING_IQ8=1" in target
+    assert "IQ8_RING_RELEASE_NAME ?=" in source
+    assert "docker-build-iq8-ring:" in source
+    assert "g_iq16FrameScratch" in firmware
+    assert "l3_packIq8CompletedFrame" in firmware
+    assert "g_iq16FrameScratch[gIq8ActiveScratch][0]" in firmware
+    assert "gIq8ActiveScratch ^= 1U" in firmware
+    assert "bytesPerComplex = 2U" in firmware
+    assert "gPostCaptureStarted = 1U" in firmware
+    assert "paramCfg.dest.dstScale = 8U" in firmware
+    assert "(samples & 0xFFU) | ((samples >> 8U) & 0xFF00U)" in firmware
+
+
 def test_release_filenames_use_feature_and_build_date_without_version_tokens():
     pattern = re.compile(r"^[a-z0-9_]+_\d{8}\.bin$")
 
@@ -222,10 +253,17 @@ def test_club16_config_uses_dense_impact_and_wide_late_flight_phases():
     assert frame_period_us - rf_occupancy_us == 340
     assert phased == [
         "phaseCaptureCfg",
-        "23", "18", "8",       # pre: 3.4-6.2 ft, 8 frames
-        "23", "18", "6",       # impact: same window, 6 dense frames
-        "32", "53", "47",      # middle/late ball windows
-        "14", "2",              # 14 retained ball frames at 5 ms
+        "23",
+        "18",
+        "8",  # pre: 3.4-6.2 ft, 8 frames
+        "23",
+        "18",
+        "6",  # impact: same window, 6 dense frames
+        "32",
+        "53",
+        "47",  # middle/late ball windows
+        "14",
+        "2",  # 14 retained ball frames at 5 ms
     ]
 
     bytes_per_bin = 3 * loops * 4 * 4
@@ -255,10 +293,17 @@ def test_club14_config_uses_validated_2_25ms_cadence_with_l3_headroom():
     assert frame_period_us - rf_occupancy_us == 360
     assert phased == [
         "phaseCaptureCfg",
-        "23", "18", "8",       # pre: 3.4-6.2 ft, 8 frames
-        "23", "18", "6",       # impact: same window, 6 dense frames
-        "32", "53", "47",      # middle/late ball windows
-        "14", "2",              # 14 retained ball frames at 4.5 ms
+        "23",
+        "18",
+        "8",  # pre: 3.4-6.2 ft, 8 frames
+        "23",
+        "18",
+        "6",  # impact: same window, 6 dense frames
+        "32",
+        "53",
+        "47",  # middle/late ball windows
+        "14",
+        "2",  # 14 retained ball frames at 4.5 ms
     ]
 
     bytes_per_bin = 3 * loops * 4 * 4
@@ -267,7 +312,7 @@ def test_club14_config_uses_validated_2_25ms_cadence_with_l3_headroom():
     assert used <= 768 * 1024
 
 
-def test_club14_pre17_config_spends_headroom_on_trigger_history():
+def test_club14_pre17_config_preserves_trigger_history_and_prioritizes_ball_frames():
     commands = {
         line.split()[0]: line.split()
         for line in CLUB14_PRE17_CONFIG.read_text(encoding="utf-8").splitlines()
@@ -283,16 +328,23 @@ def test_club14_pre17_config_spends_headroom_on_trigger_history():
     assert frame_period_us == 2_250
     assert phased == [
         "phaseCaptureCfg",
-        "23", "18", "17",      # 38.25 ms circular pre-trigger history
-        "23", "18", "6",       # near-range frames after the freeze request
-        "32", "53", "47",      # middle/late ball windows
-        "14", "2",              # 14 retained ball frames at 4.5 ms
+        "23",
+        "18",
+        "17",  # 38.25 ms circular pre-trigger history
+        "23",
+        "18",
+        "1",  # one near-range frame after the freeze request
+        "32",
+        "53",
+        "47",  # middle/late ball windows
+        "15",
+        "2",  # 15 retained ball frames at 4.5 ms
     ]
 
     bytes_per_bin = 3 * loops * 4 * 4
-    used = (17 * 18 + 6 * 18 + 14 * 53) * bytes_per_bin
-    assert used == 776_832
-    assert 768 * 1024 - used == 9_600
+    used = (17 * 18 + 1 * 18 + 15 * 53) * bytes_per_bin
+    assert used == 751_968
+    assert 768 * 1024 - used == 34_464
 
 
 def test_phased_capture_keeps_dense_impact_before_decimating_ball_frames():
@@ -341,6 +393,33 @@ def test_hybrid_firmware_counts_observed_and_retained_post_frames_separately():
     assert "L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED" in source
 
 
+def test_iq8_dump_format_emits_frame_scales_before_compressed_payload():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
+
+    assert "L3_SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED" in source
+    assert "gFrameIq8Scale[outputIndex] = l3_iq8FrameScale(slot)" in dump
+    assert "l3_writeU16Le(gFrameIq8Scale[outputIndex])" in dump
+    assert "l3_writeCompressedIq8Frame(slot, gFrameIq8Scale[i])" in dump
+    assert "l3_writeCompressedIq8Frame(slot, gFrameIq8Scale[actualPre + i])" in dump
+
+
+def test_shadow_tracker_reuses_completed_frame_and_keeps_frame_payload_path():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
+    rearm = _function_source(
+        source,
+        "static void l3_hwaRearmTask",
+        "/* Fill the 20-byte fixed dump header",
+    )
+
+    assert "l3_shadowExtractPendingFrame()" in rearm
+    assert "l3_writeShadowCandidate(slot)" in dump
+    assert "UART_writePolling(gDataUart, &g_ring[gFrameOffset[slot]]," in dump
+    assert "L3_DUMP_VERSION_SHADOW" in source
+    assert "SHADOW_TRACKER" in source
+
+
 def test_variable_window_start_and_count_are_recorded_per_frame():
     source = FIRMWARE.read_text(encoding="utf-8")
     output = _function_source(
@@ -374,7 +453,8 @@ def test_configurable_ring_uses_exact_l3_arena_and_plan_fits():
     """
     firmware = FIRMWARE.read_text(encoding="utf-8")
     l3_ram_bytes = 768 * 1024
-    assert "#define L3_CAPTURE_BYTES       (6U * 128U * 1024U)" in firmware
+    assert "#define L3_TOTAL_BYTES         (6U * 128U * 1024U)" in firmware
+    assert "#define L3_CAPTURE_BYTES       L3_TOTAL_BYTES" in firmware
     assert "static uint8_t g_ring[L3_CAPTURE_BYTES]" in firmware
 
     pre_frame_bytes = 3 * 12 * 4 * 32 * 4
@@ -399,6 +479,18 @@ def test_same_capture_config_safely_replans_for_16_loops():
     assert pre_frames == 5
     assert used == 774_144
     assert used <= l3_ram_bytes
+
+
+def test_iq8_resident_plan_halves_ring_payload_and_reserves_scratch():
+    scratch_bytes = 2 * 3 * 16 * 4 * 64 * 4
+    ring_capacity = (768 * 1024) - scratch_bytes
+    bytes_per_bin = 3 * 14 * 4 * 2
+    used = (18 * 18 * bytes_per_bin) + (15 * 53 * bytes_per_bin)
+
+    assert scratch_bytes == 98_304
+    assert ring_capacity == 688_128
+    assert used == 375_984
+    assert used <= ring_capacity
 
 
 def test_capture_config_rejects_post_count_that_cannot_leave_a_pre_frame():
@@ -526,11 +618,18 @@ def test_docker_targets_pin_the_amd64_platform():
     source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
 
     assert "DOCKER_IMAGE ?= openflight-iwr-sdk:latest" in source
-    for target in ("docker-image:", "docker-build:", "docker-shell:"):
+    for target in (
+        "docker-image:",
+        "docker-build:",
+        "docker-build-iq8:",
+        "docker-build-iq8-ring:",
+        "docker-build-shadow:",
+        "docker-shell:",
+    ):
         assert f"\n{target}" in source, f"{target} is missing"
-    # Three docker invocations, each explicitly amd64: the Dockerfile
+    # Six docker invocations, each explicitly amd64: the Dockerfile
     # deliberately does not pin the platform itself.
-    assert source.count("--platform linux/amd64") == 3, source.count("--platform linux/amd64")
+    assert source.count("--platform linux/amd64") == 6, source.count("--platform linux/amd64")
 
 
 def test_fetch_installers_separates_automatic_from_login_gated():
