@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import math
 from bisect import bisect_right
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
@@ -152,6 +152,12 @@ class ClubPathResult:
     track_speed_ratio: float | None = None
     track_impact_error_m: float | None = None
     track_selection_mode: str | None = None
+    attack_pre_frames: int = 0
+    attack_post_frames: int = 0
+    attack_post_speed_scale: float = 1.0
+    path_pre_frames: int = 0
+    path_post_frames: int = 0
+    path_post_speed_scale: float = 1.0
 
     @property
     def accepted(self) -> bool:
@@ -171,6 +177,73 @@ class ClubTrackSelection:
     mode: str
     speed_ratio: float
     impact_error_m: float
+
+
+@dataclass(frozen=True)
+class ClubWindowPolicy:
+    """Independent temporal windows for experimental club measurements.
+
+    Post-impact samples need a separate kinematic segment because impact can
+    reduce clubhead speed. ``path_post_speed_scale`` is deliberately explicit:
+    it is an experimental replay parameter, not a hidden calibration.
+    """
+
+    attack_pre_frames: int = ATTACK_PRE_IMPACT_FRAMES
+    attack_post_frames: int = 0
+    attack_post_speed_scale: float = 1.0
+    path_pre_frames: int = ATTACK_PRE_IMPACT_FRAMES
+    path_post_frames: int = 0
+    path_post_speed_scale: float = 1.0
+
+    def __post_init__(self) -> None:
+        frame_counts = (
+            self.attack_pre_frames,
+            self.attack_post_frames,
+            self.path_pre_frames,
+            self.path_post_frames,
+        )
+        if any(not isinstance(value, int) or value < 0 for value in frame_counts):
+            raise ValueError("club window frame counts must be non-negative integers")
+        speed_scales = (self.attack_post_speed_scale, self.path_post_speed_scale)
+        if any(not 0.0 < value <= 1.25 for value in speed_scales):
+            raise ValueError("club post-impact speed scales must be in (0, 1.25]")
+
+
+@dataclass
+class _ImpactSegmentedTrack:
+    """BallTrack-compatible club trajectory with continuous impact position."""
+
+    base: tracking.BallTrack
+    impact_t_s: float
+    range_res_m: float
+    post_speed_scale: float
+    t_first: float
+    t_last: float
+
+    def _post_speed_ms(self) -> float:
+        return self.base.speed_ms_at(self.impact_t_s, self.range_res_m) * self.post_speed_scale
+
+    def bin_at(self, t_s):
+        """Return continuous range-bin position across the impact boundary."""
+        times = np.asarray(t_s)
+        before = self.base.bin_at(times)
+        impact_bin = self.base.bin_at(self.impact_t_s)
+        after = impact_bin + self._post_speed_ms() * (times - self.impact_t_s) / self.range_res_m
+        result = np.where(times <= self.impact_t_s, before, after)
+        return float(result) if result.ndim == 0 else result
+
+    def range_at(self, t_s, range_res_m: float):
+        """Return apparent range using the caller's range resolution."""
+        return self.bin_at(t_s) * range_res_m
+
+    def speed_ms_at(self, t_s, range_res_m: float):
+        """Return measured pre-impact speed or the explicit post-impact segment."""
+        del range_res_m
+        times = np.asarray(t_s)
+        before = self.base.speed_ms_at(times, self.range_res_m)
+        after = np.full_like(times, self._post_speed_ms(), dtype=float)
+        result = np.where(times <= self.impact_t_s, before, after)
+        return float(result) if result.ndim == 0 else result
 
 
 def pre_impact_window_s(
@@ -309,18 +382,23 @@ def find_club(
     )
 
 
-def impact_centered_attack_window_s(
+def impact_centered_window_s(
     geo: tracking.Geometry,
     impact_t_s: float | None,
     *,
-    pre_frames: int = ATTACK_PRE_IMPACT_FRAMES,
+    pre_frames: int,
+    post_frames: int,
 ) -> tuple[float, float] | None:
-    """Four preceding frames plus the complete frame containing impact.
+    """Select complete acquisition frames around the frame containing impact.
 
-    The end is the impact frame's final loop, not the next frame's start. This
-    deliberately admits chirps after the exact impact instant when impact
-    falls inside a burst, while excluding the first strictly post-impact frame.
+    ``post_frames=0`` ends at the impact frame's final loop. A positive value
+    adds that many complete, strictly post-impact frames. Acquisition frames
+    can be closer together than their RF duration but never overlap; using the
+    final loop rather than the next frame start prevents admitting idle time as
+    measurement evidence.
     """
+    if pre_frames < 0 or post_frames < 0:
+        raise ValueError("impact window frame counts must be non-negative")
     if impact_t_s is None or impact_t_s <= 0.0 or impact_t_s > geo.capture_duration_s:
         return None
     frame_starts = geo.frame_time_offsets_s or tuple(
@@ -329,14 +407,32 @@ def impact_centered_attack_window_s(
     impact_frame = bisect_right(frame_starts, impact_t_s) - 1
     if impact_frame < 0:
         return None
-    lo_s = frame_starts[max(0, impact_frame - pre_frames)]
+    first_frame = max(0, impact_frame - pre_frames)
+    last_frame = min(len(frame_starts) - 1, impact_frame + post_frames)
+    lo_s = frame_starts[first_frame]
     hi_s = min(
         geo.capture_duration_s,
-        frame_starts[impact_frame] + geo.n_loops * geo.loop_period_s,
+        frame_starts[last_frame] + geo.n_loops * geo.loop_period_s,
     )
     if hi_s <= lo_s:
         return None
     return float(lo_s), float(hi_s)
+
+
+def impact_centered_attack_window_s(
+    geo: tracking.Geometry,
+    impact_t_s: float | None,
+    *,
+    pre_frames: int = ATTACK_PRE_IMPACT_FRAMES,
+    post_frames: int = 0,
+) -> tuple[float, float] | None:
+    """Compatibility wrapper for the independently configurable AoA window."""
+    return impact_centered_window_s(
+        geo,
+        impact_t_s,
+        pre_frames=pre_frames,
+        post_frames=post_frames,
+    )
 
 
 def estimate_attack_angle_candidate(
@@ -347,6 +443,7 @@ def estimate_attack_angle_candidate(
     *,
     impact_t_s: float,
     tdm_sign: int,
+    window_policy: ClubWindowPolicy | None = None,
 ) -> tuple[float | None, str, int, float | None]:
     """Fit AoA from four approach frames and the complete impact frame.
 
@@ -361,11 +458,25 @@ def estimate_attack_angle_candidate(
     sufficient because this impact-centered club window cannot offer the
     ball trajectory's usual eight-point minimum.
     """
-    window_s = impact_centered_attack_window_s(geo, impact_t_s)
+    if window_policy is None:
+        window_policy = ClubWindowPolicy()
+    window_s = impact_centered_attack_window_s(
+        geo,
+        impact_t_s,
+        pre_frames=window_policy.attack_pre_frames,
+        post_frames=window_policy.attack_post_frames,
+    )
     if window_s is None:
         return None, "rejected_no_impact_frame", 0, None
     lo_s, hi_s = window_s
-    extended_track = replace(track, t_last=max(track.t_last, hi_s))
+    extended_track = _ImpactSegmentedTrack(
+        base=track,
+        impact_t_s=impact_t_s,
+        range_res_m=geo.range_res_m,
+        post_speed_scale=window_policy.attack_post_speed_scale,
+        t_first=min(track.t_first, lo_s),
+        t_last=max(track.t_last, hi_s),
+    )
     points = doa.angle_points(
         mti,
         extended_track,
@@ -479,18 +590,22 @@ def estimate_club_path(
     aim_offset_deg: float = 0.0,
     phase_reference_rad: float | None = None,
     tdm_sign: int = 1,
+    window_policy: ClubWindowPolicy | None = None,
 ) -> ClubPathResult:
-    """Estimate club path from four approach frames and the impact frame.
+    """Estimate experimental club path and AoA with independent windows.
 
     ``impact_t_s`` is seconds from the oldest retained frame, as located by
     ``shot.impact_time_s`` from the ball's own range walk. It is a required
     argument with no default on purpose: impact's ring slot varies shot to
     shot, so there is no safe value to assume. Club detection remains strictly
-    pre-impact; only the already-identified track is extrapolated through the
-    complete frame containing impact for phase measurement.
+    pre-impact; the already-identified track is then propagated through each
+    metric's selected impact window. Any post-impact segment uses that metric's
+    explicit speed scale rather than silently extending pre-impact velocity.
     """
     if phase_reference_rad is not None and not math.isfinite(phase_reference_rad):
         raise ValueError("horizontal phase reference must be finite")
+    if window_policy is None:
+        window_policy = ClubWindowPolicy()
     meta0, _ = parse_dump(raw)
     if meta0.get("n_tx") != 3:
         return ClubPathResult(status="rejected_requires_three_tx")
@@ -519,12 +634,20 @@ def estimate_club_path(
         return ClubPathResult(status="rejected_no_club_track")
     track = selection.track
 
-    path_window_s = impact_centered_attack_window_s(geo, impact_t_s)
+    path_window_s = impact_centered_window_s(
+        geo,
+        impact_t_s,
+        pre_frames=window_policy.path_pre_frames,
+        post_frames=window_policy.path_post_frames,
+    )
     if path_window_s is None:
         return ClubPathResult(status="rejected_no_impact_frame")
     path_lo_s, path_hi_s = path_window_s
-    phase_track = replace(
-        track,
+    phase_track = _ImpactSegmentedTrack(
+        base=track,
+        impact_t_s=impact_t_s,
+        range_res_m=res,
+        post_speed_scale=window_policy.path_post_speed_scale,
         t_first=min(track.t_first, path_lo_s),
         t_last=max(track.t_last, path_hi_s),
     )
@@ -539,6 +662,12 @@ def estimate_club_path(
         track_speed_ratio=selection.speed_ratio,
         track_impact_error_m=selection.impact_error_m,
         track_selection_mode=selection.mode,
+        attack_pre_frames=window_policy.attack_pre_frames,
+        attack_post_frames=window_policy.attack_post_frames,
+        attack_post_speed_scale=window_policy.attack_post_speed_scale,
+        path_pre_frames=window_policy.path_pre_frames,
+        path_post_frames=window_policy.path_post_frames,
+        path_post_speed_scale=window_policy.path_post_speed_scale,
     )
     logger.info(
         "[CLUB] track=%s OPS=%.1f mph radial=%.1f m/s ratio=%.2f "
@@ -568,6 +697,7 @@ def estimate_club_path(
         cal,
         impact_t_s=impact_t_s,
         tdm_sign=tdm_sign,
+        window_policy=window_policy,
     )
     if speed_mismatch:
         result.attack_angle_status = "candidate_club_speed_mismatch"
@@ -764,8 +894,10 @@ def _confidence(result: ClubPathResult) -> float:
 
 __all__ = [
     "ClubPathResult",
+    "ClubWindowPolicy",
     "estimate_club_path",
     "find_club",
     "impact_centered_attack_window_s",
+    "impact_centered_window_s",
     "pre_impact_window_s",
 ]

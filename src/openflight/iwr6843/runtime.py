@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from openflight.iwr6843.calibration import Calibration
-from openflight.iwr6843.club import ClubPathResult, estimate_club_path
+from openflight.iwr6843.club import ClubPathResult, ClubWindowPolicy, estimate_club_path
 from openflight.iwr6843.lcmf import (
     LCMFResult,
     PreparedLCMFCapture,
@@ -114,6 +114,7 @@ class IWR6843Runtime:
     azimuth_offset_deg: float = 0.0
     horizontal_phase_reference_rad: float | None = None
     tdm_sign_policy: str = "positive"
+    club_window_policy: ClubWindowPolicy = field(default_factory=ClubWindowPolicy)
 
     def _ops_guided_measurement(  # pylint: disable=too-many-return-statements
         self,
@@ -258,6 +259,7 @@ class IWR6843Runtime:
                 aim_offset_deg=self.azimuth_offset_deg,
                 phase_reference_rad=self.horizontal_phase_reference_rad,
                 tdm_sign=policy_sign if fallback else ball_sign,
+                window_policy=self.club_window_policy,
             )
             if fallback:
                 # The ball measurement had no usable sign, so this is the
