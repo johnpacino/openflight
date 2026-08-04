@@ -148,6 +148,28 @@ def test_iq8_build_is_separate_from_production_firmware():
     assert "docker-build-iq8:" in source
 
 
+def test_l3_resident_iq8_build_uses_scratch_then_packs_the_ring():
+    source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
+    target = _function_source(
+        source,
+        "build-iq8-ring-native:",
+        "build-shadow-native:",
+    )
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+
+    assert "--define=L3_RING_IQ8=1" in target
+    assert "IQ8_RING_RELEASE_NAME ?=" in source
+    assert "docker-build-iq8-ring:" in source
+    assert "g_iq16FrameScratch" in firmware
+    assert "l3_packIq8CompletedFrame" in firmware
+    assert "g_iq16FrameScratch[gIq8ActiveScratch][0]" in firmware
+    assert "gIq8ActiveScratch ^= 1U" in firmware
+    assert "bytesPerComplex = 2U" in firmware
+    assert "gPostCaptureStarted = 1U" in firmware
+    assert "paramCfg.dest.dstScale = 8U" in firmware
+    assert "(samples & 0xFFU) | ((samples >> 8U) & 0xFF00U)" in firmware
+
+
 def test_release_filenames_use_feature_and_build_date_without_version_tokens():
     pattern = re.compile(r"^[a-z0-9_]+_\d{8}\.bin$")
 
@@ -385,7 +407,11 @@ def test_iq8_dump_format_emits_frame_scales_before_compressed_payload():
 def test_shadow_tracker_reuses_completed_frame_and_keeps_frame_payload_path():
     source = FIRMWARE.read_text(encoding="utf-8")
     dump = _function_source(source, "int32_t l3_cli_dump", "static int32_t l3_cli_stats")
-    rearm = _function_source(source, "static void l3_hwaRearmTask", "#endif")
+    rearm = _function_source(
+        source,
+        "static void l3_hwaRearmTask",
+        "/* Fill the 20-byte fixed dump header",
+    )
 
     assert "l3_shadowExtractPendingFrame()" in rearm
     assert "l3_writeShadowCandidate(slot)" in dump
@@ -427,7 +453,8 @@ def test_configurable_ring_uses_exact_l3_arena_and_plan_fits():
     """
     firmware = FIRMWARE.read_text(encoding="utf-8")
     l3_ram_bytes = 768 * 1024
-    assert "#define L3_CAPTURE_BYTES       (6U * 128U * 1024U)" in firmware
+    assert "#define L3_TOTAL_BYTES         (6U * 128U * 1024U)" in firmware
+    assert "#define L3_CAPTURE_BYTES       L3_TOTAL_BYTES" in firmware
     assert "static uint8_t g_ring[L3_CAPTURE_BYTES]" in firmware
 
     pre_frame_bytes = 3 * 12 * 4 * 32 * 4
@@ -452,6 +479,18 @@ def test_same_capture_config_safely_replans_for_16_loops():
     assert pre_frames == 5
     assert used == 774_144
     assert used <= l3_ram_bytes
+
+
+def test_iq8_resident_plan_halves_ring_payload_and_reserves_scratch():
+    scratch_bytes = 2 * 3 * 16 * 4 * 64 * 4
+    ring_capacity = (768 * 1024) - scratch_bytes
+    bytes_per_bin = 3 * 14 * 4 * 2
+    used = (18 * 18 * bytes_per_bin) + (15 * 53 * bytes_per_bin)
+
+    assert scratch_bytes == 98_304
+    assert ring_capacity == 688_128
+    assert used == 375_984
+    assert used <= ring_capacity
 
 
 def test_capture_config_rejects_post_count_that_cannot_leave_a_pre_frame():
@@ -583,13 +622,14 @@ def test_docker_targets_pin_the_amd64_platform():
         "docker-image:",
         "docker-build:",
         "docker-build-iq8:",
+        "docker-build-iq8-ring:",
         "docker-build-shadow:",
         "docker-shell:",
     ):
         assert f"\n{target}" in source, f"{target} is missing"
-    # Five docker invocations, each explicitly amd64: the Dockerfile
+    # Six docker invocations, each explicitly amd64: the Dockerfile
     # deliberately does not pin the platform itself.
-    assert source.count("--platform linux/amd64") == 5, source.count("--platform linux/amd64")
+    assert source.count("--platform linux/amd64") == 6, source.count("--platform linux/amd64")
 
 
 def test_fetch_installers_separates_automatic_from_login_gated():
