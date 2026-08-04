@@ -273,6 +273,26 @@ def test_attack_window_uses_four_preceding_frames_and_full_impact_frame():
     assert hi_s < 0.020, "the first frame strictly after impact must be excluded"
 
 
+def test_impact_window_selector_allows_independent_post_impact_frames():
+    geo = tracking.Geometry(
+        n_frames=18,
+        chirps_per_frame=36,
+        n_tx=3,
+        n_rx=4,
+        n_samples=128,
+        frame_period_s=0.002,
+        trigger_frame=0,
+        loop_period_s=TX2_LOOP_PERIOD_S,
+        frame_time_offsets_s=tuple(frame * 0.002 for frame in range(18)),
+    )
+
+    attack = club.impact_centered_window_s(geo, 0.0188, pre_frames=4, post_frames=0)
+    path = club.impact_centered_window_s(geo, 0.0188, pre_frames=4, post_frames=1)
+
+    assert attack == pytest.approx((0.010, 0.018 + 12 * TX2_LOOP_PERIOD_S))
+    assert path == pytest.approx((0.010, 0.020 + 12 * TX2_LOOP_PERIOD_S))
+
+
 def test_attack_candidate_fits_only_the_impact_centered_window(monkeypatch):
     geo = tracking.Geometry(
         n_frames=18,
@@ -639,6 +659,34 @@ def test_club_path_samples_four_preceding_frames_and_full_impact_frame(monkeypat
     impact_frame = int(IMPACT_S / FRAME_PERIOD_S)
     assert sampled_frames == set(range(impact_frame - 4, impact_frame + 1))
     assert impact_frame + 1 not in sampled_frames
+
+
+def test_club_path_policy_includes_post_frame_with_separate_velocity(monkeypatch):
+    """Post-impact phase uses an explicit reduced-speed segment, not pre-impact extrapolation."""
+    samples: list[tuple[int, float]] = []
+    real_reference_phases = doa.tx2_reference_phases_at
+
+    def spy_reference_phases(tdm, frame, loop, local_bin, **kwargs):
+        samples.append((frame, kwargs["velocity_ms"]))
+        return real_reference_phases(tdm, frame, loop, local_bin, **kwargs)
+
+    monkeypatch.setattr(doa, "tx2_reference_phases_at", spy_reference_phases)
+    policy = club.ClubWindowPolicy(path_post_frames=1, path_post_speed_scale=0.8)
+    club.estimate_club_path(
+        _synth_club(5.0),
+        _cal(),
+        ops_club_speed_mph=OPS_CLUB_MPH,
+        impact_t_s=IMPACT_S,
+        tdm_sign=1,
+        window_policy=policy,
+    )
+
+    impact_frame = int(IMPACT_S / FRAME_PERIOD_S)
+    sampled_frames = {frame for frame, _velocity in samples}
+    assert impact_frame + 1 in sampled_frames
+    pre_velocity = np.median([velocity for frame, velocity in samples if frame < impact_frame])
+    post_velocity = np.median([velocity for frame, velocity in samples if frame > impact_frame])
+    assert post_velocity == pytest.approx(pre_velocity * 0.8, rel=0.03)
 
 
 def test_insufficient_snapshots_is_rejected(monkeypatch):

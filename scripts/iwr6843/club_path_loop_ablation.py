@@ -10,7 +10,7 @@ import statistics
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from openflight.iwr6843.club import estimate_club_path
+from openflight.iwr6843.club import ClubWindowPolicy, estimate_club_path
 from openflight.iwr6843.dump import parse_header, select_tdm_loops
 from openflight.iwr6843.lcmf import estimate_lcmf_v1
 from openflight.iwr6843.monitor import tx_order_from_config
@@ -39,6 +39,12 @@ class AblationRecord:
     range_rate_ms: float | None
     n_frames: int
     n_snapshots: int
+    attack_pre_frames: int
+    attack_post_frames: int
+    attack_post_speed_scale: float
+    path_pre_frames: int
+    path_post_frames: int
+    path_post_speed_scale: float
     capture_path: str
 
 
@@ -149,6 +155,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--radar-height-m", type=float, default=None)
     parser.add_argument("--ball-height-m", type=float, default=0.040)
     parser.add_argument("--azimuth-offset-deg", type=float, default=0.0)
+    parser.add_argument("--attack-pre-frames", type=int, default=4)
+    parser.add_argument("--attack-post-frames", type=int, default=0)
+    parser.add_argument("--attack-post-speed-scale", type=float, default=1.0)
+    parser.add_argument("--path-pre-frames", type=int, default=4)
+    parser.add_argument("--path-post-frames", type=int, default=0)
+    parser.add_argument("--path-post-speed-scale", type=float, default=1.0)
     parser.add_argument(
         "--cal",
         default="config/iwr6843_calibration_reference.json",
@@ -167,6 +179,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Run club loop and impact-window ablations for one recorded session."""
     args = _parser().parse_args()
     session_path = args.session.expanduser()
     dump_dir = args.dump_dir.expanduser() if args.dump_dir is not None else None
@@ -183,6 +196,14 @@ def main() -> int:
         tilt_deg=args.tilt_deg,
         radar_height_m=args.radar_height_m,
         ball_height_m=args.ball_height_m,
+    )
+    window_policy = ClubWindowPolicy(
+        attack_pre_frames=args.attack_pre_frames,
+        attack_post_frames=args.attack_post_frames,
+        attack_post_speed_scale=args.attack_post_speed_scale,
+        path_pre_frames=args.path_pre_frames,
+        path_post_frames=args.path_post_frames,
+        path_post_speed_scale=args.path_post_speed_scale,
     )
     club_speeds = club_speeds_from_session(session_path)
     records: list[AblationRecord] = []
@@ -232,6 +253,7 @@ def main() -> int:
                 impact_t_s=ball.impact_t_s,
                 aim_offset_deg=args.azimuth_offset_deg,
                 tdm_sign=tdm_sign,
+                window_policy=window_policy,
             )
             record = AblationRecord(
                 shot_number=shot_number,
@@ -252,6 +274,12 @@ def main() -> int:
                 range_rate_ms=result.range_rate_ms,
                 n_frames=result.n_frames,
                 n_snapshots=result.n_snapshots,
+                attack_pre_frames=result.attack_pre_frames,
+                attack_post_frames=result.attack_post_frames,
+                attack_post_speed_scale=result.attack_post_speed_scale,
+                path_pre_frames=result.path_pre_frames,
+                path_post_frames=result.path_post_frames,
+                path_post_speed_scale=result.path_post_speed_scale,
                 capture_path=str(capture_path),
             )
             records.append(record)
