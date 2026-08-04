@@ -675,6 +675,55 @@ named targets in `firmware/Makefile` remove application objects before each
 build; use those targets rather than invoking the lower-level makefile against
 stale objects.
 
+## On-Chip Shadow Candidate Diagnostic
+
+The experimental shadow build keeps the existing hybrid IQ16 frame ring and
+also selects one compact range/TX candidate from every retained frame on the
+MSS/R4F. It reuses the completed HWA range FFT already copied by EDMA; it does
+not run a second FFT or change TX, RX, loops, frame cadence, range windows, or
+IQ payload bytes.
+
+Build it with:
+
+```bash
+make -C firmware docker-build-shadow
+```
+
+The output is:
+
+```text
+firmware/releases/l3_dump_onchip_shadow_20260803.bin
+```
+
+Flash that image using the normal Raspberry Pi procedure, return the board to
+functional mode, press RESET, and stop OpenFlight before running the standalone
+reflector test:
+
+```bash
+uv run python scripts/hardware-test/test_iwr6843_shadow_reflector.py
+```
+
+The harness captures three empty scenes, five static-reflector scenes, and
+three final empty scenes using the GPIO17 clap trigger. It saves every dump and
+a JSONL summary under `~/openflight_sessions/iwr6843_shadow_reflector/`. For
+each frame it recomputes the same selector from the retained IQ16 cube and
+reports any mismatch with the on-chip candidate.
+
+`config/iwr6843_l3dump_shadow_static.cfg` enables bins 26-39 with a zero power
+threshold for a reflector near five feet. This deliberately bypasses velocity
+and quality gating so static clutter remains visible. It is a diagnostic config
+only and must not replace production club gating.
+
+Useful firmware health output is available through:
+
+```text
+shadowstats
+```
+
+The first acceptance gate is zero parity mismatches, zero shadow overruns, and
+no increase in HWA rearm errors or missing frame completions. A static reflector
+does not validate club speed, club path, attack angle, or moving-target identity.
+
 ## Validation Before Flashing A New Variant
 
 Run the firmware contract and host-pipeline tests:

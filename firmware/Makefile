@@ -11,6 +11,8 @@ REPO_ROOT := $(abspath $(CURDIR)/..)
 DOCKER_IMAGE ?= openflight-iwr-sdk:latest
 RELEASE_DIR ?= releases
 RELEASE_NAME ?= l3_dump_hybrid_cadence_20260801.bin
+IQ8_RELEASE_NAME ?= l3_dump_hybrid_cadence_iq8_20260804.bin
+SHADOW_RELEASE_NAME ?= l3_dump_onchip_shadow_20260803.bin
 
 SDK_INSTALLER := $(INSTALLER_DIR)/mmwave_sdk_03_06_02_00-LTS-Linux-x86-Install.bin
 R4F_INSTALLER := $(INSTALLER_DIR)/ti_cgt_tms470_20.2.7.LTS_linux-x64_installer.bin
@@ -47,7 +49,7 @@ REQUIRED_INSTALLERS := \
 	sysconfig-1.10.0_2163-setup.run \
 	xdctools_3_61_00_16_core_linux.zip
 
-.PHONY: help check-host check-tools check-installers install-ti-deps-native install-ti-tools-native probe-installers-native fetch-installers build-native docker-image docker-build docker-shell clean
+.PHONY: help check-host check-tools check-installers install-ti-deps-native install-ti-tools-native probe-installers-native fetch-installers build-native build-iq8-native build-shadow-native docker-image docker-build docker-build-iq8 docker-build-shadow docker-shell clean
 
 help:
 	@echo "IWR6843 production firmware helpers"
@@ -61,9 +63,13 @@ help:
 	@echo "  probe-installers-native Verify the downloaded installer executables"
 	@echo "  install-ti-tools-native Install TI SDK/toolchain under TI_ROOT"
 	@echo "  build-native            Build the supported production firmware (x86_64 Linux)"
+	@echo "  build-iq8-native        Build experimental IQ8-compressed dump firmware"
+	@echo "  build-shadow-native     Build on-chip shadow-candidate diagnostic firmware"
 	@echo ""
 	@echo "  docker-image            Build the x86_64 build container (needs TI installers)"
 	@echo "  docker-build            Build the firmware inside the container (any host)"
+	@echo "  docker-build-iq8        Build the IQ8-compressed firmware in the container"
+	@echo "  docker-build-shadow     Build the shadow-candidate firmware in the container"
 	@echo "  docker-shell            Interactive shell in the build container"
 	@echo "  clean                   Remove generated TI build outputs"
 
@@ -150,6 +156,20 @@ build-native: check-tools
 	cp "$(FIRMWARE_DIR)/l3_dump.bin" "$(RELEASE_DIR)/$(RELEASE_NAME)"
 	sha256sum "$(RELEASE_DIR)/$(RELEASE_NAME)"
 
+build-iq8-native: check-tools
+	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" cleanApp
+	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" bin L3_VARIANT_DEFS="--define=N_TX=3 --define=ENABLE_HWA_SMOKE=1 --define=SNAPSHOT_DUMP=1 --define=HWA_CHAINED_SNAPSHOT_RING=1 --define=CONFIGURABLE_CAPTURE=1 --define=HYBRID_CADENCE_CAPTURE=1 --define=L3_DUMP_IQ8=1"
+	mkdir -p "$(RELEASE_DIR)"
+	cp "$(FIRMWARE_DIR)/l3_dump.bin" "$(RELEASE_DIR)/$(IQ8_RELEASE_NAME)"
+	sha256sum "$(RELEASE_DIR)/$(IQ8_RELEASE_NAME)"
+
+build-shadow-native: check-tools
+	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" cleanApp
+	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" bin L3_VARIANT_DEFS="--define=N_TX=3 --define=ENABLE_HWA_SMOKE=1 --define=SNAPSHOT_DUMP=1 --define=HWA_CHAINED_SNAPSHOT_RING=1 --define=CONFIGURABLE_CAPTURE=1 --define=HYBRID_CADENCE_CAPTURE=1 --define=SHADOW_TRACKER=1"
+	mkdir -p "$(RELEASE_DIR)"
+	cp "$(FIRMWARE_DIR)/l3_dump.bin" "$(RELEASE_DIR)/$(SHADOW_RELEASE_NAME)"
+	sha256sum "$(RELEASE_DIR)/$(SHADOW_RELEASE_NAME)"
+
 # --- Containerised build (works from macOS / arm64) --------------------------
 #
 # TI's tools are Linux x86_64 with 32-bit installer stubs, so the host cannot
@@ -220,6 +240,28 @@ docker-build:
 	docker run --rm --platform linux/amd64 \
 		-v "$(REPO_ROOT):/work" -w /work \
 		"$(DOCKER_IMAGE)" make -C firmware build-native RELEASE_NAME="$(RELEASE_NAME)"
+
+docker-build-iq8:
+	@if ! docker image inspect "$(DOCKER_IMAGE)" >/dev/null 2>&1; then \
+		echo "ERROR: container image '$(DOCKER_IMAGE)' does not exist."; \
+		echo "       Build it once with: make -C firmware docker-image"; \
+		echo "       That needs the five TI installers in firmware/$(INSTALLER_DIR)/"; \
+		echo "       (license-gated; see firmware/README.md)."; \
+		exit 1; \
+	fi
+	docker run --rm --platform linux/amd64 \
+		-v "$(REPO_ROOT):/work" -w /work \
+		"$(DOCKER_IMAGE)" make -C firmware build-iq8-native IQ8_RELEASE_NAME="$(IQ8_RELEASE_NAME)"
+
+docker-build-shadow:
+	@if ! docker image inspect "$(DOCKER_IMAGE)" >/dev/null 2>&1; then \
+		echo "ERROR: container image '$(DOCKER_IMAGE)' does not exist."; \
+		echo "       Build it once with: make -C firmware docker-image"; \
+		exit 1; \
+	fi
+	docker run --rm --platform linux/amd64 \
+		-v "$(REPO_ROOT):/work" -w /work \
+		"$(DOCKER_IMAGE)" make -C firmware build-shadow-native SHADOW_RELEASE_NAME="$(SHADOW_RELEASE_NAME)"
 
 docker-shell:
 	docker run --rm -it --platform linux/amd64 \

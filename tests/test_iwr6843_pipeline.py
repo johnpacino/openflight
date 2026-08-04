@@ -17,11 +17,14 @@ from openflight.iwr6843.dump import (
     HEADER,
     MAGIC,
     MAX_SUPPORTED_DUMP_VERSION,
+    SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
     SAMPLE_RANGE_FFT_IQ16,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     SAMPLE_RANGE_FFT_IQ16_WINDOWED,
+    SHADOW_CANDIDATE,
     TEMP_REPORT_KEYS,
+    compute_shadow_candidate,
     pack_dump,
     parse_dump,
     parse_header,
@@ -196,8 +199,8 @@ def test_parse_header_rejects_future_dump_version():
 
 def test_parse_header_rejects_short_temperature_extension():
     raw = synth_shot()
-    v5_header_only = bytearray(raw[:HEADER.size])
-    v5_header_only[4:6] = int(MAX_SUPPORTED_DUMP_VERSION).to_bytes(2, "little")
+    v5_header_only = bytearray(raw[: HEADER.size])
+    v5_header_only[4:6] = (7).to_bytes(2, "little")
 
     with pytest.raises(ValueError, match="short temperature report extension"):
         parse_header(bytes(v5_header_only))
@@ -433,6 +436,159 @@ def test_timed_variable_snapshot_round_trip_and_geometry():
     assert geometry.capture_duration_s == pytest.approx(0.012)
     np.testing.assert_allclose(parsed[:2, ..., :4], np.round(cube[:2, ..., :4]), atol=1)
     np.testing.assert_allclose(parsed[2:, ..., :7], np.round(cube[2:, ..., :7]), atol=1)
+
+
+def test_iq8_timed_variable_snapshot_round_trip_and_size():
+    """Experimental IQ8 dumps preserve structure while halving payload bytes."""
+    rng = np.random.default_rng(84)
+    counts = (4, 4, 7, 7, 7)
+    starts = (20, 20, 32, 32, 47)
+    offsets_us = (0, 2000, 4000, 6000, 10000)
+    cube = 900 * (rng.standard_normal((5, 36, 4, 7)) + 1j * rng.standard_normal((5, 36, 4, 7)))
+
+    raw_iq16 = pack_dump(
+        cube,
+        n_tx=3,
+        version=6,
+        frame_period_us=2000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+        frame_time_offsets_us=offsets_us,
+    )
+    raw_iq8 = pack_dump(
+        cube,
+        n_tx=3,
+        version=6,
+        frame_period_us=2000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+        frame_time_offsets_us=offsets_us,
+    )
+    header = parse_header(raw_iq8)
+    meta, parsed = parse_dump(raw_iq8)
+
+    assert header["sample_fmt"] == SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED
+    assert header["frame_metadata_nbytes"] == 5 * (4 + 2)
+    assert len(raw_iq8) == HEADER.size + payload_nbytes(header, raw_iq8)
+    assert len(raw_iq8) < len(raw_iq16) * 0.55
+    assert meta["range_bin_starts"] == starts
+    assert meta["range_bin_counts"] == counts
+    assert meta["frame_time_offsets_us"] == offsets_us
+    assert len(meta["iq8_scales"]) == len(starts)
+    for frame, count in enumerate(counts):
+        tolerance = meta["iq8_scales"][frame] + 1
+        np.testing.assert_allclose(
+            parsed[frame, ..., :count], cube[frame, ..., :count], atol=tolerance
+        )
+        np.testing.assert_array_equal(parsed[frame, ..., count:], 0)
+
+
+def test_shadow_candidate_extension_round_trip_preserves_iq16_payload():
+    cube = np.arange(3 * 6 * 4 * 5, dtype=float).reshape(3, 6, 4, 5)
+    cube = cube + 1j * (cube + 7)
+    candidates = (
+        {
+            "valid": True,
+            "range_bin": 31,
+            "tx_index": 1,
+            "peak_loop": 0,
+            "power": 123_456,
+            "rx_iq": ((101, -102), (103, -104), (105, -106), (107, -108)),
+        },
+        {
+            "valid": False,
+            "range_bin": 0,
+            "tx_index": 0,
+            "peak_loop": 0,
+            "power": 0,
+            "rx_iq": ((0, 0), (0, 0), (0, 0), (0, 0)),
+        },
+        {
+            "valid": True,
+            "range_bin": 35,
+            "tx_index": 2,
+            "peak_loop": 1,
+            "power": 654_321,
+            "rx_iq": ((-201, 202), (-203, 204), (-205, 206), (-207, 208)),
+        },
+    )
+
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=8,
+        frame_period_us=2250,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        range_bin_starts=(23, 23, 32),
+        range_bin_counts=(5, 5, 5),
+        frame_time_offsets_us=(0, 2250, 4500),
+        shadow_candidates=candidates,
+    )
+    meta, parsed = parse_dump(raw)
+
+    assert MAX_SUPPORTED_DUMP_VERSION >= 8
+    assert SHADOW_CANDIDATE.size == 24
+    assert meta["frame_metadata_nbytes"] == 3 * (4 + 24)
+    assert meta["shadow_candidates"] == candidates
+    np.testing.assert_array_equal(parsed, cube)
+
+
+def test_shadow_candidate_and_temperature_extensions_share_version_9_layout():
+    cube = np.ones((1, 3, 4, 2), dtype=complex)
+    candidate = {
+        "valid": False,
+        "range_bin": 23,
+        "tx_index": 0,
+        "peak_loop": 0,
+        "power": 0,
+        "rx_iq": ((0, 0), (0, 0), (0, 0), (0, 0)),
+    }
+    temperatures = {key: index for index, key in enumerate(TEMP_REPORT_KEYS)}
+
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=9,
+        frame_period_us=2250,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        range_bin_starts=(23,),
+        range_bin_counts=(2,),
+        frame_time_offsets_us=(0,),
+        temperature_report=temperatures,
+        shadow_candidates=(candidate,),
+    )
+    meta, parsed = parse_dump(raw)
+
+    assert meta["temperature_report"] == temperatures
+    assert meta["shadow_candidates"] == (candidate,)
+    np.testing.assert_array_equal(parsed, cube)
+
+
+def test_shadow_candidate_reference_integrates_tx_power_and_keeps_peak_loop_iq():
+    frame = np.zeros((6, 4, 5), dtype=complex)  # 2 loops, 3 TX
+    frame[1, :, 2] = np.asarray((16 + 32j, 32 + 48j, 48 + 64j, 64 + 80j))
+    frame[4, :, 2] = np.asarray((160 + 176j, 176 + 192j, 192 + 208j, 208 + 224j))
+    frame[2, :, 3] = 64 + 64j
+    frame[5, :, 3] = 64 + 64j
+
+    candidate = compute_shadow_candidate(
+        frame,
+        n_tx=3,
+        range_bin_start=28,
+        gate_start=26,
+        gate_count=14,
+    )
+
+    assert candidate == {
+        "valid": True,
+        "range_bin": 30,
+        "tx_index": 1,
+        "peak_loop": 1,
+        "power": 1248,
+        "rx_iq": ((176, 160), (192, 176), (208, 192), (224, 208)),
+    }
 
 
 def test_select_tdm_loops_preserves_variable_frame_metadata():
