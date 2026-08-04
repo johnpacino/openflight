@@ -7,6 +7,7 @@ import pytest
 
 from openflight.iwr6843.driver import IWR6843Radar
 from openflight.iwr6843.dump import (
+    SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     TEMP_REPORT_KEYS,
@@ -102,6 +103,26 @@ def test_read_dump_sizes_timed_variable_payload_from_frame_metadata():
 
     assert radar.read_dump(timeout_s=0.1) == raw
     assert radar.ser.written == b"l3dump\n"
+
+
+def test_read_dump_sizes_iq8_timed_payload_from_frame_metadata_and_scales():
+    cube = np.ones((3, 36, 4, 7), dtype=complex) * (200 + 140j)
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=6,
+        frame_period_us=2000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
+        range_bin_starts=(20, 32, 47),
+        range_bin_counts=(4, 7, 7),
+        frame_time_offsets_us=(0, 2000, 6000),
+    )
+
+    radar = IWR6843Radar.__new__(IWR6843Radar)
+    radar.ser = FakeSerial(b"l3dump\r\n" + raw)
+
+    assert radar.read_dump(timeout_s=0.1) == raw
+    assert radar.ser.writes == [b"l3dump\n"]
 
 
 class FakeSerial:

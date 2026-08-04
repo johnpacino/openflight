@@ -20,6 +20,17 @@
  *     uint16 delta-us) follow this header. delta-us is elapsed time since the
  *     previous retained frame and is zero for the first descriptor. This
  *     represents dense pre-trigger and decimated post-trigger timing exactly.
+ *   range-bin fmt 5 (version 6+):
+ *     same descriptors as fmt 4, then n_frames uint16 frame scale values,
+ *     then int8 Im/Re payload. Decoder expands each frame sample as
+ *     int8_value * frame_scale. This is an experimental dump-size compression
+ *     format; capture cadence and range windows are unchanged.
+ *   shadow candidate extension (version 8 without temperature, version 9
+ *   with temperature):
+ *     one packed l3_shadow_candidate_t follows the range-window metadata (and
+ *     IQ8 scales, when present) for every retained frame. The IQ payload that
+ *     follows is unchanged. Candidates are diagnostic evidence selected from
+ *     the same completed HWA frame stored in L3.
  *   temperature extension (version 5 for fixed-width formats, version 7 for
  *     variable-width formats):
  *     a 24-byte temperature report immediately follows the fixed header.
@@ -38,11 +49,14 @@
 #define L3_DUMP_VERSION_TIMED    6
 #define L3_DUMP_VERSION_TEMPERATURE 5
 #define L3_DUMP_VERSION_CAPTURE_TEMPERATURE 7
+#define L3_DUMP_VERSION_SHADOW 8
+#define L3_DUMP_VERSION_SHADOW_TEMPERATURE 9
 #define L3_SAMPLE_INT16_IQ  0
 #define L3_SAMPLE_RANGE_FFT_IQ16 1
 #define L3_SAMPLE_RANGE_FFT_IQ16_WINDOWED 2
 #define L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE 3
 #define L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED 4
+#define L3_SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED 5
 
 typedef struct __attribute__((packed)) {
     char     magic[4];          /* "ILD1" */
@@ -76,5 +90,14 @@ typedef struct __attribute__((packed)) {
     int16_t  tmpDig0Sens;       /* Digital temperature sensor reading */
     int16_t  tmpDig1Sens;       /* Second digital temperature sensor reading */
 } l3_temperature_report_t;      /* sizeof == 24 */
+
+typedef struct __attribute__((packed)) {
+    uint8_t  valid;
+    uint8_t  range_bin;         /* absolute FFT range bin */
+    uint8_t  tx_index;          /* chirp index modulo n_tx */
+    uint8_t  peak_loop;         /* strongest loop for the winning bin/TX */
+    uint32_t power;             /* incoherent power, IQ shifted by 4 bits */
+    int16_t  rx_iq[8];          /* RX0..RX3, each native Im then Re */
+} l3_shadow_candidate_t;        /* sizeof == 24 */
 
 #endif /* L3_DUMP_FORMAT_H */
