@@ -24,14 +24,22 @@ def _capture_stage(
     gate_start: int,
     gate_count: int,
     min_power: int,
+    auto_interval_s: float | None,
     log_handle,
 ) -> list[dict]:
     events = []
     for capture in range(1, count + 1):
         action = "hit one ball" if label == "ball" else "clap once"
-        print(f"[{label} {capture}/{count}] ARMED - {action}")
-        button.wait_for_press()
-        button.wait_for_release(timeout=2.0)
+        if auto_interval_s is None:
+            print(f"[{label} {capture}/{count}] ARMED - {action}")
+            button.wait_for_press()
+            button.wait_for_release(timeout=2.0)
+        else:
+            print(
+                f"[{label} {capture}/{count}] AUTO - "
+                f"capturing in {auto_interval_s:g} seconds"
+            )
+            time.sleep(auto_interval_s)
         raw = radar.read_dump(timeout_s=45.0)
         path = outdir / f"{label}_{capture:02d}.l3dump"
         path.write_bytes(raw)
@@ -146,6 +154,12 @@ def main() -> int:
     parser.add_argument("--reflector-captures", type=int, default=5)
     parser.add_argument("--shots", type=int, default=10)
     parser.add_argument(
+        "--auto-interval-s",
+        type=float,
+        default=None,
+        help="capture automatically after this delay instead of waiting for GPIO17",
+    )
+    parser.add_argument(
         "--outdir",
         type=Path,
         default=Path.home() / "openflight_sessions" / "iwr6843_shadow_reflector",
@@ -156,9 +170,15 @@ def main() -> int:
         parser.error("the range gate must be positive")
     if args.empty_captures < 1 or args.reflector_captures < 1 or args.shots < 1:
         parser.error("capture counts must be positive")
+    if args.auto_interval_s is not None and args.auto_interval_s <= 0:
+        parser.error("--auto-interval-s must be positive")
 
-    ensure_lgpio_pin_factory()
-    from gpiozero import Button  # pylint: disable=import-outside-toplevel
+    button = None
+    if args.auto_interval_s is None:
+        ensure_lgpio_pin_factory()
+        from gpiozero import Button  # pylint: disable=import-outside-toplevel
+
+        button = Button(args.trigger_pin, pull_up=False, bounce_time=0.05)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = args.outdir / stamp
@@ -166,7 +186,6 @@ def main() -> int:
     log_path = outdir / "session.jsonl"
 
     print("OpenFlight must be stopped. Configuring the IWR6843...")
-    button = Button(args.trigger_pin, pull_up=False, bounce_time=0.05)
     try:
         with IWR6843Radar(port=args.port) as radar, log_path.open("w", encoding="utf-8") as log:
             radar.send_config(args.cfg)
@@ -213,6 +232,7 @@ def main() -> int:
                         gate_start=args.gate_start,
                         gate_count=args.gate_count,
                         min_power=args.min_power,
+                        auto_interval_s=args.auto_interval_s,
                         log_handle=log,
                     )
                 )
@@ -220,7 +240,8 @@ def main() -> int:
             if args.mode == "ball":
                 _print_ball_summary(events)
     finally:
-        button.close()
+        if button is not None:
+            button.close()
 
     print(f"Complete. Session log: {log_path}")
     return 0
