@@ -1136,6 +1136,7 @@ static void l3_hwaOutputDoneCB(uintptr_t arg, uint8_t tcCode)
     }
 #endif
 #ifdef SHADOW_TRACKER
+#ifndef L3_RING_IQ8
     if (gActiveFrameShouldKeep) {
         uint32_t completedSlot = gActiveFrameIsPost
                                      ? gCapturePlan.preFrames + gPostFramesCaptured
@@ -1146,6 +1147,7 @@ static void l3_hwaOutputDoneCB(uintptr_t arg, uint8_t tcCode)
         gShadowPendingSlot = completedSlot;
         gShadowPending = 1U;
     }
+#endif
 #endif
     if (gActiveFrameIsPost) {
         gPostFramesObserved++;
@@ -1400,10 +1402,25 @@ static uint32_t l3_shadowSamplePower(int16_t im, int16_t re)
     return (uint32_t)((scaledIm * scaledIm) + (scaledRe * scaledRe));
 }
 
-static void l3_shadowExtractFrame(uint32_t slot)
+static int16_t l3_shadowStoredSample(int16_t sample, uint16_t sampleScale)
+{
+    int32_t value = (int32_t)sample;
+
+    if (sampleScale > 1U) {
+        if (value > 127) {
+            value = 127;
+        } else if (value < -128) {
+            value = -128;
+        }
+        value *= (int32_t)sampleScale;
+    }
+    return (int16_t)value;
+}
+
+static void l3_shadowExtractIq16Frame(uint32_t slot, const int16_t *frame,
+                                     uint16_t sampleScale)
 {
     l3_shadow_candidate_t *candidate;
-    const int16_t *frame;
     uint32_t frameStart;
     uint32_t frameBins;
     uint32_t gateEnd;
@@ -1428,8 +1445,6 @@ static void l3_shadowExtractFrame(uint32_t slot)
     frameStart = gFrameBinStart[slot];
     frameBins = gFrameBinCount[slot];
     gateEnd = (uint32_t)gShadowConfig.startBin + gShadowConfig.binCount;
-    frame = (const int16_t *)&g_ring[gFrameOffset[slot]];
-
     for (tx = 0U; tx < N_TX; tx++) {
         for (localBin = 0U; localBin < frameBins; localBin++) {
             uint32_t absoluteBin = frameStart + localBin;
@@ -1443,7 +1458,9 @@ static void l3_shadowExtractFrame(uint32_t slot)
                 for (rx = 0U; rx < N_RX; rx++) {
                     uint32_t word =
                         (((chirp * N_RX + rx) * frameBins + localBin) * 2U);
-                    power += l3_shadowSamplePower(frame[word], frame[word + 1U]);
+                    power += l3_shadowSamplePower(
+                        l3_shadowStoredSample(frame[word], sampleScale),
+                        l3_shadowStoredSample(frame[word + 1U], sampleScale));
                 }
             }
             if (power > bestPower) {
@@ -1472,7 +1489,9 @@ static void l3_shadowExtractFrame(uint32_t slot)
             for (rx = 0U; rx < N_RX; rx++) {
                 uint32_t word =
                     (((chirp * N_RX + rx) * frameBins + bestLocalBin) * 2U);
-                loopPower += l3_shadowSamplePower(frame[word], frame[word + 1U]);
+                loopPower += l3_shadowSamplePower(
+                    l3_shadowStoredSample(frame[word], sampleScale),
+                    l3_shadowStoredSample(frame[word + 1U], sampleScale));
             }
             if (loopPower > peakPower) {
                 peakPower = loopPower;
@@ -1484,8 +1503,10 @@ static void l3_shadowExtractFrame(uint32_t slot)
             uint32_t chirp = peakLoop * N_TX + bestTx;
             uint32_t word =
                 (((chirp * N_RX + rx) * frameBins + bestLocalBin) * 2U);
-            candidate->rx_iq[2U * rx] = frame[word];
-            candidate->rx_iq[2U * rx + 1U] = frame[word + 1U];
+            candidate->rx_iq[2U * rx] =
+                l3_shadowStoredSample(frame[word], sampleScale);
+            candidate->rx_iq[2U * rx + 1U] =
+                l3_shadowStoredSample(frame[word + 1U], sampleScale);
         }
     }
     candidate->valid = 1U;
@@ -1494,6 +1515,11 @@ static void l3_shadowExtractFrame(uint32_t slot)
 
 static void l3_shadowExtractPendingFrame(void)
 {
+#ifdef L3_RING_IQ8
+    /* IQ8 builds consume the completed IQ16 scratch frame in the rearm task,
+     * before that frame is packed into the L3 ring. */
+    return;
+#else
     uint32_t slot;
     uintptr_t key;
 
@@ -1505,7 +1531,9 @@ static void l3_shadowExtractPendingFrame(void)
     slot = gShadowPendingSlot;
     gShadowPending = 0U;
     Hwi_restore(key);
-    l3_shadowExtractFrame(slot);
+    l3_shadowExtractIq16Frame(
+        slot, (const int16_t *)&g_ring[gFrameOffset[slot]], 1U);
+#endif
 }
 
 static void l3_writeShadowCandidate(uint32_t slot)
@@ -1878,7 +1906,7 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
                 continue;
             }
 
-#ifdef SHADOW_TRACKER
+#if defined(SHADOW_TRACKER) && !defined(L3_RING_IQ8)
             l3_shadowExtractPendingFrame();
 #endif
 #ifdef L3_RING_IQ8
@@ -1903,6 +1931,11 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
             Hwi_restore(key);
             if (freezeAfterPack) {
                 if (hadPending) {
+#ifdef SHADOW_TRACKER
+                    l3_shadowExtractIq16Frame(
+                        pendingSlot,
+                        &g_iq16FrameScratch[pendingScratch][0], 128U);
+#endif
                     l3_packIq8CompletedFrame(pendingSlot, pendingScratch);
                 }
                 if (gHwaFreezeSemaphore != NULL) {
@@ -1922,6 +1955,11 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
             }
 #ifdef L3_RING_IQ8
             if (hadPending) {
+#ifdef SHADOW_TRACKER
+                l3_shadowExtractIq16Frame(
+                    pendingSlot,
+                    &g_iq16FrameScratch[pendingScratch][0], 128U);
+#endif
                 l3_packIq8CompletedFrame(pendingSlot, pendingScratch);
             }
 #endif

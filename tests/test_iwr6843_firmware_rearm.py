@@ -170,6 +170,31 @@ def test_l3_resident_iq8_build_uses_scratch_then_packs_the_ring():
     assert "(samples & 0xFFU) | ((samples >> 8U) & 0xFF00U)" in firmware
 
 
+def test_iq8_shadow_build_selects_from_completed_iq16_scratch_before_packing():
+    source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
+    target = _function_source(
+        source,
+        "build-iq8-shadow-native:",
+        "build-shadow-native:",
+    )
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+    rearm = _function_source(
+        firmware,
+        "static void l3_hwaRearmTask",
+        "/* Fill the 20-byte fixed dump header",
+    )
+
+    assert "--define=L3_RING_IQ8=1" in target
+    assert "--define=SHADOW_TRACKER=1" in target
+    assert "IQ8_SHADOW_RELEASE_NAME ?=" in source
+    assert "docker-build-iq8-shadow:" in source
+    assert "l3_shadowExtractIq16Frame" in firmware
+    assert "g_iq16FrameScratch[pendingScratch]" in rearm
+    assert rearm.index("l3_shadowExtractIq16Frame") < rearm.index(
+        "l3_packIq8CompletedFrame"
+    )
+
+
 def test_release_filenames_use_feature_and_build_date_without_version_tokens():
     pattern = re.compile(r"^[a-z0-9_]+_\d{8}\.bin$")
 
@@ -623,13 +648,14 @@ def test_docker_targets_pin_the_amd64_platform():
         "docker-build:",
         "docker-build-iq8:",
         "docker-build-iq8-ring:",
+        "docker-build-iq8-shadow:",
         "docker-build-shadow:",
         "docker-shell:",
     ):
         assert f"\n{target}" in source, f"{target} is missing"
-    # Six docker invocations, each explicitly amd64: the Dockerfile
+    # Seven docker invocations, each explicitly amd64: the Dockerfile
     # deliberately does not pin the platform itself.
-    assert source.count("--platform linux/amd64") == 6, source.count("--platform linux/amd64")
+    assert source.count("--platform linux/amd64") == 7, source.count("--platform linux/amd64")
 
 
 def test_fetch_installers_separates_automatic_from_login_gated():
