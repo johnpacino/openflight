@@ -104,6 +104,65 @@ phase. The firmware prints the resolved plan during `sensorStart`; invalid or
 oversized plans fail before RF capture begins. Immediately before streaming,
 the firmware also appends the TI temperature report to the dump.
 
+### Runtime Compression
+
+The runtime-compression image can store either the known-good IQ16 samples or
+compressed IQ8 samples without another firmware flash:
+
+```text
+captureFormat iq16
+```
+
+or:
+
+```text
+captureFormat iq8
+```
+
+`iq16` is the default and preserves each complex sample as two signed 16-bit
+components. It can use the full 768 KiB L3 arena. `iq8` uses a per-frame
+power-of-two scale and stores two signed 8-bit components; it reserves 96 KiB
+at the top of the same arena for two IQ16 HWA scratch frames, leaving 672 KiB
+for the compressed ring. The selected format is recorded in the dump header,
+so the host parser and server do not need a matching command-line switch.
+
+Set `captureFormat` while the sensor is stopped and before `sensorStart`. The
+planner recalculates every frame offset and rejects plans that do not fit the
+selected format. Compression therefore does not make an oversized IQ16 movie
+safe; it makes denser plans possible when `iq8` is selected.
+
+The controlled compression test uses the same 12-loop, 18-frame, 4 ms movie in
+both modes. Only the format line differs:
+
+```text
+config/iwr6843_l3dump_compression_ab_iq16.cfg
+config/iwr6843_l3dump_compression_ab_iq8.cfg
+```
+
+A denser pair covers the same 72 ms movie with 24 frames at 3 ms spacing:
+
+```text
+config/iwr6843_l3dump_compression_ab_24f3ms_iq16.cfg
+config/iwr6843_l3dump_compression_ab_24f3ms_iq8.cfg
+```
+
+Hardware validation on 2026-08-05 showed that the IQ16 control sustained the
+requested 3 ms cadence with 8/8 angle coverage and TI range speed within 1.1
+mph mean absolute error of OPS. The current IQ8 packing path did not sustain
+that cadence: its retained frames were effectively about 4.25 ms apart while
+the descriptors still reported 3 ms. Do not use the IQ8 angle output as a
+measurement until firmware records actual retained-frame timing and prevents
+or reports missed RF frames. IQ8 remains useful for compression development;
+IQ16 is the reproducible control for another hardware test.
+
+Build the shared image on macOS with:
+
+```bash
+make -C firmware docker-build-runtime-compression
+```
+
+The output is `firmware/releases/l3_dump_runtime_compression_20260805.bin`.
+
 ## What The Current Firmware Captures
 
 ### Capture Geometry
@@ -636,7 +695,8 @@ The build fixes only the hardware envelope and maximums:
 | `N_SAMPLES` | ADC samples in `profileCfg` |
 | `L3_MAX_LOOPS` | Largest loop count accepted from `frameCfg` |
 | `L3_MAX_CAPTURE_FRAMES` | Maximum number of frame descriptors |
-| `L3_CAPTURE_BYTES` | L3 arena available to the planner |
+| `L3_TOTAL_BYTES` | Physical 768 KiB L3 arena |
+| `L3_IQ8_CAPTURE_BYTES` | IQ8 ring capacity after reserving ping-pong scratch |
 
 The checked-in `.cfg` controls:
 
@@ -644,6 +704,7 @@ The checked-in `.cfg` controls:
 |---|---|
 | `frameCfg numLoops` | TDM loops per frame |
 | `frameCfg framePeriodicity` | Time between frame starts |
+| `captureFormat iq16\|iq8` | Select uncompressed or compressed L3 storage |
 | `captureCfg preStart preBins` | Circular pre-trigger range window |
 | `captureCfg postStart postBins` | First-half post-trigger range window |
 | `captureCfg lateStart` | Second-half post-trigger start; uses `postBins` width |
@@ -654,10 +715,13 @@ At `sensorStart`, firmware first reserves the post buffer, then turns every
 remaining whole-frame allocation into pre-trigger ring slots:
 
 ```text
-bytes per bin = TX x loops x RX x 4
+bytes per bin = TX x loops x RX x bytes per complex sample
 post bytes    = postFrames x postBins x bytes per bin
-pre frames    = floor((786,432 - post bytes) / (preBins x bytes per bin))
+pre frames    = floor((format capacity - post bytes) / (preBins x bytes per bin))
 ```
+
+The bytes per complex sample are 4 for IQ16 and 2 for IQ8. Format capacity is
+786,432 bytes for IQ16 and 688,128 bytes for IQ8 after scratch reservation.
 
 The planner rejects odd loops, loops outside 2-16, windows outside the 128-bin
 FFT, plans with no pre-trigger frame, and post reservations too large for L3 or

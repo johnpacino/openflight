@@ -190,7 +190,7 @@ def test_header_carries_period_and_trigger():
 
 def test_parse_header_rejects_future_dump_version():
     raw = synth_shot()
-    future = bytearray(raw[:HEADER.size])
+    future = bytearray(raw[: HEADER.size])
     future[4:6] = int(MAX_SUPPORTED_DUMP_VERSION + 1).to_bytes(2, "little")
 
     with pytest.raises(ValueError, match="unsupported dump version"):
@@ -1217,9 +1217,7 @@ def test_lcmf_v1_rejects_when_every_channel_is_off_the_grid(cal, monkeypatch):
     """
     monkeypatch.setattr(lcmf, "grid_curvature", lambda objective: None)
 
-    result = estimate_lcmf_v1(
-        _range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i"
-    )
+    result = estimate_lcmf_v1(_range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i")
 
     assert result.status == "rejected_no_conditioned_channel"
     assert result.angle_deg is None
@@ -1227,9 +1225,7 @@ def test_lcmf_v1_rejects_when_every_channel_is_off_the_grid(cal, monkeypatch):
     assert result.track_speed_mph is not None, "a rejection must keep its track evidence"
 
 
-def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(
-    cal, monkeypatch
-):
+def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(cal, monkeypatch):
     """A tie on evidence is not a licence to return whichever channel is first.
 
     ``max()`` yields the first key on a tie, and insertion order puts
@@ -1240,9 +1236,7 @@ def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(
     monkeypatch.setattr(lcmf, "grid_curvature", lambda objective: 0.0)
     monkeypatch.setattr(lcmf, "CHANNEL_SPREAD_MAX_DEG", 0.0)
 
-    result = estimate_lcmf_v1(
-        _range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i"
-    )
+    result = estimate_lcmf_v1(_range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i")
 
     assert result.status == "rejected_no_conditioned_channel"
     assert result.angle_deg is None
@@ -1302,6 +1296,28 @@ def test_lcmf_v1_reports_rejected_track_quality(cal):
     assert result.status == "rejected_track_quality"
 
 
+def test_lcmf_v1_preserves_partial_snapshot_evidence_on_rejection(cal, monkeypatch):
+    """A starved angle fit must report what it saw instead of zero evidence."""
+    original_balanced = lcmf._balanced_indices  # pylint: disable=protected-access
+
+    def starve_snapshots(cache):
+        indices = original_balanced(cache)
+        return indices[:7]
+
+    monkeypatch.setattr(lcmf, "_balanced_indices", starve_snapshots)
+
+    result = estimate_lcmf_v1(
+        _range_snapshot_shot(),
+        cal,
+        ball_speed_mph=45.0 * 2.23694,
+        club="9i",
+    )
+
+    assert result.status == "insufficient_channel_snapshots"
+    assert result.n_snapshots == 7
+    assert result.n_frames > 0
+
+
 def test_lcmf_v1_uses_tx2_effective_timing_on_three_tx_capture(cal):
     rng = np.random.default_rng(12)
     cube = (
@@ -1314,6 +1330,54 @@ def test_lcmf_v1_uses_tx2_effective_timing_on_three_tx_capture(cal):
     assert not result.accepted
     assert result.effective_tdm_tau_s == pytest.approx(TX2_VERTICAL_TDM_TAU_S)
     assert result.effective_loop_period_s == pytest.approx(TX2_LOOP_PERIOD_S)
+
+
+def test_lcmf_v1_uses_ops_speed_for_tdm_phase_compensation(cal, monkeypatch):
+    """A false TI range slope must not corrupt TDM phase compensation.
+
+    The OPS speed is the measured radial velocity. The TI range track still
+    supplies the ball's range walk, but multipath can bias its fitted slope.
+    """
+    raw = synth_shot(
+        speed_ms=45.0,
+        launch_deg=18.0,
+        n_loops=12,
+        n_tx=3,
+        frame_period_us=4000,
+        trigger_frame=0,
+    )
+    ops_speed_ms = 37.0
+    observed: dict[str, float | None] = {}
+    original_cache = lcmf._snapshot_cache  # pylint: disable=protected-access
+    original_horizontal = lcmf._tx2_horizontal_proxy  # pylint: disable=protected-access
+
+    def cache_spy(*args, phase_velocity_ms=None, **kwargs):
+        observed["vertical"] = phase_velocity_ms
+        if phase_velocity_ms is None:
+            return original_cache(*args, **kwargs)
+        return original_cache(*args, phase_velocity_ms=phase_velocity_ms, **kwargs)
+
+    def horizontal_spy(*args, phase_velocity_ms=None, **kwargs):
+        observed["horizontal"] = phase_velocity_ms
+        if phase_velocity_ms is None:
+            return original_horizontal(*args, **kwargs)
+        return original_horizontal(*args, phase_velocity_ms=phase_velocity_ms, **kwargs)
+
+    monkeypatch.setattr(lcmf, "_snapshot_cache", cache_spy)
+    monkeypatch.setattr(lcmf, "_tx2_horizontal_proxy", horizontal_spy)
+
+    result = estimate_lcmf_v1(
+        raw,
+        cal,
+        ball_speed_mph=ops_speed_ms * 2.23694,
+        club="9i",
+    )
+
+    assert result.track_speed_mph == pytest.approx(45.0 * 2.237, rel=0.03)
+    assert observed == {
+        "vertical": pytest.approx(ops_speed_ms),
+        "horizontal": pytest.approx(ops_speed_ms),
+    }
 
 
 def test_tx2_horizontal_uses_tail_of_ball_track_not_fixed_ring_tail():

@@ -15,6 +15,7 @@ IQ8_RELEASE_NAME ?= l3_dump_hybrid_cadence_iq8_20260804.bin
 IQ8_RING_RELEASE_NAME ?= l3_dump_hybrid_cadence_iq8_ring_pingpong_20260804.bin
 SHADOW_RELEASE_NAME ?= l3_dump_onchip_shadow_20260803.bin
 IQ8_SHADOW_RELEASE_NAME ?= l3_dump_iq8_shadow_20260804.bin
+RUNTIME_COMPRESSION_RELEASE_NAME ?= l3_dump_runtime_compression_20260805.bin
 
 SDK_INSTALLER := $(INSTALLER_DIR)/mmwave_sdk_03_06_02_00-LTS-Linux-x86-Install.bin
 R4F_INSTALLER := $(INSTALLER_DIR)/ti_cgt_tms470_20.2.7.LTS_linux-x64_installer.bin
@@ -51,7 +52,7 @@ REQUIRED_INSTALLERS := \
 	sysconfig-1.10.0_2163-setup.run \
 	xdctools_3_61_00_16_core_linux.zip
 
-.PHONY: help check-host check-tools check-installers install-ti-deps-native install-ti-tools-native probe-installers-native fetch-installers build-native build-iq8-native build-iq8-ring-native build-iq8-shadow-native build-shadow-native docker-image docker-build docker-build-iq8 docker-build-iq8-ring docker-build-iq8-shadow docker-build-shadow docker-shell clean
+.PHONY: help check-host check-tools check-installers install-ti-deps-native install-ti-tools-native probe-installers-native fetch-installers build-native build-iq8-native build-iq8-ring-native build-runtime-compression-native build-iq8-shadow-native build-shadow-native docker-image docker-build docker-build-iq8 docker-build-iq8-ring docker-build-runtime-compression docker-build-iq8-shadow docker-build-shadow docker-shell clean
 
 help:
 	@echo "IWR6843 production firmware helpers"
@@ -67,6 +68,7 @@ help:
 	@echo "  build-native            Build the supported production firmware (x86_64 Linux)"
 	@echo "  build-iq8-native        Build experimental IQ8-compressed dump firmware"
 	@echo "  build-iq8-ring-native   Build experimental IQ8-resident L3 ring firmware"
+	@echo "  build-runtime-compression-native Build runtime-selectable IQ16/IQ8 firmware"
 	@echo "  build-iq8-shadow-native Build IQ8 ring plus on-chip shadow diagnostics"
 	@echo "  build-shadow-native     Build on-chip shadow-candidate diagnostic firmware"
 	@echo ""
@@ -74,6 +76,7 @@ help:
 	@echo "  docker-build            Build the firmware inside the container (any host)"
 	@echo "  docker-build-iq8        Build the IQ8-compressed firmware in the container"
 	@echo "  docker-build-iq8-ring   Build the IQ8-resident ring firmware in the container"
+	@echo "  docker-build-runtime-compression Build runtime-selectable IQ16/IQ8 firmware"
 	@echo "  docker-build-iq8-shadow Build IQ8 ring plus shadow diagnostics in the container"
 	@echo "  docker-build-shadow     Build the shadow-candidate firmware in the container"
 	@echo "  docker-shell            Interactive shell in the build container"
@@ -175,6 +178,13 @@ build-iq8-ring-native: check-tools
 	mkdir -p "$(RELEASE_DIR)"
 	cp "$(FIRMWARE_DIR)/l3_dump.bin" "$(RELEASE_DIR)/$(IQ8_RING_RELEASE_NAME)"
 	sha256sum "$(RELEASE_DIR)/$(IQ8_RING_RELEASE_NAME)"
+
+build-runtime-compression-native: check-tools
+	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" cleanApp
+	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" bin L3_VARIANT_DEFS="--define=N_TX=3 --define=ENABLE_HWA_SMOKE=1 --define=SNAPSHOT_DUMP=1 --define=HWA_CHAINED_SNAPSHOT_RING=1 --define=CONFIGURABLE_CAPTURE=1 --define=HYBRID_CADENCE_CAPTURE=1 --define=L3_RING_IQ8=1"
+	mkdir -p "$(RELEASE_DIR)"
+	cp "$(FIRMWARE_DIR)/l3_dump.bin" "$(RELEASE_DIR)/$(RUNTIME_COMPRESSION_RELEASE_NAME)"
+	sha256sum "$(RELEASE_DIR)/$(RUNTIME_COMPRESSION_RELEASE_NAME)"
 
 build-iq8-shadow-native: check-tools
 	$(BUILD_ENV) $(MAKE) -C "$(FIRMWARE_DIR)" cleanApp
@@ -282,6 +292,16 @@ docker-build-iq8-ring:
 	docker run --rm --platform linux/amd64 \
 		-v "$(REPO_ROOT):/work" -w /work \
 		"$(DOCKER_IMAGE)" make -C firmware build-iq8-ring-native IQ8_RING_RELEASE_NAME="$(IQ8_RING_RELEASE_NAME)"
+
+docker-build-runtime-compression:
+	@if ! docker image inspect "$(DOCKER_IMAGE)" >/dev/null 2>&1; then \
+		echo "ERROR: container image '$(DOCKER_IMAGE)' does not exist."; \
+		echo "       Build it once with: make -C firmware docker-image"; \
+		exit 1; \
+	fi
+	docker run --rm --platform linux/amd64 \
+		-v "$(REPO_ROOT):/work" -w /work \
+		"$(DOCKER_IMAGE)" make -C firmware build-runtime-compression-native RUNTIME_COMPRESSION_RELEASE_NAME="$(RUNTIME_COMPRESSION_RELEASE_NAME)"
 
 docker-build-iq8-shadow:
 	@if ! docker image inspect "$(DOCKER_IMAGE)" >/dev/null 2>&1; then \

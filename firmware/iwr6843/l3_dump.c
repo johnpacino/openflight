@@ -56,6 +56,7 @@
 /* --- task priorities (mirror the mmw demo): ctrl > CLI. -------------------- */
 #define L3_INIT_TASK_PRIORITY  2
 #define L3_CLI_TASK_PRIORITY   3
+#define L3_HWA_REARM_TASK_PRIORITY (L3_CLI_TASK_PRIORITY - 1U)
 /* Keep the live snapshot worker below CLI. SYS/BIOS Task_yield does not allow
  * lower-priority tasks to run, and a priority-4 snapshot loop starved l3dump
  * so the host only saw the echoed 7-byte "l3dump\n" command. */
@@ -199,15 +200,21 @@
 #define L3_MIN_LOOPS           2U
 #ifdef L3_RING_IQ8
 /* The HWA emits complex16 samples. One maximum-size production frame lands in
- * scratch, then the rearm task block-quantizes it into the compact IQ8 ring. */
+ * scratch, then the rearm task block-quantizes it into the compact IQ8 ring.
+ * IQ16 mode uses the whole arena directly; IQ8 mode overlays ping-pong scratch
+ * onto the upper portion that its compressed capture does not use. */
+#define L3_IQ8_HWA_SHIFT      4U
+#define L3_IQ8_HWA_SCALE      (1U << L3_IQ8_HWA_SHIFT)
 #define L3_RING_MAX_BINS       64U
+#define L3_CAPTURE_FORMAT_IQ16 0U
+#define L3_CAPTURE_FORMAT_IQ8  1U
 #define L3_IQ16_SCRATCH_FRAME_BYTES  \
     (N_TX * L3_MAX_LOOPS * N_RX * L3_RING_MAX_BINS * 2U * \
      (uint32_t)sizeof(int16_t))
 #define L3_IQ16_SCRATCH_BYTES  (2U * L3_IQ16_SCRATCH_FRAME_BYTES)
-#define L3_CAPTURE_BYTES       (L3_TOTAL_BYTES - L3_IQ16_SCRATCH_BYTES)
-#else
-#define L3_CAPTURE_BYTES       L3_TOTAL_BYTES
+#define L3_IQ16_SCRATCH_WORDS  \
+    (L3_IQ16_SCRATCH_FRAME_BYTES / (uint32_t)sizeof(int16_t))
+#define L3_IQ8_CAPTURE_BYTES   (L3_TOTAL_BYTES - L3_IQ16_SCRATCH_BYTES)
 #endif
 #define L3_DEFAULT_PRE_START   20U
 #define L3_DEFAULT_PRE_BINS    32U
@@ -249,7 +256,13 @@ typedef struct {
 
 #pragma DATA_SECTION(g_ring, ".l3ring")
 #pragma DATA_ALIGN(g_ring, 8)
-static uint8_t g_ring[L3_CAPTURE_BYTES];
+static uint8_t g_ring[L3_TOTAL_BYTES];
+#ifdef L3_RING_IQ8
+static uint8_t gCaptureFormat = L3_CAPTURE_FORMAT_IQ16;
+#define g_iq16FrameScratch \
+    (*((int16_t (*)[2][L3_IQ16_SCRATCH_WORDS]) \
+       (void *)&g_ring[L3_IQ8_CAPTURE_BYTES]))
+#endif
 static l3_capture_plan_t gCapturePlan = {
     L3_DEFAULT_PRE_START,
     L3_DEFAULT_PRE_BINS,
@@ -268,12 +281,6 @@ static uint32_t gFrameOffset[L3_MAX_CAPTURE_FRAMES];
 static uint32_t gFrameBytes[L3_MAX_CAPTURE_FRAMES];
 #ifdef L3_ANY_IQ8
 static uint16_t gFrameIq8Scale[L3_MAX_CAPTURE_FRAMES];
-#endif
-#ifdef L3_RING_IQ8
-#pragma DATA_SECTION(g_iq16FrameScratch, ".l3scratch")
-#pragma DATA_ALIGN(g_iq16FrameScratch, 8)
-static int16_t g_iq16FrameScratch[2]
-    [L3_IQ16_SCRATCH_FRAME_BYTES / sizeof(int16_t)];
 #endif
 #ifdef SHADOW_TRACKER
 typedef struct {
@@ -426,6 +433,9 @@ static int32_t l3_cli_stats(int32_t argc, char *argv[]);
 #ifdef CONFIGURABLE_CAPTURE
 static int32_t l3_cli_captureCfg(int32_t argc, char *argv[]);
 static int32_t l3_cli_phaseCaptureCfg(int32_t argc, char *argv[]);
+#ifdef L3_RING_IQ8
+static int32_t l3_cli_captureFormat(int32_t argc, char *argv[]);
+#endif
 #ifdef SHADOW_TRACKER
 static int32_t l3_cli_shadowCfg(int32_t argc, char *argv[]);
 static int32_t l3_cli_shadowStats(int32_t argc, char *argv[]);
@@ -456,6 +466,58 @@ static int32_t l3_parseU8(const char *text, uint8_t *value)
     *value = (uint8_t)parsed;
     return 0;
 }
+
+static uint8_t l3_captureUsesIq8(void)
+{
+#ifdef L3_RING_IQ8
+    return gCaptureFormat == L3_CAPTURE_FORMAT_IQ8;
+#else
+    return 0U;
+#endif
+}
+
+static uint32_t l3_captureCapacityBytes(void)
+{
+#ifdef L3_RING_IQ8
+    if (l3_captureUsesIq8()) {
+        return L3_IQ8_CAPTURE_BYTES;
+    }
+#endif
+    return L3_TOTAL_BYTES;
+}
+
+static uint32_t l3_captureBytesPerComplex(void)
+{
+    return l3_captureUsesIq8()
+               ? 2U : 2U * (uint32_t)sizeof(int16_t);
+}
+
+#ifdef L3_RING_IQ8
+static int32_t l3_cli_captureFormat(int32_t argc, char *argv[])
+{
+    if (gCaptureActive) {
+        CLI_write("Error: stop the sensor before captureFormat\n");
+        return -1;
+    }
+    if (argc != 2) {
+        CLI_write("Error: captureFormat needs iq16 or iq8\n");
+        return -1;
+    }
+    if (strcmp(argv[1], "iq16") == 0) {
+        gCaptureFormat = L3_CAPTURE_FORMAT_IQ16;
+    } else if (strcmp(argv[1], "iq8") == 0) {
+        gCaptureFormat = L3_CAPTURE_FORMAT_IQ8;
+    } else {
+        CLI_write("Error: captureFormat needs iq16 or iq8\n");
+        return -1;
+    }
+    gCapturePlan.preFrames = 0U;
+    gCapturePlan.totalFrames = 0U;
+    gCapturePlan.usedBytes = 0U;
+    CLI_write("Capture format: %s\n", l3_captureUsesIq8() ? "iq8" : "iq16");
+    return 0;
+}
+#endif
 
 #ifdef SHADOW_TRACKER
 static int32_t l3_parseU32(const char *text, uint32_t *value)
@@ -516,6 +578,7 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
 {
     uint32_t bytesPerBin;
     uint32_t bytesPerComplex;
+    uint32_t captureBytes;
     uint32_t postBytes;
     uint32_t remaining;
     uint32_t preFrames;
@@ -527,6 +590,17 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
                   (unsigned)L3_MIN_LOOPS, (unsigned)L3_MAX_LOOPS);
         return -1;
     }
+#ifdef L3_RING_IQ8
+    if (l3_captureUsesIq8() &&
+        (gCapturePlan.preBins > L3_RING_MAX_BINS ||
+         gCapturePlan.postBins > L3_RING_MAX_BINS ||
+         (gCapturePlan.phased &&
+          gCapturePlan.impactBins > L3_RING_MAX_BINS))) {
+        CLI_write("Error: iq8 capture windows cannot exceed %u bins\n",
+                  (unsigned)L3_RING_MAX_BINS);
+        return -1;
+    }
+#endif
     if (gCapturePlan.preBins == 0U || gCapturePlan.postBins == 0U ||
         gCapturePlan.postFrames == 0U ||
         gCapturePlan.postStride == 0U ||
@@ -537,11 +611,6 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
         ((uint32_t)gCapturePlan.preStart + gCapturePlan.preBins) > N_SAMPLES ||
         ((uint32_t)gCapturePlan.postStart + gCapturePlan.postBins) > N_SAMPLES ||
         ((uint32_t)gCapturePlan.lateStart + gCapturePlan.postBins) > N_SAMPLES ||
-#ifdef L3_RING_IQ8
-        gCapturePlan.preBins > L3_RING_MAX_BINS ||
-        gCapturePlan.postBins > L3_RING_MAX_BINS ||
-        (gCapturePlan.phased && gCapturePlan.impactBins > L3_RING_MAX_BINS) ||
-#endif
         (gCapturePlan.phased &&
          (gCapturePlan.requestedPreFrames == 0U ||
           gCapturePlan.impactBins == 0U ||
@@ -557,11 +626,8 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
 
     gCapturePlan.loops = loops;
     gCapturePlan.chirpsPerFrame = (uint16_t)(N_TX * loops);
-#ifdef L3_RING_IQ8
-    bytesPerComplex = 2U;
-#else
-    bytesPerComplex = 2U * (uint32_t)sizeof(int16_t);
-#endif
+    bytesPerComplex = l3_captureBytesPerComplex();
+    captureBytes = l3_captureCapacityBytes();
     bytesPerBin = (uint32_t)gCapturePlan.chirpsPerFrame *
                   N_RX * bytesPerComplex;
     gCapturePlan.preFrameBytes = bytesPerBin * gCapturePlan.preBins;
@@ -571,12 +637,12 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
                     ? (gCapturePlan.impactFrameBytes * gCapturePlan.impactFrames) +
                       (gCapturePlan.postFrameBytes * gCapturePlan.ballFrames)
                     : gCapturePlan.postFrameBytes * gCapturePlan.postFrames;
-    if (postBytes >= L3_CAPTURE_BYTES) {
+    if (postBytes >= captureBytes) {
         CLI_write("Error: post-trigger capture needs %u bytes; L3 has %u\n",
-                  (unsigned)postBytes, (unsigned)L3_CAPTURE_BYTES);
+                  (unsigned)postBytes, (unsigned)captureBytes);
         return -1;
     }
-    remaining = L3_CAPTURE_BYTES - postBytes;
+    remaining = captureBytes - postBytes;
     preFrames = gCapturePlan.phased
                     ? gCapturePlan.requestedPreFrames
                     : remaining / gCapturePlan.preFrameBytes;
@@ -667,7 +733,7 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
                   (unsigned)(gFramePeriodUs * gCapturePlan.postStride),
                   (unsigned)gCapturePlan.totalFrames,
                   (unsigned)gCapturePlan.usedBytes,
-                  (unsigned)L3_CAPTURE_BYTES,
+                  (unsigned)captureBytes,
                   (unsigned)gCapturePlan.preStart,
                   (unsigned)gCapturePlan.impactStart,
                   (unsigned)gCapturePlan.postStart,
@@ -685,7 +751,7 @@ static int32_t l3_finalizeCapturePlan(uint16_t loops)
                   (unsigned)(gFramePeriodUs * gCapturePlan.postStride),
                   (unsigned)gCapturePlan.totalFrames,
                   (unsigned)gCapturePlan.usedBytes,
-                  (unsigned)L3_CAPTURE_BYTES,
+                  (unsigned)captureBytes,
                   (unsigned)gCapturePlan.preStart,
                   (unsigned)gCapturePlan.postStart,
                   (unsigned)gCapturePlan.lateStart,
@@ -1064,13 +1130,28 @@ static void l3_hwaMaybeQueueRearm(void)
     if (gCaptureActive && gHwaDoneSeen && gHwaOutputSeen && !gHwaRearmPending) {
 #ifdef CONFIGURABLE_CAPTURE
 #ifdef L3_RING_IQ8
-        /* The completed IQ16 scratch frame must be packed before scratch can
-         * be reused, including the final retained post-trigger frame. */
-        if (gHwaFreezeRequested && !gActiveFrameIsPost) {
-            gPostCaptureStarted = 1U;
+        if (l3_captureUsesIq8()) {
+            /* The completed IQ16 scratch frame must be packed before scratch
+             * can be reused, including the final retained post frame. */
+            if (gHwaFreezeRequested && !gActiveFrameIsPost) {
+                gPostCaptureStarted = 1U;
+            }
+            gHwaRearmPending = 1U;
+            queue = 1U;
+        } else if (gHwaFreezeRequested && gActiveFrameIsPost &&
+                   gActiveFrameShouldKeep &&
+                   gPostFramesCaptured >= gCapturePlan.postFrames) {
+            gCaptureActive = 0U;
+            gHwaFreezeRequested = 0U;
+            gHwaFreezeCompletions++;
+            freeze = 1U;
+        } else {
+            if (gHwaFreezeRequested && !gActiveFrameIsPost) {
+                gPostCaptureStarted = 1U;
+            }
+            gHwaRearmPending = 1U;
+            queue = 1U;
         }
-        gHwaRearmPending = 1U;
-        queue = 1U;
 #else
         if (gHwaFreezeRequested && gActiveFrameIsPost &&
             gActiveFrameShouldKeep &&
@@ -1123,7 +1204,7 @@ static void l3_hwaOutputDoneCB(uintptr_t arg, uint8_t tcCode)
     gRingFrame++;
 #ifdef CONFIGURABLE_CAPTURE
 #ifdef L3_RING_IQ8
-    if (gActiveFrameShouldKeep) {
+    if (l3_captureUsesIq8() && gActiveFrameShouldKeep) {
         uint32_t completedSlot = gActiveFrameIsPost
                                      ? gCapturePlan.preFrames + gPostFramesCaptured
                                      : gPreFramesCaptured % gCapturePlan.preFrames;
@@ -1136,8 +1217,11 @@ static void l3_hwaOutputDoneCB(uintptr_t arg, uint8_t tcCode)
     }
 #endif
 #ifdef SHADOW_TRACKER
-#ifndef L3_RING_IQ8
+#ifdef L3_RING_IQ8
+    if (!l3_captureUsesIq8() && gActiveFrameShouldKeep) {
+#else
     if (gActiveFrameShouldKeep) {
+#endif
         uint32_t completedSlot = gActiveFrameIsPost
                                      ? gCapturePlan.preFrames + gPostFramesCaptured
                                      : gPreFramesCaptured % gCapturePlan.preFrames;
@@ -1147,7 +1231,6 @@ static void l3_hwaOutputDoneCB(uintptr_t arg, uint8_t tcCode)
         gShadowPendingSlot = completedSlot;
         gShadowPending = 1U;
     }
-#endif
 #endif
     if (gActiveFrameIsPost) {
         gPostFramesObserved++;
@@ -1224,7 +1307,9 @@ static int32_t l3_configHwaProcessParam(uint8_t paramIdx, uint8_t outChannel,
     paramCfg.dest.dstSign = HWA_SAMPLES_SIGNED;
     paramCfg.dest.dstConjugate = HWA_FEATURE_BIT_DISABLE;
 #ifdef L3_RING_IQ8
-    paramCfg.dest.dstScale = 8U;
+    /* Keep four more HWA output bits than the original fixed-IQ8 path. The
+     * rearm task chooses a per-frame power-of-two scale before ring packing. */
+    paramCfg.dest.dstScale = l3_captureUsesIq8() ? L3_IQ8_HWA_SHIFT : 0U;
 #else
     paramCfg.dest.dstScale = 0U;
 #endif
@@ -1396,21 +1481,33 @@ static int32_t l3_configHwaCommon(void)
 #if defined(CONFIGURABLE_CAPTURE) && defined(SHADOW_TRACKER)
 static uint32_t l3_shadowSamplePower(int16_t im, int16_t re)
 {
-    int32_t scaledIm = (int32_t)im / 16;
-    int32_t scaledRe = (int32_t)re / 16;
+    int32_t scaledIm = (int32_t)im;
+    int32_t scaledRe = (int32_t)re;
+
+    /* Match the original reconstructed-IQ16 power ceiling without doing two
+     * multiplies, clips, and divides for every component in the frame scan. */
+    if (scaledIm > 2047) {
+        scaledIm = 2047;
+    } else if (scaledIm < -2048) {
+        scaledIm = -2048;
+    }
+    if (scaledRe > 2047) {
+        scaledRe = 2047;
+    } else if (scaledRe < -2048) {
+        scaledRe = -2048;
+    }
 
     return (uint32_t)((scaledIm * scaledIm) + (scaledRe * scaledRe));
 }
 
-static int16_t l3_shadowStoredSample(int16_t sample, uint16_t sampleScale)
+static int16_t l3_shadowScaleSample(int16_t sample, uint16_t sampleScale)
 {
-    int32_t value = (int32_t)sample;
+    int32_t value = (int32_t)sample * (int32_t)sampleScale;
 
-    if (sampleScale > 1U) {
-        /* Packing stores the low byte from each scaled HWA int16. Interpret
-         * that exact byte as signed IQ8 before reconstructing host amplitude. */
-        value = (int32_t)(int8_t)((uint16_t)sample & 0xFFU);
-        value *= (int32_t)sampleScale;
+    if (value > 32767) {
+        value = 32767;
+    } else if (value < -32768) {
+        value = -32768;
     }
     return (int16_t)value;
 }
@@ -1456,9 +1553,8 @@ static void l3_shadowExtractIq16Frame(uint32_t slot, const int16_t *frame,
                 for (rx = 0U; rx < N_RX; rx++) {
                     uint32_t word =
                         (((chirp * N_RX + rx) * frameBins + localBin) * 2U);
-                    power += l3_shadowSamplePower(
-                        l3_shadowStoredSample(frame[word], sampleScale),
-                        l3_shadowStoredSample(frame[word + 1U], sampleScale));
+                    power +=
+                        l3_shadowSamplePower(frame[word], frame[word + 1U]);
                 }
             }
             if (power > bestPower) {
@@ -1487,9 +1583,8 @@ static void l3_shadowExtractIq16Frame(uint32_t slot, const int16_t *frame,
             for (rx = 0U; rx < N_RX; rx++) {
                 uint32_t word =
                     (((chirp * N_RX + rx) * frameBins + bestLocalBin) * 2U);
-                loopPower += l3_shadowSamplePower(
-                    l3_shadowStoredSample(frame[word], sampleScale),
-                    l3_shadowStoredSample(frame[word + 1U], sampleScale));
+                loopPower +=
+                    l3_shadowSamplePower(frame[word], frame[word + 1U]);
             }
             if (loopPower > peakPower) {
                 peakPower = loopPower;
@@ -1502,9 +1597,9 @@ static void l3_shadowExtractIq16Frame(uint32_t slot, const int16_t *frame,
             uint32_t word =
                 (((chirp * N_RX + rx) * frameBins + bestLocalBin) * 2U);
             candidate->rx_iq[2U * rx] =
-                l3_shadowStoredSample(frame[word], sampleScale);
+                l3_shadowScaleSample(frame[word], sampleScale);
             candidate->rx_iq[2U * rx + 1U] =
-                l3_shadowStoredSample(frame[word + 1U], sampleScale);
+                l3_shadowScaleSample(frame[word + 1U], sampleScale);
         }
     }
     candidate->valid = 1U;
@@ -1513,14 +1608,16 @@ static void l3_shadowExtractIq16Frame(uint32_t slot, const int16_t *frame,
 
 static void l3_shadowExtractPendingFrame(void)
 {
-#ifdef L3_RING_IQ8
-    /* IQ8 builds consume the completed IQ16 scratch frame in the rearm task,
-     * before that frame is packed into the L3 ring. */
-    return;
-#else
     uint32_t slot;
     uintptr_t key;
 
+#ifdef L3_RING_IQ8
+    /* IQ8 builds consume the completed IQ16 scratch frame in the rearm task,
+     * before that frame is packed into the L3 ring. */
+    if (l3_captureUsesIq8()) {
+        return;
+    }
+#endif
     key = Hwi_disable();
     if (!gShadowPending) {
         Hwi_restore(key);
@@ -1531,7 +1628,6 @@ static void l3_shadowExtractPendingFrame(void)
     Hwi_restore(key);
     l3_shadowExtractIq16Frame(
         slot, (const int16_t *)&g_ring[gFrameOffset[slot]], 1U);
-#endif
 }
 
 static void l3_writeShadowCandidate(uint32_t slot)
@@ -1563,23 +1659,64 @@ static int8_t l3_quantizeIq8(int16_t sample, uint16_t scale)
 #endif
 
 #ifdef L3_RING_IQ8
+static uint8_t l3_iq8PackShift(const int16_t *source, uint32_t components)
+{
+    uint32_t maxAbs = 1U;
+    uint32_t component;
+    uint8_t shift = 0U;
+
+    for (component = 0U; component < components; component++) {
+        int32_t value = (int32_t)source[component];
+        uint32_t magnitude =
+            (value < 0) ? (uint32_t)(-value) : (uint32_t)value;
+        if (magnitude > maxAbs) {
+            maxAbs = magnitude;
+        }
+    }
+    while (maxAbs > 127U) {
+        maxAbs = (maxAbs + 1U) >> 1U;
+        shift++;
+    }
+    return shift;
+}
+
+static int8_t l3_quantizeIq8Shift(int16_t sample, uint8_t shift)
+{
+    int32_t value = (int32_t)sample;
+    int32_t quantized;
+
+    if (shift == 0U) {
+        quantized = value;
+    } else {
+        int32_t half = (int32_t)(1U << (shift - 1U));
+        if (value >= 0) {
+            quantized = (value + half) >> shift;
+        } else {
+            quantized = -((-value + half) >> shift);
+        }
+    }
+    if (quantized > 127) {
+        quantized = 127;
+    } else if (quantized < -128) {
+        quantized = -128;
+    }
+    return (int8_t)quantized;
+}
+
 static void l3_packIq8CompletedFrame(uint32_t slot, uint8_t scratch)
 {
-    const uint32_t *source =
-        (const uint32_t *)&g_iq16FrameScratch[scratch][0];
-    uint16_t *destination = (uint16_t *)&g_ring[gFrameOffset[slot]];
-    uint32_t words = gFrameBytes[slot];
-    uint32_t pair;
+    const int16_t *source = &g_iq16FrameScratch[scratch][0];
+    int8_t *destination = (int8_t *)&g_ring[gFrameOffset[slot]];
+    uint32_t components = gFrameBytes[slot];
+    uint32_t component;
+    uint8_t packShift = l3_iq8PackShift(source, components);
 
-    /* HWA dstScale=8 guarantees signed IQ8 range in each int16. A little-endian
-     * 32-bit load holds two components; select their low bytes and write both
-     * packed values at once. Frame payloads always contain complete IQ pairs. */
-    for (pair = 0U; pair < (words / 2U); pair++) {
-        uint32_t samples = source[pair];
-        destination[pair] =
-            (uint16_t)((samples & 0xFFU) | ((samples >> 8U) & 0xFF00U));
+    for (component = 0U; component < components; component++) {
+        destination[component] =
+            l3_quantizeIq8Shift(source[component], packShift);
     }
-    gFrameIq8Scale[slot] = 256U;
+    gFrameIq8Scale[slot] =
+        (uint16_t)(L3_IQ8_HWA_SCALE << packShift);
     gIq8PackFrames++;
 }
 #endif
@@ -1657,7 +1794,9 @@ static int32_t l3_configHwaFrameOutput(uint32_t ringSlot)
         return -1;
     }
 #ifdef L3_RING_IQ8
-    destination = (uint32_t)&g_iq16FrameScratch[gIq8ActiveScratch][0];
+    destination = l3_captureUsesIq8()
+                      ? (uint32_t)&g_iq16FrameScratch[gIq8ActiveScratch][0]
+                      : (uint32_t)&g_ring[gFrameOffset[ringSlot]];
 #else
     destination = (uint32_t)&g_ring[gFrameOffset[ringSlot]];
 #endif
@@ -1904,35 +2043,38 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
                 continue;
             }
 
-#if defined(SHADOW_TRACKER) && !defined(L3_RING_IQ8)
+#ifdef SHADOW_TRACKER
             l3_shadowExtractPendingFrame();
 #endif
 #ifdef L3_RING_IQ8
-            key = Hwi_disable();
-            if (gIq8Pending) {
-                hadPending = 1U;
-                pendingSlot = gIq8PendingSlot;
-                pendingScratch = gIq8PendingScratch;
-                gIq8Pending = 0U;
+            if (l3_captureUsesIq8()) {
+                key = Hwi_disable();
+                if (gIq8Pending) {
+                    hadPending = 1U;
+                    pendingSlot = gIq8PendingSlot;
+                    pendingScratch = gIq8PendingScratch;
+                    gIq8Pending = 0U;
+                }
+                if (gHwaFreezeRequested && gActiveFrameIsPost &&
+                    gActiveFrameShouldKeep &&
+                    gPostFramesCaptured >= gCapturePlan.postFrames) {
+                    gCaptureActive = 0U;
+                    gHwaFreezeRequested = 0U;
+                    gHwaFreezeCompletions++;
+                    gHwaRearmPending = 0U;
+                    freezeAfterPack = 1U;
+                } else {
+                    gIq8ActiveScratch ^= 1U;
+                }
+                Hwi_restore(key);
             }
-            if (gHwaFreezeRequested && gActiveFrameIsPost &&
-                gActiveFrameShouldKeep &&
-                gPostFramesCaptured >= gCapturePlan.postFrames) {
-                gCaptureActive = 0U;
-                gHwaFreezeRequested = 0U;
-                gHwaFreezeCompletions++;
-                gHwaRearmPending = 0U;
-                freezeAfterPack = 1U;
-            } else {
-                gIq8ActiveScratch ^= 1U;
-            }
-            Hwi_restore(key);
             if (freezeAfterPack) {
                 if (hadPending) {
 #ifdef SHADOW_TRACKER
                     l3_shadowExtractIq16Frame(
                         pendingSlot,
-                        &g_iq16FrameScratch[pendingScratch][0], 256U);
+                        &g_iq16FrameScratch[pendingScratch][0],
+                        L3_IQ8_HWA_SCALE);
 #endif
                     l3_packIq8CompletedFrame(pendingSlot, pendingScratch);
                 }
@@ -1952,11 +2094,12 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
                 gHwaRearmErrors++;
             }
 #ifdef L3_RING_IQ8
-            if (hadPending) {
+            if (l3_captureUsesIq8() && hadPending) {
 #ifdef SHADOW_TRACKER
                 l3_shadowExtractIq16Frame(
                     pendingSlot,
-                    &g_iq16FrameScratch[pendingScratch][0], 256U);
+                    &g_iq16FrameScratch[pendingScratch][0],
+                    L3_IQ8_HWA_SCALE);
 #endif
                 l3_packIq8CompletedFrame(pendingSlot, pendingScratch);
             }
@@ -1988,8 +2131,12 @@ static void l3_fill_header(l3_dump_header_t *h, uint16_t n_frames,
 #ifdef CONFIGURABLE_CAPTURE
 #ifdef HYBRID_CADENCE_CAPTURE
     h->version          = L3_DUMP_VERSION_TIMED;
-#ifdef L3_ANY_IQ8
+#ifdef L3_DUMP_IQ8
     h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED;
+#elif defined(L3_RING_IQ8)
+    h->sample_fmt       = l3_captureUsesIq8()
+                              ? L3_SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED
+                              : L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED;
 #else
     h->sample_fmt       = L3_SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED;
 #endif
@@ -2271,6 +2418,13 @@ int32_t l3_cli_dump(int32_t argc, char *argv[])
         l3_writeFrameDescriptor(slot, (actualPre == 0U && i == 0U));
     }
 #ifdef L3_ANY_IQ8
+    if (
+#ifdef L3_DUMP_IQ8
+        1U
+#else
+        l3_captureUsesIq8()
+#endif
+    )
     {
         for (i = 0U; i < actualPre; i++) {
             uint32_t slot = (oldestPre + i) % gCapturePlan.preFrames;
@@ -2446,18 +2600,19 @@ static int32_t l3_cli_stats(int32_t argc, char *argv[])
     CLI_write("frames=%u wraps=%u active=%d calib=0x%x rf_faults=%u "
               "hwa_frames=%u hwa_out=%u hwa_rearms=%u hwa_rearm_err=%u "
               "freeze_req=%u freeze_done=%u freeze_to=%u "
-              "plan=%upre/%upost loops=%u used=%u/%u\n",
+              "format=%s plan=%upre/%upost loops=%u used=%u/%u\n",
               (unsigned)gNumFrame, (unsigned)gNumWrap, (int)gCaptureActive,
               (unsigned)gCalibStatus, (unsigned)gRfFaults,
               (unsigned)gHwaFrameDone, (unsigned)gHwaOutputDone,
               (unsigned)gHwaRearms, (unsigned)gHwaRearmErrors,
               (unsigned)gHwaFreezeRequests, (unsigned)gHwaFreezeCompletions,
               (unsigned)gHwaFreezeTimeouts,
+              l3_captureUsesIq8() ? "iq8" : "iq16",
               (unsigned)gCapturePlan.preFrames,
               (unsigned)gCapturePlan.postFrames,
               (unsigned)gCapturePlan.loops,
               (unsigned)gCapturePlan.usedBytes,
-              (unsigned)L3_CAPTURE_BYTES);
+              (unsigned)l3_captureCapacityBytes());
     CLI_write("iq8_packed=%u iq8_overrun=%u pending=%u pre_seen=%u "
               "post_kept=%u post_seen=%u stride=%u\n",
               (unsigned)gIq8PackFrames,
@@ -3211,7 +3366,7 @@ static void l3_initTask(UArg arg0, UArg arg1)
         return;
     }
     Task_Params_init(&taskParams);
-    taskParams.priority = 4U;
+    taskParams.priority = L3_HWA_REARM_TASK_PRIORITY;
     taskParams.stackSize = 2U * 1024U;
     Task_create(l3_hwaRearmTask, &taskParams, NULL);
 #endif
@@ -3262,7 +3417,21 @@ static void l3_initTask(UArg arg0, UArg arg1)
         "phaseCaptureCfg preStart preBins preFrames impactStart impactBins "
         "impactFrames postStart postBins lateStart ballFrames ballStride";
     cliCfg.tableEntry[8].cmdHandlerFxn = l3_cli_phaseCaptureCfg;
+#ifdef L3_RING_IQ8
+    cliCfg.tableEntry[9].cmd           = "captureFormat";
+    cliCfg.tableEntry[9].helpString    = "captureFormat iq16|iq8";
+    cliCfg.tableEntry[9].cmdHandlerFxn = l3_cli_captureFormat;
+#endif
 #ifdef SHADOW_TRACKER
+#ifdef L3_RING_IQ8
+    cliCfg.tableEntry[10].cmd           = "shadowCfg";
+    cliCfg.tableEntry[10].helpString    =
+        "shadowCfg startBin binCount minPower (binCount=0 disables)";
+    cliCfg.tableEntry[10].cmdHandlerFxn = l3_cli_shadowCfg;
+    cliCfg.tableEntry[11].cmd           = "shadowstats";
+    cliCfg.tableEntry[11].helpString    = "Report on-chip shadow candidate counters";
+    cliCfg.tableEntry[11].cmdHandlerFxn = l3_cli_shadowStats;
+#else
     cliCfg.tableEntry[9].cmd           = "shadowCfg";
     cliCfg.tableEntry[9].helpString    =
         "shadowCfg startBin binCount minPower (binCount=0 disables)";
@@ -3270,6 +3439,7 @@ static void l3_initTask(UArg arg0, UArg arg1)
     cliCfg.tableEntry[10].cmd           = "shadowstats";
     cliCfg.tableEntry[10].helpString    = "Report on-chip shadow candidate counters";
     cliCfg.tableEntry[10].cmdHandlerFxn = l3_cli_shadowStats;
+#endif
 #endif
 #endif
     CLI_open(&cliCfg);

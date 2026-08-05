@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 FIRMWARE = Path(__file__).parents[1] / "firmware" / "iwr6843" / "l3_dump.c"
 FIRMWARE_MAKEFILE = Path(__file__).parents[1] / "firmware" / "Makefile"
 RELEASE_DIR = Path(__file__).parents[1] / "firmware" / "releases"
@@ -148,7 +150,7 @@ def test_iq8_build_is_separate_from_production_firmware():
     assert "docker-build-iq8:" in source
 
 
-def test_l3_resident_iq8_build_uses_scratch_then_packs_the_ring():
+def test_l3_resident_iq8_build_adaptively_scales_scratch_into_the_ring():
     source = FIRMWARE_MAKEFILE.read_text(encoding="utf-8")
     target = _function_source(
         source,
@@ -164,10 +166,82 @@ def test_l3_resident_iq8_build_uses_scratch_then_packs_the_ring():
     assert "l3_packIq8CompletedFrame" in firmware
     assert "g_iq16FrameScratch[gIq8ActiveScratch][0]" in firmware
     assert "gIq8ActiveScratch ^= 1U" in firmware
-    assert "bytesPerComplex = 2U" in firmware
+    assert "l3_captureBytesPerComplex()" in firmware
     assert "gPostCaptureStarted = 1U" in firmware
-    assert "paramCfg.dest.dstScale = 8U" in firmware
-    assert "(samples & 0xFFU) | ((samples >> 8U) & 0xFF00U)" in firmware
+    assert "#define L3_IQ8_HWA_SHIFT" in firmware
+    assert "L3_IQ8_HWA_SHIFT      4U" in firmware
+    assert "paramCfg.dest.dstScale = l3_captureUsesIq8() ? L3_IQ8_HWA_SHIFT : 0U" in firmware
+    assert "l3_iq8PackShift" in firmware
+    assert "l3_quantizeIq8Shift" in firmware
+    assert "gFrameIq8Scale[slot] =" in firmware
+    assert "L3_IQ8_HWA_SCALE << packShift" in firmware
+    assert "gFrameIq8Scale[slot] = 256U" not in firmware
+
+
+def test_ring_compression_is_selected_at_runtime_without_reflashing():
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+    header = _function_source(
+        firmware,
+        "static void l3_fill_header",
+        "#ifdef CONFIGURABLE_CAPTURE\nstatic void l3_writeFrameDescriptor",
+    )
+    planner = _function_source(
+        firmware,
+        "static int32_t l3_finalizeCapturePlan",
+        "/* captureCfg",
+    )
+
+    assert "static uint8_t gCaptureFormat = L3_CAPTURE_FORMAT_IQ16" in firmware
+    assert "static int32_t l3_cli_captureFormat" in firmware
+    assert 'strcmp(argv[1], "iq16")' in firmware
+    assert 'strcmp(argv[1], "iq8")' in firmware
+    assert 'cliCfg.tableEntry[9].cmd           = "captureFormat"' in firmware
+    assert "static uint8_t g_ring[L3_TOTAL_BYTES]" in firmware
+    assert "l3_captureCapacityBytes()" in planner
+    assert "l3_captureBytesPerComplex()" in planner
+    assert "l3_captureUsesIq8()" in header
+
+
+def test_runtime_iq8_scratch_overlays_unused_ring_capacity():
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+
+    assert "#define L3_IQ8_CAPTURE_BYTES" in firmware
+    assert "#define g_iq16FrameScratch" in firmware
+    assert "&g_ring[L3_IQ8_CAPTURE_BYTES]" in firmware
+    assert '#pragma DATA_SECTION(g_iq16FrameScratch, ".l3scratch")' not in firmware
+
+
+def test_adaptive_iq8_ring_quantizer_uses_shifts_not_per_sample_division():
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+    quantizer = _function_source(
+        firmware,
+        "static int8_t l3_quantizeIq8Shift",
+        "static void l3_packIq8CompletedFrame",
+    )
+
+    assert ">> shift" in quantizer
+    assert "l3_quantizeIq8(" not in quantizer
+
+
+def test_iq8_shadow_scan_uses_hwa_scaled_samples_without_reconstruction():
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+    shadow = _function_source(
+        firmware,
+        "static void l3_shadowExtractIq16Frame",
+        "static void l3_shadowExtractPendingFrame",
+    )
+
+    assert "l3_shadowStoredSample" not in shadow
+    assert "l3_shadowSamplePower(frame[word], frame[word + 1U])" in shadow
+
+
+def test_hwa_rearm_worker_cannot_starve_cli_commands():
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+    start = firmware.rindex("static void l3_initTask")
+    init = firmware[start : firmware.index("int32_t main(", start)]
+
+    assert "taskParams.priority = L3_HWA_REARM_TASK_PRIORITY" in init
+    assert "#define L3_HWA_REARM_TASK_PRIORITY (L3_CLI_TASK_PRIORITY - 1U)" in firmware
 
 
 def test_iq8_shadow_build_selects_from_completed_iq16_scratch_before_packing():
@@ -190,11 +264,10 @@ def test_iq8_shadow_build_selects_from_completed_iq16_scratch_before_packing():
     assert "docker-build-iq8-shadow:" in source
     assert "l3_shadowExtractIq16Frame" in firmware
     assert "g_iq16FrameScratch[pendingScratch]" in rearm
-    assert "g_iq16FrameScratch[pendingScratch][0], 256U" in rearm
-    assert "(int8_t)((uint16_t)sample & 0xFFU)" in firmware
-    assert rearm.index("l3_shadowExtractIq16Frame") < rearm.index(
-        "l3_packIq8CompletedFrame"
-    )
+    assert "L3_IQ8_HWA_SCALE);" in rearm
+    assert "256U);" not in rearm
+    assert "l3_shadowStoredSample" not in firmware
+    assert rearm.index("l3_shadowExtractIq16Frame") < rearm.index("l3_packIq8CompletedFrame")
 
 
 def test_release_filenames_use_feature_and_build_date_without_version_tokens():
@@ -481,8 +554,8 @@ def test_configurable_ring_uses_exact_l3_arena_and_plan_fits():
     firmware = FIRMWARE.read_text(encoding="utf-8")
     l3_ram_bytes = 768 * 1024
     assert "#define L3_TOTAL_BYTES         (6U * 128U * 1024U)" in firmware
-    assert "#define L3_CAPTURE_BYTES       L3_TOTAL_BYTES" in firmware
-    assert "static uint8_t g_ring[L3_CAPTURE_BYTES]" in firmware
+    assert "static uint8_t g_ring[L3_TOTAL_BYTES]" in firmware
+    assert "return L3_TOTAL_BYTES" in firmware
 
     pre_frame_bytes = 3 * 12 * 4 * 32 * 4
     post_frame_bytes = 3 * 12 * 4 * 53 * 4
@@ -518,6 +591,41 @@ def test_iq8_resident_plan_halves_ring_payload_and_reserves_scratch():
     assert ring_capacity == 688_128
     assert used == 375_984
     assert used <= ring_capacity
+
+
+@pytest.mark.parametrize(
+    "config_stem",
+    (
+        "iwr6843_l3dump_compression_ab",
+        "iwr6843_l3dump_compression_ab_24f3ms",
+    ),
+)
+def test_compression_ab_configs_change_only_the_storage_format(config_stem):
+    root = Path(__file__).parents[1] / "config"
+    iq16 = (root / f"{config_stem}_iq16.cfg").read_text(encoding="utf-8")
+    iq8 = (root / f"{config_stem}_iq8.cfg").read_text(encoding="utf-8")
+
+    def commands(config):
+        return [
+            line.strip()
+            for line in config.splitlines()
+            if line.strip() and not line.lstrip().startswith("%")
+        ]
+
+    assert "captureFormat iq16" in iq16
+    assert "captureFormat iq8" in iq8
+    assert [
+        line.replace("captureFormat iq16", "captureFormat iq8") for line in commands(iq16)
+    ] == commands(iq8)
+
+
+def test_dense_compression_ab_pair_keeps_the_72_ms_capture_window():
+    config = (
+        Path(__file__).parents[1] / "config" / "iwr6843_l3dump_compression_ab_24f3ms_iq16.cfg"
+    ).read_text(encoding="utf-8")
+
+    assert "frameCfg 0 2 12 0 3 1 0" in config
+    assert "phaseCaptureCfg 20 53 9 32 53 7 47 53 47 8 1" in config
 
 
 def test_capture_config_rejects_post_count_that_cannot_leave_a_pre_frame():
@@ -650,14 +758,15 @@ def test_docker_targets_pin_the_amd64_platform():
         "docker-build:",
         "docker-build-iq8:",
         "docker-build-iq8-ring:",
+        "docker-build-runtime-compression:",
         "docker-build-iq8-shadow:",
         "docker-build-shadow:",
         "docker-shell:",
     ):
         assert f"\n{target}" in source, f"{target} is missing"
-    # Seven docker invocations, each explicitly amd64: the Dockerfile
+    # Eight docker invocations, each explicitly amd64: the Dockerfile
     # deliberately does not pin the platform itself.
-    assert source.count("--platform linux/amd64") == 7, source.count("--platform linux/amd64")
+    assert source.count("--platform linux/amd64") == 8, source.count("--platform linux/amd64")
 
 
 def test_fetch_installers_separates_automatic_from_login_gated():

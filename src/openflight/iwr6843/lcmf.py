@@ -153,8 +153,10 @@ def _snapshot_cache(
     tdm_sign: int,
     tdm_tau_s: float,
     loop_period_s: float,
+    *,
+    phase_velocity_ms: float | None = None,
 ) -> tuple[dict[str, np.ndarray], object, np.ndarray]:
-    """Build calibrated per-loop snapshots along the TI range track."""
+    """Build snapshots along the TI range track using trusted phase velocity."""
     meta, cube = parse_dump(raw)
     geometry = geometry_from_header(meta, loop_period_s=loop_period_s)
     frame_values = geometry.chirps_per_frame * geometry.n_rx * geometry.n_samples
@@ -205,7 +207,11 @@ def _snapshot_cache(
             local_bin = geometry.local_bin(range_bin, frame)
             if not geometry.contains_bin(range_bin, margin=1, frame=frame):
                 continue
-            velocity = track.speed_ms_at(time_s, geometry.range_res_m)
+            velocity = (
+                phase_velocity_ms
+                if phase_velocity_ms is not None
+                else track.speed_ms_at(time_s, geometry.range_res_m)
+            )
             tdm_phase = tdm_sign * 4.0 * np.pi * velocity * tdm_tau_s / LAM
             uncalibrated = doa.canonicalize_tx_blocks(
                 mti[frame, 0, loop, :, local_bin],
@@ -603,9 +609,7 @@ def _referenced_horizontal_mean(
     if phase_reference_rad is not None:
         if not math.isfinite(phase_reference_rad):
             raise ValueError("horizontal phase reference must be finite")
-        phases = [
-            float(np.angle(np.exp(1j * (phase - phase_reference_rad)))) for phase in phases
-        ]
+        phases = [float(np.angle(np.exp(1j * (phase - phase_reference_rad)))) for phase in phases]
     phase_rad, coherence = _weighted_circular_mean(phases, weights)
     return -_phase_to_angle_deg(phase_rad), coherence
 
@@ -616,6 +620,7 @@ def _tx2_horizontal_proxy(
     *,
     tdm_sign: int,
     phase_reference_rad: float | None = None,
+    phase_velocity_ms: float | None = None,
 ) -> tuple[float | None, float | None, str | None]:
     """HLCMF-v0: experimental TX2 horizontal launch proxy.
 
@@ -645,7 +650,11 @@ def _tx2_horizontal_proxy(
             local_bin = geometry.local_bin(range_bin, frame)
             if not geometry.contains_bin(range_bin, margin=1, frame=frame):
                 continue
-            velocity = shot.track.speed_ms_at(time_s, geometry.range_res_m)
+            velocity = (
+                phase_velocity_ms
+                if phase_velocity_ms is not None
+                else shot.track.speed_ms_at(time_s, geometry.range_res_m)
+            )
             sample = doa.tx2_phase_at(
                 mti,
                 frame,
@@ -737,12 +746,22 @@ def estimate_lcmf_v1(
             effective_loop_period_s=loop_period_s,
         )
 
+    cache: dict[str, np.ndarray] | None = None
+    indices = np.asarray([], dtype=int)
+    horizontal_deg = None
+    horizontal_conf = None
+    horizontal_status = None
     try:
+        # OPS measures radial velocity directly. The TI range track remains
+        # authoritative for target position, but multipath can bias its slope
+        # enough to rotate TDM phase by tens of degrees.
+        phase_velocity_ms = ball_speed_mph / MPH_PER_MS
         horizontal_deg, horizontal_conf, horizontal_status = _tx2_horizontal_proxy(
             full_raw,
             shot,
             tdm_sign=shot.tdm_sign_used,
             phase_reference_rad=horizontal_phase_reference_rad,
+            phase_velocity_ms=phase_velocity_ms,
         )
         cache, radar_geometry, cube = _snapshot_cache(
             raw,
@@ -752,6 +771,7 @@ def estimate_lcmf_v1(
             shot.tdm_sign_used,
             tdm_tau_s,
             loop_period_s,
+            phase_velocity_ms=phase_velocity_ms,
         )
         indices = _balanced_indices(cache)
         vertical_delta_m = cal.tee_ball_height_m - cal.radar_height_m
@@ -791,13 +811,20 @@ def estimate_lcmf_v1(
             )
             components.update(fast)
     except (ValueError, IndexError, np.linalg.LinAlgError) as error:
-        return _result_from_track(
+        result = _result_from_track(
             str(error).replace(" ", "_"),
             shot,
             cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
+        result.n_snapshots = len(indices)
+        if cache is not None and len(indices):
+            result.n_frames = len(np.unique(cache["frame"][indices]))
+        result.horizontal_deg = horizontal_deg
+        result.horizontal_confidence = horizontal_conf
+        result.horizontal_status = horizontal_status
+        return result
 
     raw_angle_deg, channels_used, single_channel = combine_channels(
         channel_components, channel_evidence
