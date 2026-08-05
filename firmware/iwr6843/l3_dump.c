@@ -1934,7 +1934,7 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
 #ifdef SHADOW_TRACKER
                     l3_shadowExtractIq16Frame(
                         pendingSlot,
-                        &g_iq16FrameScratch[pendingScratch][0], 128U);
+                        &g_iq16FrameScratch[pendingScratch][0], 256U);
 #endif
                     l3_packIq8CompletedFrame(pendingSlot, pendingScratch);
                 }
@@ -1958,7 +1958,7 @@ static void l3_hwaRearmTask(UArg arg0, UArg arg1)
 #ifdef SHADOW_TRACKER
                 l3_shadowExtractIq16Frame(
                     pendingSlot,
-                    &g_iq16FrameScratch[pendingScratch][0], 128U);
+                    &g_iq16FrameScratch[pendingScratch][0], 256U);
 #endif
                 l3_packIq8CompletedFrame(pendingSlot, pendingScratch);
             }
