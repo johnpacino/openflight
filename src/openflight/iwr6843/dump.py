@@ -4,7 +4,8 @@ Contract (firmware <-> Pi), little-endian:
   header (20 B): magic 'ILD1', u16 version, u16 n_frames, u16 chirps_per_frame,
                  u8 n_tx, u8 n_rx, u16 n_samples, u8 sample_fmt (0=int16 I/Q),
                  u8 pad, u16 trigger_frame, u16 pad2
-  payload: per frame, per chirp, per rx: complex (int16 Q, int16 I)
+  optional header extension (24 B): device-time + temperature report
+  payload: per frame, per chirp, per rx: n_samples x (int16 Q, int16 I)
   (TI ADCBUF native complex order is IMAG-first ["ImRe"] -- VERIFIED ON HW
   2026-07-12: parsing Re-first put the ceiling/hand at negative range bins)
 
@@ -140,15 +141,17 @@ def pack_dump(
         raise ValueError(f"unsupported sample_fmt {sample_fmt}")
     temp_prefix = b""
     if temperature_report is not None:
-        if version < 5:
-            raise ValueError("temperature reports require dump version 5+")
+        if not _has_temperature_extension(version, sample_fmt):
+            if version < 5:
+                raise ValueError("temperature reports require dump version 5+")
+            raise ValueError("this dump version and sample format do not carry temperature")
         try:
             temp_values = tuple(int(temperature_report[key]) for key in TEMP_REPORT_KEYS)
         except KeyError as exc:  # pragma: no cover - defensive validation
             missing = exc.args[0]
             raise ValueError(f"temperature report missing {missing!r}") from exc
         temp_prefix = TEMP_REPORT.pack(*temp_values)
-    elif version >= 5:
+    elif _has_temperature_extension(version, sample_fmt):
         raise ValueError("dump version 5+ requires a temperature report")
     if _has_shadow_extension(version) and sample_fmt not in _TIMED_SAMPLE_FORMATS:
         raise ValueError("shadow candidates require a timed variable-width sample format")
@@ -254,7 +257,7 @@ def pack_dump(
 
 
 def parse_header(raw: bytes) -> dict:
-    """Unpack the fixed header and optional v5 temperature extension.
+    """Unpack the fixed header and optional temperature extension.
 
     Lets the runtime size the burst before the full payload has arrived.
     """
@@ -280,7 +283,7 @@ def parse_header(raw: bytes) -> dict:
         raise ValueError("shadow dump requires a timed variable-width sample format")
     header_nbytes = HEADER.size
     temperature_report = None
-    if ver >= 5:
+    if _has_temperature_extension(ver, fmt):
         if len(raw) < HEADER.size + TEMP_REPORT.size:
             raise ValueError("short temperature report extension")
         temp = TEMP_REPORT.unpack_from(raw, HEADER.size)
@@ -324,6 +327,8 @@ def _parse_frame_metadata(raw: bytes, meta: dict) -> None:
     range_stop = start + meta.get("range_metadata_nbytes", metadata_nbytes)
     stop = start + metadata_nbytes
     if len(raw) < stop:
+        if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_WINDOWED:
+            raise ValueError("short per-frame range-window table")
         raise ValueError("short per-frame range-window metadata")
     if meta["sample_fmt"] == SAMPLE_RANGE_FFT_IQ16_WINDOWED:
         meta["range_bin_starts"] = tuple(raw[start:range_stop])
@@ -397,7 +402,7 @@ def parse_dump(raw: bytes):
     """Dump bytes -> (meta dict, complex cube [n_frames, cpf, n_rx, n_samples])."""
     meta = parse_header(raw)
     nf, cpf, nrx, ns = (meta["n_frames"], meta["chirps_per_frame"], meta["n_rx"], meta["n_samples"])
-    payload_offset = HEADER.size + meta.get("frame_metadata_nbytes", 0)
+    payload_offset = meta["header_nbytes"] + meta.get("frame_metadata_nbytes", 0)
     _parse_frame_metadata(raw, meta)
     expected_nbytes = meta["header_nbytes"] + payload_nbytes(meta, raw)
     if len(raw) < expected_nbytes:
@@ -542,6 +547,7 @@ def select_tdm_loops(raw: bytes, *, start: int, count: int) -> bytes:
         range_bin_starts=meta.get("range_bin_starts"),
         range_bin_counts=meta.get("range_bin_counts"),
         frame_time_offsets_us=meta.get("frame_time_offsets_us"),
+        temperature_report=meta.get("temperature_report"),
     )
 
 
@@ -594,6 +600,7 @@ def project_tx_pair(raw: bytes, tx_indices: tuple[int, int] = (0, 1)) -> bytes:
         range_bin_starts=meta.get("range_bin_starts"),
         range_bin_counts=meta.get("range_bin_counts"),
         frame_time_offsets_us=meta.get("frame_time_offsets_us"),
+        temperature_report=meta.get("temperature_report"),
     )
 
 

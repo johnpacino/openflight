@@ -10,6 +10,7 @@ from openflight.iwr6843.dump import (
     SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE,
     SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+    TEMP_REPORT_KEYS,
     pack_dump,
 )
 
