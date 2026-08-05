@@ -83,6 +83,11 @@ def _has_shadow_extension(version: int) -> bool:
     return version in (8, 9)
 
 
+def _without_shadow_extension(version: int) -> int:
+    """Schema for a derived cube that no longer represents the full capture."""
+    return {8: 6, 9: 7}.get(version, version)
+
+
 def _pack_shadow_candidates(candidates, n_frames: int) -> bytes:
     if candidates is None or len(candidates) != n_frames:
         raise ValueError("shadow dumps require one candidate per frame")
@@ -535,7 +540,7 @@ def select_tdm_loops(raw: bytes, *, start: int, count: int) -> bytes:
         selected,
         n_tx=n_tx,
         trigger_frame=meta["trigger_frame"],
-        version=meta["version"],
+        version=_without_shadow_extension(meta["version"]),
         frame_period_us=meta["frame_period_us"],
         sample_fmt=meta["sample_fmt"],
         range_bin_start=meta.get("range_bin_start", 0),
@@ -588,7 +593,7 @@ def project_tx_pair(raw: bytes, tx_indices: tuple[int, int] = (0, 1)) -> bytes:
         projected,
         n_tx=len(tx_indices),
         trigger_frame=meta["trigger_frame"],
-        version=meta["version"],
+        version=_without_shadow_extension(meta["version"]),
         frame_period_us=meta.get("frame_period_us", 0),
         sample_fmt=meta.get("sample_fmt", SAMPLE_INT16_IQ),
         range_bin_start=meta.get("range_bin_start", 0),

@@ -647,6 +647,39 @@ def test_tdm_projection_and_loop_selection_preserve_hybrid_timing():
     assert projected_meta["frame_time_offsets_us"] == offsets_us
 
 
+def test_tdm_transforms_strip_shadow_extension_from_derived_dumps():
+    """Derived TX/loop cubes must not claim stale full-capture candidates."""
+    n_frames, n_loops, n_tx, n_rx, n_samples = 2, 3, 3, 4, 4
+    cube = np.ones((n_frames, n_loops * n_tx, n_rx, n_samples), dtype=complex)
+    candidate = {
+        "valid": True,
+        "range_bin": 23,
+        "tx_index": 2,
+        "peak_loop": 2,
+        "power": 123,
+        "rx_iq": ((1, 2), (3, 4), (5, 6), (7, 8)),
+    }
+    temperatures = {key: index for index, key in enumerate(TEMP_REPORT_KEYS)}
+    raw = pack_dump(
+        cube,
+        n_tx=n_tx,
+        version=9,
+        frame_period_us=2250,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
+        range_bin_starts=(23, 23),
+        range_bin_counts=(4, 4),
+        frame_time_offsets_us=(0, 2250),
+        temperature_report=temperatures,
+        shadow_candidates=(candidate, candidate),
+    )
+
+    for transformed in (project_tx_pair(raw, (0, 2)), select_tdm_loops(raw, start=1, count=2)):
+        meta, _cube = parse_dump(transformed)
+        assert meta["version"] == 7
+        assert meta["temperature_report"] == temperatures
+        assert "shadow_candidates" not in meta
+
+
 def test_hybrid_timing_recovers_ball_speed_and_launch(cal):
     truth_v, truth_la = 30.0, 18.0
     offsets_us = tuple(range(0, 32_000, 2_000)) + tuple(range(32_000, 96_000, 4_000))
