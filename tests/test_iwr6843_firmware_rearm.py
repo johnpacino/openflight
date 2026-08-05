@@ -190,6 +190,7 @@ def test_iq8_shadow_build_selects_from_completed_iq16_scratch_before_packing():
     assert "docker-build-iq8-shadow:" in source
     assert "l3_shadowExtractIq16Frame" in firmware
     assert "g_iq16FrameScratch[pendingScratch]" in rearm
+    assert "g_iq16FrameScratch[pendingScratch][0], 256U" in rearm
     assert rearm.index("l3_shadowExtractIq16Frame") < rearm.index(
         "l3_packIq8CompletedFrame"
     )
