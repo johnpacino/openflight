@@ -1407,11 +1407,9 @@ static int16_t l3_shadowStoredSample(int16_t sample, uint16_t sampleScale)
     int32_t value = (int32_t)sample;
 
     if (sampleScale > 1U) {
-        if (value > 127) {
-            value = 127;
-        } else if (value < -128) {
-            value = -128;
-        }
+        /* Packing stores the low byte from each scaled HWA int16. Interpret
+         * that exact byte as signed IQ8 before reconstructing host amplitude. */
+        value = (int32_t)(int8_t)((uint16_t)sample & 0xFFU);
         value *= (int32_t)sampleScale;
     }
     return (int16_t)value;

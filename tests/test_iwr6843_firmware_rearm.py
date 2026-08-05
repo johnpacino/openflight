@@ -191,6 +191,7 @@ def test_iq8_shadow_build_selects_from_completed_iq16_scratch_before_packing():
     assert "l3_shadowExtractIq16Frame" in firmware
     assert "g_iq16FrameScratch[pendingScratch]" in rearm
     assert "g_iq16FrameScratch[pendingScratch][0], 256U" in rearm
+    assert "(int8_t)((uint16_t)sample & 0xFFU)" in firmware
     assert rearm.index("l3_shadowExtractIq16Frame") < rearm.index(
         "l3_packIq8CompletedFrame"
     )
