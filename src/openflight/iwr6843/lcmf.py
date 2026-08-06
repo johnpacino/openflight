@@ -159,8 +159,22 @@ def _snapshot_cache(
 
     scope = "window" if shot.notch_recovered else "burst"
     range_domain = is_range_snapshot(meta)
-    mti = tracking.mti_filter(cube, scope=scope, range_domain=range_domain)
-    noise = float(np.median(np.abs(mti) ** 2))
+    mti = tracking.mti_filter(
+        cube,
+        scope=scope,
+        range_domain=range_domain,
+        geometry=geometry,
+    )
+    if geometry.range_bin_counts is None:
+        noise = float(np.median(np.abs(mti) ** 2))
+    else:
+        valid_power = np.concatenate(
+            [
+                np.abs(mti[frame, ..., : geometry.frame_bin_count(frame)]).reshape(-1) ** 2
+                for frame in range(geometry.n_frames)
+            ]
+        )
+        noise = float(np.median(valid_power))
     track = shot.track
     if track is None:
         raise ValueError("ball track unavailable")

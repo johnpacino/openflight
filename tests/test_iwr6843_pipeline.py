@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from openflight.iwr6843 import Calibration, estimate_lcmf_v1, lcmf, process_dump
+from openflight.iwr6843 import Calibration, estimate_lcmf_v1, lcmf, process_dump, tracking
 from openflight.iwr6843.dump import (
     HEADER,
     MAGIC,
@@ -978,6 +978,28 @@ def test_lcmf_v1_uses_ops_speed_for_tdm_phase_compensation(cal, monkeypatch):
         "vertical": pytest.approx(ops_speed_ms),
         "horizontal": pytest.approx(ops_speed_ms),
     }
+
+
+def test_lcmf_v1_mti_uses_per_frame_capture_geometry(cal, monkeypatch):
+    """Moving range windows must align before window-scope static removal."""
+    observed_geometry = []
+    original_mti = tracking.mti_filter
+
+    def mti_spy(*args, geometry=None, **kwargs):
+        observed_geometry.append(geometry)
+        return original_mti(*args, geometry=geometry, **kwargs)
+
+    monkeypatch.setattr(tracking, "mti_filter", mti_spy)
+
+    estimate_lcmf_v1(
+        _range_snapshot_shot(),
+        cal,
+        ball_speed_mph=45.0 * 2.23694,
+        club="9i",
+    )
+
+    assert observed_geometry
+    assert all(geometry is not None for geometry in observed_geometry)
 
 
 def test_tx2_horizontal_uses_tail_of_ball_track_not_fixed_ring_tail():
