@@ -285,3 +285,18 @@ def test_iwr6843_azimuth_offset_is_forwarded():
 def test_iwr6843_azimuth_offset_omitted_by_default():
     command = _dry_run("--iwr6843").stdout.strip()
     assert "--iwr6843-azimuth-offset-deg" not in command
+
+
+def test_iwr6843_horizontal_phase_reference_is_forwarded():
+    command = _dry_run(
+        "--iwr6843",
+        "--iwr6843-horizontal-phase-reference-rad",
+        "-0.5",
+    ).stdout.strip()
+
+    assert "--iwr6843-horizontal-phase-reference-rad -0.5" in command
+
+
+def test_iwr6843_horizontal_phase_reference_is_omitted_by_default():
+    command = _dry_run("--iwr6843").stdout.strip()
+    assert "--iwr6843-horizontal-phase-reference-rad" not in command

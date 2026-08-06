@@ -36,6 +36,7 @@ class IWR6843Runtime:
     tx_order: str = "normal"
     capture_timeout_s: float = 12.0
     azimuth_offset_deg: float = 0.0
+    horizontal_phase_reference_rad: float | None = None
     tdm_sign_policy: str = "positive"
 
     def process_shot(  # pylint: disable=too-many-arguments
@@ -65,7 +66,15 @@ class IWR6843Runtime:
             net_range_m=self.net_range_m,
             tx_order=self.tx_order,
             tdm_sign_policy=self.tdm_sign_policy,
+            horizontal_phase_reference_rad=self.horizontal_phase_reference_rad,
         )
+        horizontal_deg = getattr(measurement, "horizontal_deg", None)
+        if horizontal_deg is not None:
+            measurement = replace(
+                measurement,
+                horizontal_deg=horizontal_deg + self.azimuth_offset_deg,
+                horizontal_raw_deg=horizontal_deg,
+            )
         club_path = None
         # No OPS club speed means no identity gate to distinguish the club
         # track from hands, body, or the ball itself, so an estimate here

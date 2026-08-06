@@ -942,6 +942,44 @@ def test_lcmf_v1_uses_tx2_effective_timing_on_three_tx_capture(cal):
     assert result.effective_loop_period_s == pytest.approx(TX2_LOOP_PERIOD_S)
 
 
+def test_lcmf_v1_uses_ops_speed_for_tdm_phase_compensation(cal, monkeypatch):
+    raw = synth_shot(
+        speed_ms=45.0,
+        launch_deg=18.0,
+        n_loops=12,
+        n_tx=3,
+        frame_period_us=4000,
+        trigger_frame=0,
+    )
+    ops_speed_ms = 37.0
+    observed = {}
+    original_cache = lcmf._snapshot_cache  # pylint: disable=protected-access
+    original_horizontal = lcmf._tx2_horizontal_proxy  # pylint: disable=protected-access
+
+    def cache_spy(*args, phase_velocity_ms=None, **kwargs):
+        observed["vertical"] = phase_velocity_ms
+        return original_cache(*args, phase_velocity_ms=phase_velocity_ms, **kwargs)
+
+    def horizontal_spy(*args, phase_velocity_ms=None, **kwargs):
+        observed["horizontal"] = phase_velocity_ms
+        return original_horizontal(*args, phase_velocity_ms=phase_velocity_ms, **kwargs)
+
+    monkeypatch.setattr(lcmf, "_snapshot_cache", cache_spy)
+    monkeypatch.setattr(lcmf, "_tx2_horizontal_proxy", horizontal_spy)
+
+    estimate_lcmf_v1(
+        raw,
+        cal,
+        ball_speed_mph=ops_speed_ms * 2.23694,
+        club="9i",
+    )
+
+    assert observed == {
+        "vertical": pytest.approx(ops_speed_ms),
+        "horizontal": pytest.approx(ops_speed_ms),
+    }
+
+
 def test_tx2_horizontal_uses_tail_of_ball_track_not_fixed_ring_tail():
     """Boundary-frozen blocks place impact anywhere, so physical slots 9-11 are not special."""
     n_frames, n_loops, n_tx, n_rx, n_bins = 12, 10, 3, 4, 80

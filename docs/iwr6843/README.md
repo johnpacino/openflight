@@ -531,6 +531,27 @@ In debug mode, verify that the session contains an `iwr6843_capture` entry, a
 `temperature_report` object, and a `capture_path` pointing to the saved
 `.l3dump` file.
 
+## Horizontal Ball Launch
+
+TX2 measures horizontal ball launch from phase relative to the TX1/TX3 phase
+center. The IWR6843LEVM TX2 baseline is one-half wavelength; OpenFlight applies
+that board geometry and uses the OPS ball speed when removing TDM motion phase.
+This keeps multipath in the TI range slope from rotating the horizontal result.
+
+Each physical board and enclosure can retain a static target-line phase. Pass
+the phase measured by horizontal aim calibration when starting OpenFlight:
+
+```bash
+scripts/start-kiosk.sh --iwr6843 \
+  --iwr6843-horizontal-phase-reference-rad -0.5
+```
+
+The value is subtracted in phase space before conversion to degrees. Omitting
+it reports horizontal launch relative to the board's uncalibrated RF phase
+zero, which can create a consistent left/right bias even when the enclosure is
+aimed correctly. This is separate from `--iwr6843-azimuth-offset-deg`, which is
+the geometric target-line correction used by the experimental club-path fit.
+
 ## Club Path
 
 Club path is the horizontal direction the club head travels through impact,

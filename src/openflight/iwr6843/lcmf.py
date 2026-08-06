@@ -74,6 +74,7 @@ class LCMFResult:
     track_span_s: float | None = None
     tdm_sign_used: int | None = None
     horizontal_deg: float | None = None
+    horizontal_raw_deg: float | None = None
     horizontal_confidence: float | None = None
     horizontal_status: str | None = None
     effective_tdm_tau_s: float = doa.TDM_TAU_S
@@ -105,6 +106,7 @@ class LCMFResult:
             "track_span_s": self.track_span_s,
             "tdm_sign_used": self.tdm_sign_used,
             "horizontal_deg": self.horizontal_deg,
+            "horizontal_raw_deg": self.horizontal_raw_deg,
             "horizontal_confidence": self.horizontal_confidence,
             "horizontal_status": self.horizontal_status,
             "effective_tdm_tau_s": self.effective_tdm_tau_s,
@@ -141,6 +143,8 @@ def _snapshot_cache(
     tdm_sign: int,
     tdm_tau_s: float,
     loop_period_s: float,
+    *,
+    phase_velocity_ms: float | None = None,
 ) -> tuple[dict[str, np.ndarray], object, np.ndarray]:
     """Build calibrated per-loop snapshots along the TI range track."""
     meta, cube = parse_dump(raw)
@@ -179,7 +183,11 @@ def _snapshot_cache(
             local_bin = geometry.local_bin(range_bin, frame)
             if not geometry.contains_bin(range_bin, margin=1, frame=frame):
                 continue
-            velocity = track.speed_ms_at(time_s, geometry.range_res_m)
+            velocity = (
+                phase_velocity_ms
+                if phase_velocity_ms is not None
+                else track.speed_ms_at(time_s, geometry.range_res_m)
+            )
             tdm_phase = tdm_sign * 4.0 * np.pi * velocity * tdm_tau_s / LAM
             uncalibrated = doa.canonicalize_tx_blocks(
                 mti[frame, 0, loop, :, local_bin],
@@ -556,10 +564,9 @@ def _fast_estimates(
     return estimates
 
 
-def _phase_to_angle_deg(phase_rad: float, *, baseline_lambda: float = 1.0) -> float:
-    """Convert an uncalibrated baseline phase into a signed proxy angle."""
-    sin_angle = phase_rad / (2.0 * np.pi * baseline_lambda)
-    return float(np.degrees(np.arcsin(np.clip(sin_angle, -1.0, 1.0))))
+def _phase_to_angle_deg(phase_rad: float) -> float:
+    """Convert LEVM TX2 residual phase into a signed one-axis proxy angle."""
+    return float(np.degrees(doa.tx2_phase_to_axis_angle_rad(phase_rad)))
 
 
 def _weighted_circular_mean(phases: list[float], weights: list[float]) -> tuple[float, float]:
@@ -570,11 +577,28 @@ def _weighted_circular_mean(phases: list[float], weights: list[float]) -> tuple[
     return float(np.angle(z)), float(abs(z) / weight_sum)
 
 
+def _referenced_horizontal_mean(
+    phases: list[float],
+    weights: list[float],
+    *,
+    phase_reference_rad: float | None,
+) -> tuple[float, float]:
+    """Apply the calibrated target-line phase before angle conversion."""
+    if phase_reference_rad is not None:
+        if not math.isfinite(phase_reference_rad):
+            raise ValueError("horizontal phase reference must be finite")
+        phases = [float(np.angle(np.exp(1j * (phase - phase_reference_rad)))) for phase in phases]
+    phase_rad, coherence = _weighted_circular_mean(phases, weights)
+    return -_phase_to_angle_deg(phase_rad), coherence
+
+
 def _tx2_horizontal_proxy(
     raw: bytes,
     shot: ShotMeasurement,
     *,
     tdm_sign: int,
+    phase_reference_rad: float | None = None,
+    phase_velocity_ms: float | None = None,
 ) -> tuple[float | None, float | None, str | None]:
     """HLCMF-v0: experimental TX2 horizontal launch proxy.
 
@@ -604,7 +628,11 @@ def _tx2_horizontal_proxy(
             local_bin = geometry.local_bin(range_bin, frame)
             if not geometry.contains_bin(range_bin, margin=1, frame=frame):
                 continue
-            velocity = shot.track.speed_ms_at(time_s, geometry.range_res_m)
+            velocity = (
+                phase_velocity_ms
+                if phase_velocity_ms is not None
+                else shot.track.speed_ms_at(time_s, geometry.range_res_m)
+            )
             sample = doa.tx2_phase_at(
                 mti,
                 frame,
@@ -626,8 +654,11 @@ def _tx2_horizontal_proxy(
         return None, None, "hlcmf_v0_insufficient_tail_snapshots"
     phases = [phase for _frame, phase, _weight in snapshots]
     weights = [weight for _frame, _phase, weight in snapshots]
-    phase_rad, coherence = _weighted_circular_mean(phases, weights)
-    angle_deg = -_phase_to_angle_deg(phase_rad)
+    angle_deg, coherence = _referenced_horizontal_mean(
+        phases,
+        weights,
+        phase_reference_rad=phase_reference_rad,
+    )
     status = "hlcmf_v0_accepted" if coherence >= 0.25 else "hlcmf_v0_low_coherence"
     return angle_deg, coherence, status
 
@@ -642,6 +673,7 @@ def estimate_lcmf_v1(
     tx_order: str = "normal",
     tdm_sign_policy: str = "positive",
     grid_step_deg: float = 0.5,
+    horizontal_phase_reference_rad: float | None = None,
 ) -> LCMFResult:
     """Estimate vertical launch from one TI dump and OPS ball speed."""
     if ball_speed_mph <= 0:
@@ -690,10 +722,15 @@ def estimate_lcmf_v1(
         )
 
     try:
+        # OPS measures radial speed directly. TI range slope still supplies
+        # position, but multipath-biased slope must not rotate TDM phase.
+        phase_velocity_ms = ball_speed_mph / MPH_PER_MS
         horizontal_deg, horizontal_conf, horizontal_status = _tx2_horizontal_proxy(
             full_raw,
             shot,
             tdm_sign=shot.tdm_sign_used,
+            phase_reference_rad=horizontal_phase_reference_rad,
+            phase_velocity_ms=phase_velocity_ms,
         )
         cache, radar_geometry, cube = _snapshot_cache(
             raw,
@@ -703,6 +740,7 @@ def estimate_lcmf_v1(
             shot.tdm_sign_used,
             tdm_tau_s,
             loop_period_s,
+            phase_velocity_ms=phase_velocity_ms,
         )
         indices = _balanced_indices(cache)
         vertical_delta_m = cal.tee_ball_height_m - cal.radar_height_m
