@@ -210,6 +210,12 @@ def geometry_from_header(meta: dict, *, loop_period_s: float = tracking.LOOP_PRI
         range_bin_start=meta.get("range_bin_start", 0),
         range_fft_size=128 if range_domain else None,
         range_bin_starts=meta.get("range_bin_starts"),
+        range_bin_counts=meta.get("range_bin_counts"),
+        frame_time_offsets_s=(
+            tuple(offset / 1e6 for offset in meta["frame_time_offsets_us"])
+            if meta.get("frame_time_offsets_us") is not None
+            else None
+        ),
     )
 
 

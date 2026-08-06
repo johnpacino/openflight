@@ -17,7 +17,10 @@ from openflight.iwr6843.dump import (
     HEADER,
     MAGIC,
     MAX_SUPPORTED_DUMP_VERSION,
+    SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED,
     SAMPLE_RANGE_FFT_IQ16,
+    SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+    SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
     SAMPLE_RANGE_FFT_IQ16_WINDOWED,
     TEMP_REPORT_KEYS,
     pack_dump,
@@ -176,7 +179,7 @@ def test_header_carries_period_and_trigger():
 
 def test_parse_header_rejects_future_dump_version():
     raw = synth_shot()
-    future = bytearray(raw[:HEADER.size])
+    future = bytearray(raw[: HEADER.size])
     future[4:6] = int(MAX_SUPPORTED_DUMP_VERSION + 1).to_bytes(2, "little")
 
     with pytest.raises(ValueError, match="unsupported dump version"):
@@ -185,7 +188,7 @@ def test_parse_header_rejects_future_dump_version():
 
 def test_parse_header_rejects_short_temperature_extension():
     raw = synth_shot()
-    v5_header_only = bytearray(raw[:HEADER.size])
+    v5_header_only = bytearray(raw[: HEADER.size])
     v5_header_only[4:6] = int(MAX_SUPPORTED_DUMP_VERSION).to_bytes(2, "little")
 
     with pytest.raises(ValueError, match="short temperature report extension"):
@@ -289,6 +292,83 @@ def test_windowed_snapshot_round_trip_and_size():
     assert len(snapshot) == HEADER.size + payload_nbytes(header)
     assert cube.shape == (12, 20, 4, 53)
     assert tuple(meta["range_bin_starts"][(3 + index) % 12] for index in range(12)) == starts
+
+
+def test_variable_width_snapshot_round_trip_and_size():
+    rng = np.random.default_rng(24)
+    counts = (4, 4, 7, 7)
+    starts = (20, 20, 32, 47)
+    cube = rng.standard_normal((4, 6, 4, 7)) + 1j * rng.standard_normal((4, 6, 4, 7))
+
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=5,
+        frame_period_us=3000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+    )
+    header = parse_header(raw)
+    meta, parsed = parse_dump(raw)
+
+    assert len(raw) == HEADER.size + payload_nbytes(header, raw)
+    assert meta["range_bin_starts"] == starts
+    assert meta["range_bin_counts"] == counts
+    np.testing.assert_allclose(parsed[:2, ..., :4], np.round(cube[:2, ..., :4]), atol=1)
+    np.testing.assert_array_equal(parsed[:2, ..., 4:], 0)
+
+
+def test_timed_variable_snapshot_uses_recorded_frame_offsets():
+    starts = (20, 20, 32, 47)
+    counts = (4, 4, 7, 7)
+    offsets_us = (0, 2000, 4000, 8000)
+    cube = np.ones((4, 36, 4, 7), dtype=complex)
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=6,
+        frame_period_us=2000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+        frame_time_offsets_us=offsets_us,
+    )
+
+    meta, _parsed = parse_dump(raw)
+    geometry = geometry_from_header(meta)
+
+    assert meta["frame_time_offsets_us"] == offsets_us
+    assert geometry.loop_time(3, 0) == pytest.approx(0.008)
+    assert geometry.capture_duration_s == pytest.approx(0.010)
+
+
+def test_iq8_timed_snapshot_halves_payload_and_restores_scale():
+    rng = np.random.default_rng(84)
+    starts = (20, 20, 32, 47)
+    counts = (4, 4, 7, 7)
+    offsets_us = (0, 2000, 4000, 6000)
+    cube = 900 * (rng.standard_normal((4, 36, 4, 7)) + 1j * rng.standard_normal((4, 36, 4, 7)))
+    common = dict(
+        n_tx=3,
+        version=6,
+        frame_period_us=2000,
+        range_bin_starts=starts,
+        range_bin_counts=counts,
+        frame_time_offsets_us=offsets_us,
+    )
+    raw_iq16 = pack_dump(cube, sample_fmt=SAMPLE_RANGE_FFT_IQ16_VARIABLE_TIMED, **common)
+    raw_iq8 = pack_dump(cube, sample_fmt=SAMPLE_RANGE_FFT_IQ8_VARIABLE_TIMED, **common)
+    meta, parsed = parse_dump(raw_iq8)
+
+    assert len(raw_iq8) < len(raw_iq16) * 0.55
+    assert len(meta["iq8_scales"]) == len(starts)
+    for frame, count in enumerate(counts):
+        np.testing.assert_allclose(
+            parsed[frame, ..., :count],
+            cube[frame, ..., :count],
+            atol=meta["iq8_scales"][frame] + 1,
+        )
 
 
 def test_windowed_snapshot_temperature_report_round_trip_and_projection():
@@ -435,7 +515,7 @@ def test_tx_orders_canonicalize_to_same_physical_array():
 def test_production_config_uses_normal_three_tx_order():
     from openflight.iwr6843.monitor import tx_order_from_config
 
-    assert tx_order_from_config("config/iwr6843_l3dump_vTX2_window53_12l18f.cfg") == "normal"
+    assert tx_order_from_config("config/iwr6843_l3dump_wide_24f3ms_53bin_iq16.cfg") == "normal"
 
 
 def test_invalid_tx_order_is_rejected_before_processing(cal):
@@ -769,9 +849,7 @@ def test_lcmf_v1_rejects_when_every_channel_is_off_the_grid(cal, monkeypatch):
     """
     monkeypatch.setattr(lcmf, "grid_curvature", lambda objective: None)
 
-    result = estimate_lcmf_v1(
-        _range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i"
-    )
+    result = estimate_lcmf_v1(_range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i")
 
     assert result.status == "rejected_no_conditioned_channel"
     assert result.angle_deg is None
@@ -779,9 +857,7 @@ def test_lcmf_v1_rejects_when_every_channel_is_off_the_grid(cal, monkeypatch):
     assert result.track_speed_mph is not None, "a rejection must keep its track evidence"
 
 
-def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(
-    cal, monkeypatch
-):
+def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(cal, monkeypatch):
     """A tie on evidence is not a licence to return whichever channel is first.
 
     ``max()`` yields the first key on a tie, and insertion order puts
@@ -792,9 +868,7 @@ def test_lcmf_v1_rejects_disagreeing_channels_with_no_curvature_to_choose_on(
     monkeypatch.setattr(lcmf, "grid_curvature", lambda objective: 0.0)
     monkeypatch.setattr(lcmf, "CHANNEL_SPREAD_MAX_DEG", 0.0)
 
-    result = estimate_lcmf_v1(
-        _range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i"
-    )
+    result = estimate_lcmf_v1(_range_snapshot_shot(), cal, ball_speed_mph=45.0 * 2.23694, club="9i")
 
     assert result.status == "rejected_no_conditioned_channel"
     assert result.angle_deg is None

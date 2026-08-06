@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Configurable IWR6843 capture compression.** One firmware image can now
+  switch at runtime between the recommended 24-frame, 3 ms, 53-bin IQ16
+  profile and an advanced 36-frame, 2 ms, 32-bin IQ8 profile. Both retain the
+  same 72 ms shot movie and all 3 TX x 4 RX channels. Per-frame range windows,
+  timing, and IQ8 scales are carried in the dump so offline and live processing
+  use the actual capture geometry. The dense profile uses a sparse scale
+  preview to sustain the 2 ms HWA rearm budget and exposes missed frames,
+  overruns, and clipped components through firmware `stats`.
 - **OPS243 over the Raspberry Pi GPIO UART.** The radar can now run on the J3
   header instead of USB, which frees the Pi's USB power budget for the TI angle
   radar. Baud is the real wire rate on that transport and the factory default of

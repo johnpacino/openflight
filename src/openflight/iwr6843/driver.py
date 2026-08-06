@@ -181,7 +181,7 @@ class IWR6843Radar:
                     buf = buf[idx:]
                     try:
                         metadata = parse_header(buf)
-                        expected = metadata["header_nbytes"] + payload_nbytes(metadata)
+                        expected = metadata["header_nbytes"] + payload_nbytes(metadata, buf)
                     except ValueError:
                         expected = None
             elif len(buf) >= expected:
