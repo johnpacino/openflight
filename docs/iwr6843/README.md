@@ -54,7 +54,8 @@ launch has passed hardware testing, but its horizontal and club metrics remain
 experimental and it still needs source-of-truth TrackMan MAE validation.
 
 Changing profiles does not require reflashing. It changes only the config
-passed to `--iwr6843-config`.
+passed to `--iwr6843-config`. Both profiles use the same host-side mount-tilt
+path, including live inclinometer correction when `--inclinometer` is enabled.
 
 On the Pi, verify the checked-in image with:
 
