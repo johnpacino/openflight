@@ -1,0 +1,416 @@
+"""High-speed camera capture runtime for offline shot correlation."""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import queue
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Literal
+
+import numpy as np
+
+from openflight.camera.triggered_buffer import (
+    CameraFrame,
+    TriggeredCapture,
+    TriggeredFrameBuffer,
+    timing_summary,
+    unpack_r8_frame,
+    unpack_yuv420_y_plane,
+)
+from openflight.gpio_factory import ensure_lgpio_pin_factory
+
+logger = logging.getLogger(__name__)
+
+CameraCaptureStream = Literal["raw", "main-y"]
+
+
+@dataclass(frozen=True)
+class CameraCaptureSettings:
+    """Camera ring-buffer settings used for offline capture."""
+
+    width: int = 640
+    height: int = 400
+    fps: float = 300.0
+    pre_ms: float = 150.0
+    post_ms: float = 50.0
+    exposure_us: int = 1000
+    gain: float = 4.0
+    stream: CameraCaptureStream = "raw"
+    rotate_180: bool = False
+    scaler_crop: tuple[int, int, int, int] | None = None
+    gpio_pin: int = 17
+    match_tolerance_s: float = 0.75
+
+    @property
+    def pre_frames(self) -> int:
+        """Frames retained before the sound trigger."""
+        return math.ceil(self.pre_ms * self.fps / 1000.0)
+
+    @property
+    def post_frames(self) -> int:
+        """Frames retained after the sound trigger."""
+        return math.ceil(self.post_ms * self.fps / 1000.0)
+
+
+@dataclass(frozen=True)
+class SavedCameraCapture:
+    """A persisted camera capture and its timing metadata."""
+
+    sequence: int
+    trigger_timestamp: float
+    completed_timestamp: float
+    path: Path
+    metadata: dict
+    error: str | None = None
+
+    @property
+    def valid(self) -> bool:
+        """Whether the capture was saved successfully."""
+        return self.error is None
+
+
+def parse_scaler_crop(value: str | None) -> tuple[int, int, int, int] | None:
+    """Parse a Picamera2 ScalerCrop tuple."""
+    if value is None:
+        return None
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 4:
+        raise ValueError("ScalerCrop must be X,Y,W,H")
+    try:
+        x, y, width, height = (int(part) for part in parts)
+    except ValueError as exc:
+        raise ValueError("ScalerCrop must contain integers") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError("ScalerCrop width and height must be positive")
+    return x, y, width, height
+
+
+def _save_pgm(path: Path, image: np.ndarray) -> None:
+    """Save a dependency-free grayscale preview."""
+    with path.open("wb") as handle:
+        handle.write(f"P5\n{image.shape[1]} {image.shape[0]}\n255\n".encode("ascii"))
+        handle.write(image.tobytes())
+
+
+class CameraCaptureRuntime:
+    """Maintain a high-speed camera ring and save clips on sound-trigger edges."""
+
+    def __init__(
+        self,
+        *,
+        output_dir: str | Path,
+        settings: CameraCaptureSettings | None = None,
+        button_factory: Callable | None = None,
+        use_gpio_trigger: bool = True,
+    ):
+        self.output_dir = Path(output_dir).expanduser()
+        self.settings = settings or CameraCaptureSettings()
+        self._button_factory = button_factory
+        self._use_gpio_trigger = use_gpio_trigger
+        self._camera = None
+        self._button = None
+        self._ring = TriggeredFrameBuffer(self.settings.pre_frames, self.settings.post_frames)
+        self._running = False
+        self._sequence = 0
+        self._worker: threading.Thread | None = None
+        self._ready: queue.Queue[TriggeredCapture | None] = queue.Queue()
+        self._captures: list[SavedCameraCapture] = []
+        self._condition = threading.Condition()
+        self._trigger_epochs: queue.Queue[float] = queue.Queue()
+
+    def start(self) -> None:
+        """Start the camera and, optionally, the GPIO edge listener."""
+        if self._running:
+            return
+        try:
+            from picamera2 import Picamera2  # pylint: disable=import-error,import-outside-toplevel
+        except ImportError as exc:
+            raise RuntimeError("picamera2 is required for --camera-capture") from exc
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._camera = Picamera2()
+        frame_duration_us = round(1_000_000 / self.settings.fps)
+        config = self._camera.create_video_configuration(
+            main={"size": (self.settings.width, self.settings.height), "format": "YUV420"},
+            raw={"size": (self.settings.width, self.settings.height), "format": "R8"},
+            controls={
+                "AeEnable": False,
+                "ExposureTime": self.settings.exposure_us,
+                "AnalogueGain": self.settings.gain,
+                "FrameDurationLimits": (frame_duration_us, frame_duration_us),
+            },
+            buffer_count=8,
+            display=None,
+            encode=None,
+        )
+        self._camera.configure(config)
+        if self.settings.scaler_crop is not None:
+            self._camera.set_controls({"ScalerCrop": self.settings.scaler_crop})
+        self._camera.post_callback = self._on_frame
+        self._running = True
+        self._worker = threading.Thread(
+            target=self._save_loop,
+            name="camera-capture-save",
+            daemon=True,
+        )
+        self._worker.start()
+        try:
+            self._camera.start()
+            self._wait_for_prebuffer()
+            if self._use_gpio_trigger:
+                self._start_gpio_trigger()
+        except Exception:
+            self.stop()
+            raise
+        logger.info(
+            "[CAMERA] Capture armed at %dx%d %.1ffps (%s, %d pre/%d post)",
+            self.settings.width,
+            self.settings.height,
+            self.settings.fps,
+            self.settings.stream,
+            self.settings.pre_frames,
+            self.settings.post_frames,
+        )
+
+    def stop(self) -> None:
+        """Stop camera capture and release hardware resources."""
+        self._running = False
+        if self._button is not None:
+            self._button.close()
+            self._button = None
+        if self._camera is not None:
+            try:
+                self._camera.stop()
+                self._camera.close()
+            finally:
+                self._camera = None
+        self._ready.put(None)
+        if self._worker is not None:
+            self._worker.join(timeout=3.0)
+            self._worker = None
+
+    def notify_trigger(self, timestamp: float | None = None) -> bool:
+        """Freeze the camera ring on a sound-trigger edge."""
+        if not self._running:
+            return False
+        trigger_epoch = time.time() if timestamp is None else float(timestamp)
+        self._trigger_epochs.put(trigger_epoch)
+        accepted = self._ring.trigger(time.monotonic_ns())
+        if not accepted:
+            try:
+                self._trigger_epochs.get_nowait()
+            except queue.Empty:
+                pass
+            logger.debug("[CAMERA] Ignoring trigger edge while capture is busy")
+            return False
+        return True
+
+    def capture_for_shot(
+        self,
+        impact_timestamp: float | None,
+        *,
+        timeout_s: float = 1.0,
+    ) -> SavedCameraCapture | None:
+        """Consume the saved capture nearest the OPS impact/trigger timestamp."""
+        deadline = time.monotonic() + timeout_s
+        with self._condition:
+            while True:
+                if impact_timestamp is None and self._captures:
+                    return self._captures.pop(0)
+
+                if impact_timestamp is not None:
+                    cutoff = impact_timestamp - self.settings.match_tolerance_s
+                    while self._captures and self._captures[0].trigger_timestamp < cutoff:
+                        stale = self._captures.pop(0)
+                        logger.warning(
+                            "[CAMERA] Discarding unmatched capture #%d (edge %.3f, shot %.3f)",
+                            stale.sequence,
+                            stale.trigger_timestamp,
+                            impact_timestamp,
+                        )
+                    if (
+                        self._captures
+                        and abs(self._captures[0].trigger_timestamp - impact_timestamp)
+                        <= self.settings.match_tolerance_s
+                    ):
+                        return self._captures.pop(0)
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._condition.wait(timeout=remaining)
+
+    def _start_gpio_trigger(self) -> None:
+        button_factory = self._button_factory
+        if button_factory is None:
+            ensure_lgpio_pin_factory()
+            from gpiozero import Button  # pylint: disable=import-error,import-outside-toplevel
+
+            button_factory = Button
+        self._button = button_factory(
+            self.settings.gpio_pin,
+            pull_up=False,
+            bounce_time=None,
+        )
+        self._button.when_pressed = self.notify_trigger
+
+    def _wait_for_prebuffer(self) -> None:
+        deadline = time.monotonic() + 5.0
+        while self._ring.buffered_frames < self.settings.pre_frames and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if self._ring.buffered_frames < self.settings.pre_frames:
+            raise RuntimeError(
+                "camera produced only "
+                f"{self._ring.buffered_frames}/{self.settings.pre_frames} pre-trigger frames"
+            )
+
+    def _on_frame(self, request) -> None:
+        try:
+            metadata = request.get_metadata()
+            if self.settings.stream == "main-y":
+                image = unpack_yuv420_y_plane(
+                    request.make_array("main"),
+                    self.settings.width,
+                    self.settings.height,
+                    self.settings.rotate_180,
+                )
+            else:
+                image = unpack_r8_frame(
+                    request.make_array("raw"),
+                    self.settings.width,
+                    self.settings.height,
+                    self.settings.rotate_180,
+                )
+            self._ring.add_frame(
+                CameraFrame(
+                    image=image,
+                    sensor_timestamp_ns=int(metadata["SensorTimestamp"]),
+                    host_timestamp_ns=time.monotonic_ns(),
+                    exposure_us=int(metadata.get("ExposureTime", 0)),
+                    analogue_gain=float(metadata.get("AnalogueGain", 0.0)),
+                )
+            )
+            capture = self._ring.pop_capture()
+            if capture is not None:
+                self._ready.put(capture)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("[CAMERA] Frame callback failed: %s", exc, exc_info=True)
+
+    def _save_loop(self) -> None:
+        while self._running:
+            capture = self._ready.get()
+            if capture is None:
+                break
+            trigger_epoch = self._trigger_epochs.get() if not self._trigger_epochs.empty() else 0.0
+            self._sequence += 1
+            sequence = self._sequence
+            try:
+                saved = self._save_capture(sequence, trigger_epoch, capture)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("[CAMERA] Capture #%d save failed: %s", sequence, exc, exc_info=True)
+                saved = SavedCameraCapture(
+                    sequence=sequence,
+                    trigger_timestamp=trigger_epoch,
+                    completed_timestamp=time.time(),
+                    path=self.output_dir,
+                    metadata={},
+                    error=str(exc),
+                )
+            with self._condition:
+                self._captures.append(saved)
+                self._condition.notify_all()
+
+    def _save_capture(
+        self,
+        sequence: int,
+        trigger_epoch: float,
+        capture: TriggeredCapture,
+    ) -> SavedCameraCapture:
+        timestamp = datetime.fromtimestamp(trigger_epoch or time.time()).strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )[:-3]
+        shot_dir = self.output_dir / f"camera_{timestamp}_{sequence:03d}"
+        shot_dir.mkdir(parents=True, exist_ok=False)
+        started = time.monotonic()
+
+        images = np.stack([frame.image for frame in capture.frames])
+        sensor_ns = np.asarray(
+            [frame.sensor_timestamp_ns for frame in capture.frames],
+            dtype=np.int64,
+        )
+        host_ns = np.asarray(
+            [frame.host_timestamp_ns for frame in capture.frames],
+            dtype=np.int64,
+        )
+        exposure_us = np.asarray([frame.exposure_us for frame in capture.frames], dtype=np.int32)
+        gain = np.asarray([frame.analogue_gain for frame in capture.frames], dtype=np.float32)
+
+        np.savez_compressed(
+            shot_dir / "frames.npz",
+            frames=images,
+            sensor_timestamp_ns=sensor_ns,
+            host_timestamp_ns=host_ns,
+            exposure_us=exposure_us,
+            analogue_gain=gain,
+            pre_trigger_count=np.int32(capture.pre_trigger_count),
+            trigger_host_timestamp_ns=np.int64(capture.trigger_host_timestamp_ns),
+            trigger_epoch_timestamp=np.float64(trigger_epoch),
+        )
+
+        for label, index in (
+            ("first", 0),
+            ("trigger", max(0, capture.pre_trigger_count - 1)),
+            ("last", len(images) - 1),
+        ):
+            _save_pgm(shot_dir / f"{label}.pgm", images[index])
+
+        summary = timing_summary(capture.frames)
+        summary.update(
+            {
+                "sequence": sequence,
+                "trigger_timestamp": trigger_epoch,
+                "completed_timestamp": time.time(),
+                "capture_path": str(shot_dir),
+                "pre_trigger_frames": capture.pre_trigger_count,
+                "post_trigger_frames": capture.post_trigger_count,
+                "trigger_host_timestamp_ns": capture.trigger_host_timestamp_ns,
+                "mean_brightness": float(images.mean()),
+                "p99_brightness": float(np.percentile(images, 99)),
+                "npz_bytes": (shot_dir / "frames.npz").stat().st_size,
+                "save_time_ms": (time.monotonic() - started) * 1000.0,
+                "settings": {
+                    "width": self.settings.width,
+                    "height": self.settings.height,
+                    "fps": self.settings.fps,
+                    "pre_ms": self.settings.pre_ms,
+                    "post_ms": self.settings.post_ms,
+                    "exposure_us": self.settings.exposure_us,
+                    "gain": self.settings.gain,
+                    "stream": self.settings.stream,
+                    "rotate_180": self.settings.rotate_180,
+                    "scaler_crop": self.settings.scaler_crop,
+                },
+            }
+        )
+        (shot_dir / "metadata.json").write_text(json.dumps(summary, indent=2) + "\n")
+        logger.info(
+            "[CAMERA] Capture #%d saved: %d frames, %.1ffps, gaps=%d -> %s",
+            sequence,
+            summary["frame_count"],
+            summary["delivered_fps"],
+            summary["gap_count"],
+            shot_dir,
+        )
+        return SavedCameraCapture(
+            sequence=sequence,
+            trigger_timestamp=trigger_epoch,
+            completed_timestamp=summary["completed_timestamp"],
+            path=shot_dir,
+            metadata=summary,
+        )

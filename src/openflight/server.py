@@ -128,6 +128,8 @@ experimental_kld7_raw_radc_logging: bool = False
 # TI IWR6843 L3 rolling-buffer capture + LCMF-v1 launch angle.
 iwr6843_runtime = None
 iwr6843_runtime_config: dict = {"enabled": False}
+camera_capture_runtime = None
+camera_capture_config: dict = {"enabled": False}
 
 # Optional LIS3DH enclosure orientation used to compensate TI mount tilt.
 inclinometer_service = None
@@ -211,6 +213,8 @@ def _cleanup_hardware_for_shutdown() -> bool:
         _run_shutdown_step("IWR6843 stop", iwr6843_runtime.stop)
     if power_monitor:
         _run_shutdown_step("battery monitor stop", power_monitor.stop)
+    if camera_capture_runtime:
+        _run_shutdown_step("camera capture stop", camera_capture_runtime.stop)
 
     _run_shutdown_step("camera thread stop", stop_camera_thread)
     if camera:
@@ -863,6 +867,7 @@ def _session_start_config() -> dict:
         "radc_tuning_params": dict(active_kld7_radc_tuning),
     }
     config["iwr6843"] = dict(iwr6843_runtime_config)
+    config["camera_capture"] = dict(camera_capture_config)
     config["inclinometer"] = dict(inclinometer_runtime_config)
     config["power"] = {
         "enabled": battery_provider is not None,
@@ -1055,6 +1060,79 @@ def init_camera(
         return False
 
 
+def init_camera_capture(
+    *,
+    output_dir: str | Path,
+    gpio_pin: int,
+    width: int,
+    height: int,
+    fps: float,
+    pre_ms: float,
+    post_ms: float,
+    exposure_us: int,
+    gain: float,
+    stream: str,
+    rotate_180: bool,
+    scaler_crop: tuple[int, int, int, int] | None,
+    use_gpio_trigger: bool,
+) -> bool:
+    """Initialize passive high-speed camera capture for offline alignment."""
+    global camera_capture_runtime, camera_capture_config  # pylint: disable=global-statement
+    try:
+        from .camera.capture_runtime import CameraCaptureRuntime, CameraCaptureSettings
+
+        settings = CameraCaptureSettings(
+            width=width,
+            height=height,
+            fps=fps,
+            pre_ms=pre_ms,
+            post_ms=post_ms,
+            exposure_us=exposure_us,
+            gain=gain,
+            stream=stream,
+            rotate_180=rotate_180,
+            scaler_crop=scaler_crop,
+            gpio_pin=gpio_pin,
+        )
+        camera_capture_runtime = CameraCaptureRuntime(
+            output_dir=output_dir,
+            settings=settings,
+            use_gpio_trigger=use_gpio_trigger,
+        )
+        camera_capture_runtime.start()
+        camera_capture_config = {
+            "enabled": True,
+            "output_dir": str(Path(output_dir).expanduser()),
+            "gpio_pin_bcm": gpio_pin,
+            "trigger_source": "gpio" if use_gpio_trigger else "iwr6843_fanout",
+            "width": settings.width,
+            "height": settings.height,
+            "fps": settings.fps,
+            "pre_ms": settings.pre_ms,
+            "post_ms": settings.post_ms,
+            "pre_frames": settings.pre_frames,
+            "post_frames": settings.post_frames,
+            "exposure_us": settings.exposure_us,
+            "gain": settings.gain,
+            "stream": settings.stream,
+            "rotate_180": settings.rotate_180,
+            "scaler_crop": settings.scaler_crop,
+        }
+        logger.info("[SERVER] Camera capture initialized: %s", camera_capture_config)
+        return True
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        logger.warning("[SERVER] Camera capture initialization failed: %s", error, exc_info=True)
+        log_session_error(
+            "Camera capture initialization failed",
+            component="camera_capture",
+            context={"output_dir": str(output_dir)},
+            exc=error,
+        )
+        camera_capture_runtime = None
+        camera_capture_config = {"enabled": False, "error": str(error)}
+        return False
+
+
 def init_iwr6843(
     *,
     port: str | None,
@@ -1102,6 +1180,11 @@ def init_iwr6843(
             port=port,
             gpio_pin=trigger_pin,
             save_dumps=save_dumps,
+            trigger_observers=(
+                [camera_capture_runtime.notify_trigger]
+                if camera_capture_runtime is not None
+                else None
+            ),
         )
         # OPS initialization can pulse the shared sound gate. Configure TI now,
         # but do not accept edges until the OPS trigger path is fully running.
@@ -2429,6 +2512,7 @@ def on_shot_detected(shot: Shot):
     _snapshot_inclinometer_for_shot(shot)
     iwr6843_ms = _process_iwr6843_angle(shot)
     kld7_ms = None
+    camera_capture_ms = None
     # Process K-LD7 angle radars (vertical = launch angle, horizontal = club path)
     try:
         if shot.mode != "mock":
@@ -2729,6 +2813,57 @@ def on_shot_detected(shot: Shot):
         )
         camera_data = None
 
+    camera_capture = None
+    try:
+        if camera_capture_runtime is not None and shot.mode != "mock":
+            camera_capture_start = time.time()
+            camera_capture = camera_capture_runtime.capture_for_shot(
+                shot.impact_timestamp,
+                timeout_s=2.0,
+            )
+            camera_capture_ms = (time.time() - camera_capture_start) * 1000.0
+            session_log = get_session_logger()
+            if session_log:
+                shot_number = session_log.stats.get("shots_detected", 0) + 1
+                if camera_capture is not None:
+                    session_log.log_camera_capture(
+                        shot_number=shot_number,
+                        shot_timestamp=shot.impact_timestamp,
+                        trigger_timestamp=camera_capture.trigger_timestamp,
+                        capture_path=str(camera_capture.path) if camera_capture.path else None,
+                        metadata=camera_capture.metadata,
+                        capture_error=camera_capture.error,
+                    )
+                    if camera_capture.valid:
+                        logger.info(
+                            "[SERVER] Camera capture #%d matched -> %s",
+                            camera_capture.sequence,
+                            camera_capture.path,
+                        )
+                    else:
+                        logger.warning(
+                            "[SERVER] Camera capture #%d failed: %s",
+                            camera_capture.sequence,
+                            camera_capture.error,
+                        )
+                else:
+                    session_log.log_camera_capture(
+                        shot_number=shot_number,
+                        shot_timestamp=shot.impact_timestamp,
+                        trigger_timestamp=None,
+                        capture_path=None,
+                        capture_error="no_matching_camera_capture",
+                    )
+                    logger.warning("[SERVER] No camera capture matched this shot")
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        logger.warning("[SERVER] Camera capture matching error: %s", error, exc_info=True)
+        log_session_error(
+            "Camera capture matching failed",
+            component="camera_capture",
+            context={"stage": "camera_capture_match", "ball_speed_mph": shot.ball_speed_mph},
+            exc=error,
+        )
+
     # Always emit user-facing launch angles. Radar/camera measurements win;
     # rejected or missing axes fall back to conservative estimates.
     _ensure_user_facing_launch_angles(shot)
@@ -2858,9 +2993,13 @@ def on_shot_detected(shot: Shot):
                 impact_timestamp=shot.impact_timestamp,
                 player_name=shot.player_name,
                 inclinometer=shot.inclinometer,
+                player_name=shot.player_name,
                 pipeline_ms={
                     "iwr6843": (round(iwr6843_ms, 1) if iwr6843_ms is not None else None),
                     "kld7": round(kld7_ms, 1) if kld7_ms is not None else None,
+                    "camera_capture": (
+                        round(camera_capture_ms, 1) if camera_capture_ms is not None else None
+                    ),
                 },
             )
     except Exception as e:
@@ -3033,7 +3172,7 @@ def start_monitor(
         debug: Enable verbose debug output
         ops_baud: Target UART baud when the OPS243 is on the GPIO header
     """
-    global monitor, mock_mode, debug_mode  # pylint: disable=global-statement
+    global monitor, mock_mode, mock_swing_speed_mode, debug_mode, radar_config
 
     # Stop any existing monitor first
     if monitor is not None:
@@ -3041,8 +3180,12 @@ def start_monitor(
         stop_monitor()
 
     mock_mode = mock
+    mock_swing_speed_mode = bool(mock and swing_speed_mode)
     debug_mode = debug
-    if mock:
+    if mock and swing_speed_mode:
+        monitor = MockSwingSpeedMonitor(**(swing_speed_kwargs or {}))
+        print("[MODE] Mock swing speed training mode")
+    elif mock:
         # Mock mode for testing without radar
         monitor = MockLaunchMonitor()
     elif swing_speed_mode:
@@ -3092,8 +3235,12 @@ def start_monitor(
         session_logger.start_session(
             radar_port=port if not mock else "mock",
             firmware_version=radar_info.get("Version"),
-            camera_enabled=camera is not None,
-            camera_model="hough" if (camera_tracker and camera_tracker.use_hough) else None,
+            camera_enabled=camera is not None or camera_capture_runtime is not None,
+            camera_model=(
+                "capture"
+                if camera_capture_runtime is not None
+                else ("hough" if (camera_tracker and camera_tracker.use_hough) else None)
+            ),
             config=_session_start_config(),
             mode="swing-speed" if swing_speed_mode else ("mock" if mock else "rolling-buffer"),
             trigger_type=None if swing_speed_mode or mock else trigger_type,
@@ -3669,6 +3816,37 @@ def main():
         "--no-camera", action="store_true", help="Disable camera (auto-enabled if available)"
     )
     parser.add_argument(
+        "--camera-capture",
+        action="store_true",
+        help=(
+            "Enable passive high-speed camera rolling-buffer capture for offline "
+            "OPS/IWR/camera alignment. Does not run the legacy camera angle tracker."
+        ),
+    )
+    parser.add_argument("--camera-capture-width", type=int, default=640)
+    parser.add_argument("--camera-capture-height", type=int, default=400)
+    parser.add_argument("--camera-capture-fps", type=float, default=300.0)
+    parser.add_argument("--camera-capture-pre-ms", type=float, default=150.0)
+    parser.add_argument("--camera-capture-post-ms", type=float, default=50.0)
+    parser.add_argument("--camera-capture-exposure-us", type=int, default=1000)
+    parser.add_argument("--camera-capture-gain", type=float, default=4.0)
+    parser.add_argument(
+        "--camera-capture-stream",
+        choices=("raw", "main-y"),
+        default="raw",
+        help="Camera stream to persist (raw preserves OV9281 R8 detail; main-y is smaller).",
+    )
+    parser.add_argument(
+        "--camera-capture-scaler-crop",
+        default=None,
+        help="Optional Picamera2 ScalerCrop as X,Y,W,H.",
+    )
+    parser.add_argument(
+        "--camera-capture-rotate-180",
+        action="store_true",
+        help="Rotate saved camera frames 180 degrees.",
+    )
+    parser.add_argument(
         "--camera-model",
         default=None,
         help="Path to YOLO model for ball detection (uses Hough by default)",
@@ -4103,10 +4281,30 @@ def main():
         parser.error("--inclinometer requires --iwr6843")
     if args.iwr6843 and args.mock:
         parser.error("--iwr6843 cannot be used with --mock")
+    if args.camera_capture and args.mock:
+        parser.error("--camera-capture cannot be used with --mock")
     if args.iwr6843 and args.trigger == "sound-gpio":
         parser.error("--iwr6843 already owns BCM GPIO; use the default --trigger sound")
     if args.iwr6843 and (args.iwr6843_tee_m <= 0 or args.iwr6843_net_m <= 0):
         parser.error("--iwr6843-tee-m and --iwr6843-net-m must be positive")
+    if args.camera_capture and (
+        args.camera_capture_width <= 0
+        or args.camera_capture_height <= 0
+        or args.camera_capture_fps <= 0
+        or args.camera_capture_pre_ms <= 0
+        or args.camera_capture_post_ms <= 0
+        or args.camera_capture_exposure_us <= 0
+        or args.camera_capture_gain <= 0
+    ):
+        parser.error("--camera-capture dimensions, timing, exposure, and gain must be positive")
+    camera_capture_scaler_crop = None
+    if args.camera_capture_scaler_crop:
+        try:
+            from .camera.capture_runtime import parse_scaler_crop
+
+            camera_capture_scaler_crop = parse_scaler_crop(args.camera_capture_scaler_crop)
+        except ValueError as exc:
+            parser.error(f"--camera-capture-scaler-crop: {exc}")
     # The radar can only be moved to a rate it has an API command for, so an
     # unsupported value is refused by the hardware and leaves the link at
     # whatever answered -- a silent slow link, which presents as an
@@ -4197,8 +4395,34 @@ def main():
         "rejected_cooldown_ms": args.swing_speed_rejected_cooldown_ms,
     }
 
+    if args.camera_capture:
+        camera_capture_base = (
+            Path(args.log_dir).expanduser() if args.log_dir else Path.home() / "openflight_sessions"
+        )
+        camera_capture_output_dir = camera_capture_base / args.session_location / "camera"
+        if not init_camera_capture(
+            output_dir=camera_capture_output_dir,
+            gpio_pin=args.iwr6843_trigger_pin,
+            width=args.camera_capture_width,
+            height=args.camera_capture_height,
+            fps=args.camera_capture_fps,
+            pre_ms=args.camera_capture_pre_ms,
+            post_ms=args.camera_capture_post_ms,
+            exposure_us=args.camera_capture_exposure_us,
+            gain=args.camera_capture_gain,
+            stream=args.camera_capture_stream,
+            rotate_180=args.camera_capture_rotate_180,
+            scaler_crop=camera_capture_scaler_crop,
+            use_gpio_trigger=not args.iwr6843,
+        ):
+            print("Camera capture unavailable - running without high-speed camera capture")
+        else:
+            print(f"Camera capture enabled: {camera_capture_output_dir}")
+
     # Initialize camera BEFORE starting monitor (so session log is accurate)
-    if not args.no_camera:
+    if args.camera_capture and not args.no_camera:
+        print("Legacy camera tracker disabled because --camera-capture is enabled")
+    elif not args.no_camera:
         # Determine if we should use Hough (default) or YOLO
         use_hough = args.camera_model is None and args.roboflow_model is None
 

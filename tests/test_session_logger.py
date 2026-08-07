@@ -4,6 +4,8 @@ import json
 import threading
 import time
 
+import pytest
+
 from openflight import session_logger as session_logger_module
 from openflight.kld7.radc import RADC_PAYLOAD_BYTES
 from openflight.session_logger import SessionLogger, log_session_error
@@ -327,6 +329,29 @@ class TestLogShot:
         assert entry["trigger_timestamp_delta_from_first_byte_ms"] == 0.0
         assert entry["clock_sync_offset_s"] == 1234567790.114
         assert entry["post_trigger_duration_ms"] == 68.0
+
+
+class TestLogCameraCapture:
+    """Tests for passive high-speed camera capture logging."""
+
+    def test_camera_capture_writes_path_and_timing(self, tmp_path):
+        logger = SessionLogger(log_dir=tmp_path, enabled=True)
+        logger.start_session(mode="rolling-buffer", trigger_type="sound")
+
+        logger.log_camera_capture(
+            shot_number=3,
+            shot_timestamp=100.0,
+            trigger_timestamp=100.012,
+            capture_path="/tmp/camera_003",
+            metadata={"frame_count": 48, "delivered_fps": 287.9},
+        )
+
+        entry = json.loads(logger.session_path.read_text().strip().split("\n")[-1])
+        assert entry["type"] == "camera_capture"
+        assert entry["shot_number"] == 3
+        assert entry["capture_path"] == "/tmp/camera_003"
+        assert entry["trigger_delta_ms"] == pytest.approx(12.0)
+        assert entry["metadata"]["frame_count"] == 48
 
 
 class TestLogKld7Buffer:

@@ -110,6 +110,44 @@ def test_iwr6843_overrides_are_forwarded():
     assert "--iwr6843-capture-timeout 15" in command
 
 
+def test_camera_capture_flags_are_forwarded():
+    result = _dry_run(
+        "--camera-capture",
+        "--camera-capture-width",
+        "320",
+        "--camera-capture-height",
+        "240",
+        "--camera-capture-fps",
+        "300",
+        "--camera-capture-pre-ms",
+        "150",
+        "--camera-capture-post-ms",
+        "50",
+        "--camera-capture-exposure-us",
+        "1000",
+        "--camera-capture-gain",
+        "4",
+        "--camera-capture-stream",
+        "main-y",
+        "--camera-capture-scaler-crop",
+        "256,160,768,480",
+        "--camera-capture-rotate-180",
+    )
+    command = result.stdout.strip()
+
+    assert "--camera-capture" in command
+    assert "--camera-capture-width 320" in command
+    assert "--camera-capture-height 240" in command
+    assert "--camera-capture-fps 300" in command
+    assert "--camera-capture-pre-ms 150" in command
+    assert "--camera-capture-post-ms 50" in command
+    assert "--camera-capture-exposure-us 1000" in command
+    assert "--camera-capture-gain 4" in command
+    assert "--camera-capture-stream main-y" in command
+    assert "--camera-capture-scaler-crop 256,160,768,480" in command
+    assert "--camera-capture-rotate-180" in command
+
+
 def test_ops_radar_port_is_forwarded_separately_from_web_port():
     result = _dry_run("--radar-port", "/dev/serial0", "--port", "9090")
     command = result.stdout.strip()

@@ -17,6 +17,17 @@ MOCK_SWING_SPEED=false
 RADAR_LOG=false
 DEBUG_MODE=false
 NO_CAMERA=true  # Camera disabled by default (K-LD7 radar handles angle)
+CAMERA_CAPTURE=false
+CAMERA_CAPTURE_WIDTH=""
+CAMERA_CAPTURE_HEIGHT=""
+CAMERA_CAPTURE_FPS=""
+CAMERA_CAPTURE_PRE_MS=""
+CAMERA_CAPTURE_POST_MS=""
+CAMERA_CAPTURE_EXPOSURE_US=""
+CAMERA_CAPTURE_GAIN=""
+CAMERA_CAPTURE_STREAM=""
+CAMERA_CAPTURE_SCALER_CROP=""
+CAMERA_CAPTURE_ROTATE_180=false
 TRACKMAN_TEST=false
 SESSION_LOCATION=""
 DRY_RUN=false
@@ -129,6 +140,50 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-camera)
             NO_CAMERA=true
+            shift
+            ;;
+        --camera-capture)
+            CAMERA_CAPTURE=true
+            shift
+            ;;
+        --camera-capture-width)
+            CAMERA_CAPTURE_WIDTH="$2"
+            shift 2
+            ;;
+        --camera-capture-height)
+            CAMERA_CAPTURE_HEIGHT="$2"
+            shift 2
+            ;;
+        --camera-capture-fps)
+            CAMERA_CAPTURE_FPS="$2"
+            shift 2
+            ;;
+        --camera-capture-pre-ms)
+            CAMERA_CAPTURE_PRE_MS="$2"
+            shift 2
+            ;;
+        --camera-capture-post-ms)
+            CAMERA_CAPTURE_POST_MS="$2"
+            shift 2
+            ;;
+        --camera-capture-exposure-us)
+            CAMERA_CAPTURE_EXPOSURE_US="$2"
+            shift 2
+            ;;
+        --camera-capture-gain)
+            CAMERA_CAPTURE_GAIN="$2"
+            shift 2
+            ;;
+        --camera-capture-stream)
+            CAMERA_CAPTURE_STREAM="$2"
+            shift 2
+            ;;
+        --camera-capture-scaler-crop)
+            CAMERA_CAPTURE_SCALER_CROP="$2"
+            shift 2
+            ;;
+        --camera-capture-rotate-180)
+            CAMERA_CAPTURE_ROTATE_180=true
             shift
             ;;
         --mode)
@@ -550,6 +605,20 @@ fi
 
 if [ "$BALLISTICS" = false ]; then
     SERVER_CMD="$SERVER_CMD --no-ballistics"
+fi
+
+if [ "$CAMERA_CAPTURE" = true ]; then
+    SERVER_CMD="$SERVER_CMD --camera-capture"
+    [ -n "$CAMERA_CAPTURE_WIDTH" ] && SERVER_CMD="$SERVER_CMD --camera-capture-width $CAMERA_CAPTURE_WIDTH"
+    [ -n "$CAMERA_CAPTURE_HEIGHT" ] && SERVER_CMD="$SERVER_CMD --camera-capture-height $CAMERA_CAPTURE_HEIGHT"
+    [ -n "$CAMERA_CAPTURE_FPS" ] && SERVER_CMD="$SERVER_CMD --camera-capture-fps $CAMERA_CAPTURE_FPS"
+    [ -n "$CAMERA_CAPTURE_PRE_MS" ] && SERVER_CMD="$SERVER_CMD --camera-capture-pre-ms $CAMERA_CAPTURE_PRE_MS"
+    [ -n "$CAMERA_CAPTURE_POST_MS" ] && SERVER_CMD="$SERVER_CMD --camera-capture-post-ms $CAMERA_CAPTURE_POST_MS"
+    [ -n "$CAMERA_CAPTURE_EXPOSURE_US" ] && SERVER_CMD="$SERVER_CMD --camera-capture-exposure-us $CAMERA_CAPTURE_EXPOSURE_US"
+    [ -n "$CAMERA_CAPTURE_GAIN" ] && SERVER_CMD="$SERVER_CMD --camera-capture-gain $CAMERA_CAPTURE_GAIN"
+    [ -n "$CAMERA_CAPTURE_STREAM" ] && SERVER_CMD="$SERVER_CMD --camera-capture-stream $CAMERA_CAPTURE_STREAM"
+    [ -n "$CAMERA_CAPTURE_SCALER_CROP" ] && SERVER_CMD="$SERVER_CMD --camera-capture-scaler-crop $CAMERA_CAPTURE_SCALER_CROP"
+    [ "$CAMERA_CAPTURE_ROTATE_180" = true ] && SERVER_CMD="$SERVER_CMD --camera-capture-rotate-180"
 fi
 
 # Simulator connectors: off unless --sim; targets come from config/sim.json

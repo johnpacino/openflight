@@ -369,6 +369,7 @@ class SessionLogger:
         impact_timestamp: Optional[float] = None,
         player_name: Optional[str] = None,
         inclinometer: Optional[Dict] = None,
+        player_name: Optional[str] = None,
     ):
         """
         Log a detected shot with all metrics.
@@ -499,6 +500,37 @@ class SessionLogger:
                 "confidence": confidence,
                 "positions_tracked": positions_tracked,
                 "launch_detected": launch_detected,
+            },
+        )
+
+    def log_camera_capture(
+        self,
+        *,
+        shot_number: int,
+        shot_timestamp: Optional[float],
+        trigger_timestamp: Optional[float],
+        capture_path: Optional[str],
+        metadata: Optional[Dict] = None,
+        capture_error: Optional[str] = None,
+    ):
+        """Log a high-speed camera clip saved for offline shot correlation."""
+        if not self.enabled:
+            return
+
+        self._write_entry(
+            "camera_capture",
+            {
+                "shot_number": shot_number,
+                "shot_timestamp": shot_timestamp,
+                "trigger_timestamp": trigger_timestamp,
+                "trigger_delta_ms": (
+                    (trigger_timestamp - shot_timestamp) * 1000.0
+                    if shot_timestamp is not None and trigger_timestamp is not None
+                    else None
+                ),
+                "capture_path": capture_path,
+                "capture_error": capture_error,
+                "metadata": metadata or {},
             },
         )
 
