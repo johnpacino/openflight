@@ -155,9 +155,15 @@ class IWR6843Radar:
                 window = 6.0 if line.startswith("sensorStart") else 1.5
                 resp = self.cmd(line, window)
                 self._require_done(line, resp)
-        health = self.stats()
-        self._require_done("stats", health)
-        if "active=1" not in health:
+        deadline = time.monotonic() + 6.0
+        health = ""
+        while time.monotonic() < deadline:
+            health = self.stats()
+            self._require_done("stats", health)
+            if "active=1" in health:
+                break
+            time.sleep(0.1)
+        else:
             raise RuntimeError(f"IWR6843 did not enter active capture mode: {health.strip()}")
 
     def read_dump(self, timeout_s: float = 40.0, stall_tolerance_s: float = 4.0) -> bytes:

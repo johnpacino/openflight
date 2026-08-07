@@ -48,6 +48,32 @@ def test_send_config_flushes_previous_mmwave_profile_when_config_omits_flush(tmp
     ]
 
 
+def test_send_config_waits_for_sensor_to_become_active(tmp_path, monkeypatch):
+    """sensorStart may acknowledge before RF calibration and HWA startup finish."""
+    config = tmp_path / "radar.cfg"
+    config.write_text("sensorStart\n", encoding="utf-8")
+    statuses = iter(
+        (
+            "active=0 calib=0x0 hwa_frames=0\nDone\n",
+            "active=0 calib=0x1ffe hwa_frames=0\nDone\n",
+            "active=1 calib=0x1ffe hwa_frames=2\nDone\n",
+        )
+    )
+    commands = []
+    radar = IWR6843Radar.__new__(IWR6843Radar)
+    monkeypatch.setattr(radar, "drain_stale_output", lambda: 0)
+
+    def command(line, *_args, **_kwargs):
+        commands.append(line)
+        return next(statuses) if line == "stats" else "Done\n"
+
+    monkeypatch.setattr(radar, "cmd", command)
+
+    radar.send_config(str(config))
+
+    assert commands == ["sensorStop", "flushCfg", "sensorStart", "stats", "stats", "stats"]
+
+
 class FakeSerial:
     """Serial double that exposes the in_waiting/read/write pieces read_dump uses."""
 
