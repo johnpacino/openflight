@@ -295,6 +295,14 @@ class Shot:
     experimental_attack_angle_status: Optional[str] = None
     experimental_club_path_deg: Optional[float] = None
     experimental_club_path_status: Optional[str] = None
+    # Camera-fused club delivery: radar AoA candidate + per-club calibration
+    # offset, club path derived from the camera delivery-plane trace. Same
+    # experimental estimator level as the fields above.
+    experimental_fused_attack_angle_deg: Optional[float] = None
+    experimental_fused_club_path_deg: Optional[float] = None
+    experimental_fused_status: Optional[str] = None
+    experimental_camera_trace_deg: Optional[float] = None
+    experimental_aoa_offset_source: Optional[str] = None
     spin_axis_deg: Optional[float] = None  # Spin axis tilt: 0=backspin, +right(fade), -left(draw)
     inclinometer: Optional[dict] = None  # Stable enclosure orientation used for this shot
 

@@ -225,11 +225,13 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
 
   const hasSpin = shot.spin_rpm !== null;
   const hasLaunchAngle = shot.launch_angle_vertical !== null;
-  const attackAngle = shot.club_angle_deg ?? shot.experimental_attack_angle_deg ?? null;
+  const attackAngle =
+    shot.club_angle_deg ?? shot.experimental_fused_attack_angle_deg ?? shot.experimental_attack_angle_deg ?? null;
   const attackIsExperimental =
     shot.club_angle_deg === null &&
     (shot.experimental_attack_angle_deg != null || shot.experimental_attack_angle_status != null);
-  const clubPath = shot.club_path_deg ?? shot.experimental_club_path_deg ?? null;
+  const clubPath =
+    shot.club_path_deg ?? shot.experimental_fused_club_path_deg ?? shot.experimental_club_path_deg ?? null;
   const clubPathIsExperimental =
     shot.club_path_deg === null &&
     (shot.experimental_club_path_deg != null || shot.experimental_club_path_status != null);

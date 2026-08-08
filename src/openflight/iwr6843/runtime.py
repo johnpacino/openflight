@@ -115,6 +115,12 @@ class IWR6843Runtime:
     horizontal_phase_reference_rad: float | None = None
     tdm_sign_policy: str = "positive"
     club_window_policy: ClubWindowPolicy = field(default_factory=ClubWindowPolicy)
+    # The ball-derived impact anchor runs ~2 ms late: on the 2026-08-07
+    # 55-shot session, the club track's tee-contact error minimized at -2 ms
+    # (0.026 m vs 0.035 m uncorrected), independently matching the camera's
+    # ball-departure timing. Applied to the club estimators only; the ball
+    # pipeline keeps its own anchor.
+    club_impact_correction_s: float = -0.002
 
     def _ops_guided_measurement(  # pylint: disable=too-many-return-statements
         self,
@@ -246,6 +252,9 @@ class IWR6843Runtime:
             ball_sign = getattr(measurement, "tdm_sign_used", None)
             fallback = ball_sign not in (-1, 1)
             policy_sign = _TDM_SIGN_BY_POLICY.get(self.tdm_sign_policy, 1)
+            impact_t_s = getattr(measurement, "impact_t_s", None)
+            if impact_t_s is not None:
+                impact_t_s += self.club_impact_correction_s
             club_path = estimate_club_path(
                 capture.raw,
                 shot_calibration,
@@ -255,7 +264,7 @@ class IWR6843Runtime:
                 # trigger frame lands late by a variable 2-4 frames and the
                 # slot cannot be assumed; None means the ball tracker gave
                 # nothing to anchor to and club path declines.
-                impact_t_s=getattr(measurement, "impact_t_s", None),
+                impact_t_s=impact_t_s,
                 aim_offset_deg=self.azimuth_offset_deg,
                 phase_reference_rad=self.horizontal_phase_reference_rad,
                 tdm_sign=policy_sign if fallback else ball_sign,

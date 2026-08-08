@@ -915,6 +915,11 @@ def shot_to_dict(shot: Shot) -> dict:
         "experimental_attack_angle_status": shot.experimental_attack_angle_status,
         "experimental_club_path_deg": shot.experimental_club_path_deg,
         "experimental_club_path_status": shot.experimental_club_path_status,
+        "experimental_fused_attack_angle_deg": shot.experimental_fused_attack_angle_deg,
+        "experimental_fused_club_path_deg": shot.experimental_fused_club_path_deg,
+        "experimental_fused_status": shot.experimental_fused_status,
+        "experimental_camera_trace_deg": shot.experimental_camera_trace_deg,
+        "experimental_aoa_offset_source": shot.experimental_aoa_offset_source,
         "spin_axis_deg": shot.spin_axis_deg,
         "inclinometer": shot.inclinometer,
         # Spin data from rolling buffer mode
@@ -2515,6 +2520,56 @@ def _emit_iwr6843_trigger_status(
     )
 
 
+def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
+    """Camera-fused club delivery (experimental estimator level).
+
+    Offset-corrects the radar attack-angle candidate per club and derives
+    club path from the camera delivery-plane trace. Runs inside the shot
+    pipeline so the emitted shot already carries the fused values; failures
+    degrade to a status string, never block the shot.
+    """
+    try:
+        import numpy as np  # noqa: PLC0415  pylint: disable=import-outside-toplevel
+
+        from openflight.camera.club_delivery import (  # noqa: PLC0415
+            TraceResult,
+            estimate_delivery_trace,
+            fuse_club_delivery,
+        )
+
+        trace = TraceResult(status="no_capture")
+        if camera_capture is not None and camera_capture.valid and camera_capture.path:
+            frames_path = Path(camera_capture.path) / "frames.npz"
+            if frames_path.exists():
+                archive = np.load(frames_path)
+                trace = estimate_delivery_trace(archive["frames"], archive["host_timestamp_ns"])
+        fused = fuse_club_delivery(shot.experimental_attack_angle_deg, trace, shot.club)
+        shot.experimental_fused_attack_angle_deg = fused.attack_angle_deg
+        shot.experimental_fused_club_path_deg = fused.club_path_deg
+        shot.experimental_fused_status = fused.status
+        shot.experimental_camera_trace_deg = fused.trace_deg
+        shot.experimental_aoa_offset_source = fused.offset_source
+        logger.info(
+            "[SERVER] Camera-fused club delivery: AoA %s path %s "
+            "(status=%s, trace=%s, offset=%s %s)",
+            fused.attack_angle_deg,
+            fused.club_path_deg,
+            fused.status,
+            fused.trace_deg,
+            fused.aoa_offset_deg,
+            fused.offset_source,
+        )
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        shot.experimental_fused_status = "error"
+        logger.warning("[SERVER] Camera club-delivery fusion error: %s", error, exc_info=True)
+        log_session_error(
+            "Camera club-delivery fusion failed",
+            component="camera_capture",
+            context={"stage": "club_delivery_fusion", "ball_speed_mph": shot.ball_speed_mph},
+            exc=error,
+        )
+
+
 def on_shot_detected(shot: Shot):
     """Callback when a shot is detected - emit to all clients."""
     global ball_detected, ball_detection_confidence  # pylint: disable=global-statement
@@ -2879,6 +2934,9 @@ def on_shot_detected(shot: Shot):
             exc=error,
         )
 
+    if shot.mode != "mock":
+        _fuse_camera_club_delivery(shot, camera_capture)
+
     # Always emit user-facing launch angles. Radar/camera measurements win;
     # rejected or missing axes fall back to conservative estimates.
     _ensure_user_facing_launch_angles(shot)
@@ -3004,6 +3062,11 @@ def on_shot_detected(shot: Shot):
                 experimental_attack_angle_status=shot.experimental_attack_angle_status,
                 experimental_club_path_deg=shot.experimental_club_path_deg,
                 experimental_club_path_status=shot.experimental_club_path_status,
+                experimental_fused_attack_angle_deg=shot.experimental_fused_attack_angle_deg,
+                experimental_fused_club_path_deg=shot.experimental_fused_club_path_deg,
+                experimental_fused_status=shot.experimental_fused_status,
+                experimental_camera_trace_deg=shot.experimental_camera_trace_deg,
+                experimental_aoa_offset_source=shot.experimental_aoa_offset_source,
                 spin_axis_deg=shot.spin_axis_deg,
                 impact_timestamp=shot.impact_timestamp,
                 player_name=shot.player_name,

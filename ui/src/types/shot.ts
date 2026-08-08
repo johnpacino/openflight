@@ -22,6 +22,11 @@ export interface Shot {
   experimental_attack_angle_status?: string | null;
   experimental_club_path_deg?: number | null;
   experimental_club_path_status?: string | null;
+  experimental_fused_attack_angle_deg?: number | null;
+  experimental_fused_club_path_deg?: number | null;
+  experimental_fused_status?: string | null;
+  experimental_camera_trace_deg?: number | null;
+  experimental_aoa_offset_source?: string | null;
   spin_axis_deg: number | null;
   // Rolling buffer mode spin data
   spin_rpm: number | null;

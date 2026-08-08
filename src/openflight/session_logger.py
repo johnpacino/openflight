@@ -364,6 +364,11 @@ class SessionLogger:
         experimental_attack_angle_status: Optional[str] = None,
         experimental_club_path_deg: Optional[float] = None,
         experimental_club_path_status: Optional[str] = None,
+        experimental_fused_attack_angle_deg: Optional[float] = None,
+        experimental_fused_club_path_deg: Optional[float] = None,
+        experimental_fused_status: Optional[str] = None,
+        experimental_camera_trace_deg: Optional[float] = None,
+        experimental_aoa_offset_source: Optional[str] = None,
         spin_axis_deg: Optional[float] = None,
         pipeline_ms: Optional[Dict] = None,
         impact_timestamp: Optional[float] = None,
@@ -469,6 +474,16 @@ class SessionLogger:
             data["experimental_club_path_deg"] = experimental_club_path_deg
         if experimental_club_path_status is not None:
             data["experimental_club_path_status"] = experimental_club_path_status
+        if experimental_fused_attack_angle_deg is not None:
+            data["experimental_fused_attack_angle_deg"] = experimental_fused_attack_angle_deg
+        if experimental_fused_club_path_deg is not None:
+            data["experimental_fused_club_path_deg"] = experimental_fused_club_path_deg
+        if experimental_fused_status is not None:
+            data["experimental_fused_status"] = experimental_fused_status
+        if experimental_camera_trace_deg is not None:
+            data["experimental_camera_trace_deg"] = experimental_camera_trace_deg
+        if experimental_aoa_offset_source is not None:
+            data["experimental_aoa_offset_source"] = experimental_aoa_offset_source
         if spin_axis_deg is not None:
             data["spin_axis_deg"] = spin_axis_deg
         if pipeline_ms is not None:
