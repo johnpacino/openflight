@@ -195,6 +195,26 @@ class CameraCaptureRuntime:
             self._worker.join(timeout=3.0)
             self._worker = None
 
+    def capture_preview_jpeg(self, quality: int = 80) -> bytes | None:
+        """One processed frame from the concurrent main stream, as JPEG.
+
+        The preview reads the YUV main stream that runs alongside the raw
+        high-speed stream, so the rolling buffer keeps filling and triggered
+        shots are never lost while the UI camera tab is open.
+        """
+        if not self._running or self._camera is None:
+            return None
+        try:
+            import cv2  # pylint: disable=import-error,import-outside-toplevel
+
+            yuv = self._camera.capture_array("main")
+            bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+            ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+            return encoded.tobytes() if ok else None
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.warning("[CAMERA] Preview capture failed", exc_info=True)
+            return None
+
     def notify_trigger(self, timestamp: float | None = None) -> bool:
         """Freeze the camera ring on a sound-trigger edge."""
         if not self._running:

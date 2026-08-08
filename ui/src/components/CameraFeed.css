@@ -196,3 +196,57 @@
     font-size: 0.75rem;
   }
 }
+
+.camera-feed__timestamp {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #9aa4b2);
+  margin-left: auto;
+}
+
+/* Alignment crosshair over the capture preview */
+.camera-feed__crosshair {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.camera-feed__hairline {
+  stroke: rgba(0, 255, 140, 0.55);
+  stroke-width: 1px;
+}
+
+.camera-feed__center-cross {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.camera-feed__center-cross::before,
+.camera-feed__center-cross::after {
+  content: '';
+  position: absolute;
+  background: rgba(0, 255, 140, 0.95);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+}
+
+.camera-feed__center-cross::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+}
+
+.camera-feed__center-cross::after {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+}

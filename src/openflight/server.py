@@ -1502,6 +1502,21 @@ def camera_stream():
     return Response(generate_mjpeg(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+@app.route("/api/camera/preview.jpg")
+def camera_capture_preview():
+    """Single still from the capture runtime's concurrent main stream.
+
+    Served from the processed YUV stream while the raw rolling buffer keeps
+    running, so shots are never missed while the camera tab polls this.
+    """
+    if camera_capture_runtime is None:
+        return "Camera capture not enabled", 404
+    jpeg = camera_capture_runtime.capture_preview_jpeg()
+    if jpeg is None:
+        return "Camera not running", 503
+    return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @socketio.on("toggle_camera")
 def handle_toggle_camera():
     """Toggle camera on/off."""

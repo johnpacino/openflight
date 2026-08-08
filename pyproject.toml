@@ -26,6 +26,9 @@ dependencies = [
     "pyserial>=3.5",
     "numpy>=1.20.0",
     "scipy>=1.10.0",
+    # Camera club-delivery estimator (mask correlation) + camera-tab preview
+    # JPEG encoding. Headless build: no GUI deps on the Pi.
+    "opencv-python-headless>=4.8.0",
     "tomli>=2.0.1; python_version < '3.11'",
     # Camera tracking is currently disabled; keep these out of the base install.
     # "trackers @ git+https://github.com/roboflow/trackers.git",
