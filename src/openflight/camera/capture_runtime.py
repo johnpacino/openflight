@@ -225,9 +225,11 @@ class CameraCaptureRuntime:
             yuv = self._camera.capture_array("main")
             bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
             if self.settings.rotate_180:
-                # The saved-frame unpackers rotate inverted-mount rigs in
-                # software; the preview must match that orientation.
-                bgr = cv2.rotate(bgr, cv2.ROTATE_180)
+                # Inverted mount: the natural (non-mirrored) operator view is
+                # a vertical flip -- 180 rotation plus a horizontal mirror.
+                # Saved frames keep the unpackers' rotate-180 convention that
+                # the delivery-trace sign chain was validated against.
+                bgr = cv2.flip(bgr, 0)
             ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
             return encoded.tobytes() if ok else None
         except Exception:  # pylint: disable=broad-exception-caught
