@@ -862,7 +862,7 @@ else
     log "Ballistic carry model disabled (using legacy table)"
 fi
 
-uv run $SERVER_CMD &
+uv run ${OPENFLIGHT_UV_RUN_ARGS:-} $SERVER_CMD &
 SERVER_PID=$!
 
 # Wait for server to be ready

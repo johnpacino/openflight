@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import queue
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from openflight.gpio_factory import ensure_lgpio_pin_factory
 logger = logging.getLogger(__name__)
 
 CameraCaptureStream = Literal["raw", "main-y"]
+
+RASPBERRY_PI_DIST_PACKAGES = Path("/usr/lib/python3/dist-packages")
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,17 @@ def _save_pgm(path: Path, image: np.ndarray) -> None:
         handle.write(image.tobytes())
 
 
+def ensure_picamera2_import_path() -> bool:
+    """Expose Raspberry Pi OS camera packages when running inside uv's venv."""
+    path = str(RASPBERRY_PI_DIST_PACKAGES)
+    if path in sys.path:
+        return True
+    if not RASPBERRY_PI_DIST_PACKAGES.exists():
+        return False
+    sys.path.append(path)
+    return True
+
+
 class CameraCaptureRuntime:
     """Maintain a high-speed camera ring and save clips on sound-trigger edges."""
 
@@ -128,6 +142,7 @@ class CameraCaptureRuntime:
         """Start the camera and, optionally, the GPIO edge listener."""
         if self._running:
             return
+        ensure_picamera2_import_path()
         try:
             from picamera2 import Picamera2  # pylint: disable=import-error,import-outside-toplevel
         except ImportError as exc:

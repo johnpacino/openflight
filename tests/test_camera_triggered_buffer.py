@@ -5,7 +5,8 @@ import threading
 import numpy as np
 import pytest
 
-from openflight.camera.capture_runtime import parse_scaler_crop
+from openflight.camera import capture_runtime
+from openflight.camera.capture_runtime import ensure_picamera2_import_path, parse_scaler_crop
 from openflight.camera.triggered_buffer import (
     CameraFrame,
     TriggeredFrameBuffer,
@@ -124,6 +125,16 @@ def test_parse_scaler_crop():
         parse_scaler_crop("1,2,3")
     with pytest.raises(ValueError, match="positive"):
         parse_scaler_crop("1,2,0,4")
+
+
+def test_ensure_picamera2_import_path_adds_pi_dist_packages(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture_runtime, "RASPBERRY_PI_DIST_PACKAGES", tmp_path)
+    monkeypatch.setattr(capture_runtime.sys, "path", [])
+
+    assert ensure_picamera2_import_path()
+    assert capture_runtime.sys.path == [str(tmp_path)]
+    assert ensure_picamera2_import_path()
+    assert capture_runtime.sys.path == [str(tmp_path)]
 
 
 def test_timing_summary_reports_fps_and_gap():
