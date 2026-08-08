@@ -222,11 +222,27 @@ class TestTraceEstimation:
         assert result.scene_p995 is not None
         assert result.scene_p995 < SCENE_P995_MIN
 
-    def test_overexposed_scene_reports_overexposed(self):
+    def test_saturation_near_ball_reports_overexposed(self):
         frames, ts = _synthetic_capture()
-        frames[:, 40:160, :] = 255  # midday sun: large saturated region
+        # hot patch on the mat right next to the ball (inside the ball zone)
+        frames[:, BALL_XY[1] + 30 : BALL_XY[1] + 90, BALL_XY[0] - 60 : BALL_XY[0] + 60] = 255
         result = estimate_delivery_trace(frames, ts)
         assert result.status == "overexposed"
+        assert result.trace_deg is None
+
+    def test_dappled_background_saturation_is_tolerated(self):
+        frames, ts = _synthetic_capture()
+        frames[:, 0:80, 0:200] = 255  # sunlit trees far from the hitting zone
+        result = estimate_delivery_trace(frames, ts)
+        assert result.status == "ok"
+
+    def test_impact_far_from_trigger_is_implausible(self):
+        # A never-departing ball patch (wrong-blob lock) pins "impact" to the
+        # buffer end; the trigger-window check must catch it.
+        frames, ts = _synthetic_capture(impact_frame=39)  # ball never leaves
+        frames[39:, :, :] = frames[38]  # freeze the scene: ball stays put
+        result = estimate_delivery_trace(frames, ts, trigger_index=20)
+        assert result.status in ("impact_implausible", "no_impact")
         assert result.trace_deg is None
 
     def test_no_ball_status(self):

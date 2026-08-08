@@ -2542,7 +2542,16 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
             frames_path = Path(camera_capture.path) / "frames.npz"
             if frames_path.exists():
                 archive = np.load(frames_path)
-                trace = estimate_delivery_trace(archive["frames"], archive["host_timestamp_ns"])
+                trigger_index = (
+                    int(archive["pre_trigger_count"]) - 1
+                    if "pre_trigger_count" in archive
+                    else None
+                )
+                trace = estimate_delivery_trace(
+                    archive["frames"],
+                    archive["host_timestamp_ns"],
+                    trigger_index=trigger_index,
+                )
         fused = fuse_club_delivery(shot.experimental_attack_angle_deg, trace, shot.club)
         shot.experimental_fused_attack_angle_deg = fused.attack_angle_deg
         shot.experimental_fused_club_path_deg = fused.club_path_deg

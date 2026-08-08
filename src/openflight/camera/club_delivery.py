@@ -37,11 +37,19 @@ from openflight.launch_monitor import ClubType
 # measured p99 ~147 (9-iron block, clean traces), ~115 (5-iron, mask started
 # locking onto the ball) and ~66 (driver block, unusable).
 SCENE_P995_MIN = 105.0
-# Over-exposure gate: fraction of saturated background pixels. Midday sun
-# (2026-08-08 session) saturated large scene regions; the reference-ball
-# detector then locks onto arbitrary bright blobs and impact detection
-# never sees a departure.
-SCENE_SATURATION_MAX = 0.02
+# Over-exposure gates. Midday sun (2026-08-08 session) saturated large
+# scene regions; the reference-ball detector then locks onto arbitrary
+# bright blobs and impact detection never sees a departure. Dappled
+# background saturation is harmless (same day, 250 us: far-field 5%%
+# saturated, trace clean), so the hard gate is LOCAL to the hitting zone;
+# the global fraction only attributes cause when ball detection fails.
+BALL_ZONE_RADIUS_PX = 150
+BALL_ZONE_SATURATION_MAX = 0.02
+GLOBAL_SATURATION_HINT = 0.05
+# A real impact must sit near the sound-trigger frame; a far-off "impact"
+# means the ball patch never departed (wrong blob detected).
+IMPACT_PRE_TRIGGER_MAX = 8
+IMPACT_POST_TRIGGER_MAX = 3
 # Moving-bright mask (adaptive): pixels saturated NOW but dark in the
 # pre-swing background isolate the chrome shaft from static bright clutter.
 BRIGHT_NOW_FLOOR = 110.0
@@ -122,7 +130,8 @@ _IRON_LIKE = {
 class TraceResult:
     """Camera delivery-plane trace for one capture."""
 
-    status: str  # ok | low_light | overexposed | no_ball | no_impact | insufficient_pairs | error
+    status: str  # ok | low_light | overexposed | no_ball | no_impact |
+    # impact_implausible | insufficient_pairs | error
     trace_deg: float | None = None
     n_pairs: int = 0
     match_scores: tuple[float, ...] = ()
@@ -243,6 +252,7 @@ def _crop(image: np.ndarray, cx: float, cy: float, half: int) -> np.ndarray | No
 def estimate_delivery_trace(
     frames: np.ndarray,
     host_timestamp_ns: np.ndarray,
+    trigger_index: int | None = None,
 ) -> TraceResult:
     """Delivery-plane trace from one DTL capture (frames, per-frame host ns).
 
@@ -258,17 +268,30 @@ def estimate_delivery_trace(
     scene_p995, ball_threshold, bright_now, dark_bg = _adaptive_thresholds(background)
     if scene_p995 < SCENE_P995_MIN:
         return TraceResult(status="low_light", scene_p995=scene_p995)
-    saturated = float(np.mean(background >= 250))
-    if saturated > SCENE_SATURATION_MAX:
-        return TraceResult(status="overexposed", scene_p995=scene_p995,
-                           detail=f"saturated_frac={saturated:.3f}")
+    saturated_global = float(np.mean(background >= 250))
     try:
         ball = detect_reference_ball(frames, brightness_threshold=int(ball_threshold))
     except ValueError:
-        return TraceResult(status="no_ball", scene_p995=scene_p995)
+        status = "overexposed" if saturated_global > GLOBAL_SATURATION_HINT else "no_ball"
+        return TraceResult(status=status, scene_p995=scene_p995,
+                           detail=f"saturated_frac={saturated_global:.3f}")
+    yy, xx = np.mgrid[0 : frames.shape[1], 0 : frames.shape[2]]
+    ball_zone = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= BALL_ZONE_RADIUS_PX**2
+    saturated_zone = float(np.mean(background[ball_zone] >= 250))
+    if saturated_zone > BALL_ZONE_SATURATION_MAX:
+        return TraceResult(status="overexposed", scene_p995=scene_p995,
+                           detail=f"ball_zone_saturated_frac={saturated_zone:.3f}")
     impact_idx = _detect_impact_index(frames, ball)
     if impact_idx is None:
         return TraceResult(status="no_impact", scene_p995=scene_p995)
+    if trigger_index is not None and not (
+        trigger_index - IMPACT_PRE_TRIGGER_MAX
+        <= impact_idx
+        <= trigger_index + IMPACT_POST_TRIGGER_MAX
+    ):
+        return TraceResult(status="impact_implausible", scene_p995=scene_p995,
+                           impact_frame=impact_idx,
+                           detail=f"trigger_index={trigger_index}")
 
     masks: dict[int, np.ndarray] = {}
     heads: dict[int, tuple[float, float] | None] = {}
