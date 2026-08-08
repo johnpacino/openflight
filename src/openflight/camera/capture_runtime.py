@@ -224,6 +224,10 @@ class CameraCaptureRuntime:
 
             yuv = self._camera.capture_array("main")
             bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+            if self.settings.rotate_180:
+                # The saved-frame unpackers rotate inverted-mount rigs in
+                # software; the preview must match that orientation.
+                bgr = cv2.rotate(bgr, cv2.ROTATE_180)
             ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
             return encoded.tobytes() if ok else None
         except Exception:  # pylint: disable=broad-exception-caught
