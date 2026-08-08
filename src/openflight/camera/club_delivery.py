@@ -37,6 +37,11 @@ from openflight.launch_monitor import ClubType
 # measured p99 ~147 (9-iron block, clean traces), ~115 (5-iron, mask started
 # locking onto the ball) and ~66 (driver block, unusable).
 SCENE_P995_MIN = 105.0
+# Over-exposure gate: fraction of saturated background pixels. Midday sun
+# (2026-08-08 session) saturated large scene regions; the reference-ball
+# detector then locks onto arbitrary bright blobs and impact detection
+# never sees a departure.
+SCENE_SATURATION_MAX = 0.02
 # Moving-bright mask (adaptive): pixels saturated NOW but dark in the
 # pre-swing background isolate the chrome shaft from static bright clutter.
 BRIGHT_NOW_FLOOR = 110.0
@@ -117,7 +122,7 @@ _IRON_LIKE = {
 class TraceResult:
     """Camera delivery-plane trace for one capture."""
 
-    status: str  # ok | low_light | no_ball | no_impact | insufficient_pairs | error
+    status: str  # ok | low_light | overexposed | no_ball | no_impact | insufficient_pairs | error
     trace_deg: float | None = None
     n_pairs: int = 0
     match_scores: tuple[float, ...] = ()
@@ -253,6 +258,10 @@ def estimate_delivery_trace(
     scene_p995, ball_threshold, bright_now, dark_bg = _adaptive_thresholds(background)
     if scene_p995 < SCENE_P995_MIN:
         return TraceResult(status="low_light", scene_p995=scene_p995)
+    saturated = float(np.mean(background >= 250))
+    if saturated > SCENE_SATURATION_MAX:
+        return TraceResult(status="overexposed", scene_p995=scene_p995,
+                           detail=f"saturated_frac={saturated:.3f}")
     try:
         ball = detect_reference_ball(frames, brightness_threshold=int(ball_threshold))
     except ValueError:

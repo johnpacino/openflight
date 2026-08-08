@@ -222,6 +222,13 @@ class TestTraceEstimation:
         assert result.scene_p995 is not None
         assert result.scene_p995 < SCENE_P995_MIN
 
+    def test_overexposed_scene_reports_overexposed(self):
+        frames, ts = _synthetic_capture()
+        frames[:, 40:160, :] = 255  # midday sun: large saturated region
+        result = estimate_delivery_trace(frames, ts)
+        assert result.status == "overexposed"
+        assert result.trace_deg is None
+
     def test_no_ball_status(self):
         frames, ts = _synthetic_capture()
         # erase the ball everywhere (keep the scene bright via the distractor)
