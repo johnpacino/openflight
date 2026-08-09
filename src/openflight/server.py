@@ -1095,6 +1095,10 @@ def init_iwr6843(
             capture_timeout_s=capture_timeout_s,
             azimuth_offset_deg=azimuth_offset_deg,
             horizontal_phase_reference_rad=horizontal_phase_reference_rad,
+            # The supported normal-TX profiles have a measured positive TDM
+            # registration. Auto sign selection can choose the mirror solution
+            # in multipath and collapse the eight-element vertical channel.
+            tdm_sign_policy="positive",
         )
         iwr6843_runtime_config = {
             "enabled": True,
@@ -1106,6 +1110,7 @@ def init_iwr6843(
             "tee_slant_range_m": tee_range_m,
             "net_range_m": net_range_m,
             "tx_order": resolved_order,
+            "tdm_sign_policy": iwr6843_runtime.tdm_sign_policy,
             "tilt_deg": math.degrees(calibration.tilt_rad),
             "radar_height_m": calibration.radar_height_m,
             "ball_height_m": calibration.tee_ball_height_m,

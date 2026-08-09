@@ -51,7 +51,10 @@ sha256sum firmware/releases/l3_dump_configurable_capture_20260806.bin
 Use **wide/default** unless you are deliberately testing dense impact data. Its
 53-bin windows tolerate more variation in tee distance, launch speed, and setup
 geometry, while IQ16 retains the HWA output without quantization. Hardware tests
-held the requested 3 ms cadence without RF or HWA faults.
+held the requested 3 ms cadence without RF or HWA faults. In an August 9
+TrackMan session, its live inclinometer-adjusted LCMF output covered all 59
+matched 9-iron and 7-iron shots with 0.86 degree MAE, 0.70 degree P50, and 1.75
+degree P90 absolute error.
 
 Use **dense/advanced** to test whether 2 ms temporal sampling improves impact
 and launch measurements. It preserves the same 53-bin range span as the wide
@@ -63,6 +66,12 @@ experimental.
 
 Both profiles use 3 TX, 4 RX, 12 TDM loops, 128 acquired ADC samples, and the
 same 72 ms capture duration. Changing profiles does not require reflashing.
+
+The supported normal-TX profiles use a fixed positive TDM sign. This physical
+registration keeps the full eight-element vertical channel aligned with OPS
+radial speed. Automatic sign selection is useful for offline diagnostics, but
+it is not the production policy because multipath can select the mirrored sign
+and collapse that channel while leaving the range track apparently healthy.
 
 ## On-Chip Data Path
 

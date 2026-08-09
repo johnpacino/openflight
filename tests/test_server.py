@@ -141,6 +141,8 @@ class TestIWR6843ShotIntegration:
 
         assert "freeze_delay_s" not in captured
         assert captured["armed"] is False
+        assert server_module.iwr6843_runtime.tdm_sign_policy == "positive"
+        assert server_module.iwr6843_runtime_config["tdm_sign_policy"] == "positive"
         server_module.iwr6843_runtime = None
 
     def test_init_iwr6843_wires_horizontal_calibration_into_runtime(self, monkeypatch, tmp_path):

@@ -48,15 +48,21 @@ Flash one configurable firmware image, then select one of two runtime profiles:
 
 Start with **wide/default**. Its wider range window is more tolerant of tee
 placement, ball speed, and setup geometry, while IQ16 retains full signal
-fidelity. Select **dense/advanced** when temporal density around impact is the
-priority. It now preserves the same 53-bin range span while using IQ8 to fit 36
-frames in L3. The 2 ms IQ8 transport has passed hardware cadence testing, but
-the 53-bin dense profile still needs source-of-truth TrackMan MAE validation;
-its horizontal and club metrics remain experimental.
+fidelity. Its live inclinometer-adjusted LCMF output measured 0.86 degree MAE
+across all 59 matched 9-iron and 7-iron shots in an August 9 TrackMan session,
+with 0.70 degree P50 and 1.75 degree P90 absolute error. Select
+**dense/advanced** when temporal density around impact is the priority. It now
+preserves the same 53-bin range span while using IQ8 to fit 36 frames in L3.
+The 2 ms IQ8 transport has passed hardware cadence testing, but the 53-bin
+dense profile still needs source-of-truth TrackMan MAE validation; its
+horizontal and club metrics remain experimental.
 
 Changing profiles does not require reflashing. It changes only the config
 passed to `--iwr6843-config`. Both profiles use the same host-side mount-tilt
 path, including live inclinometer correction when `--inclinometer` is enabled.
+They also use the measured positive TDM sign for normal TX order. Automatic
+sign selection is reserved for offline diagnostics because multipath can select
+the mirrored sign and collapse the vertical two8 channel.
 
 On the Pi, verify the checked-in image with:
 
