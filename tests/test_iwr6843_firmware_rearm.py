@@ -8,7 +8,7 @@ FIRMWARE = Path(__file__).parents[1] / "firmware" / "iwr6843" / "l3_dump.c"
 FIRMWARE_MAKEFILE = Path(__file__).parents[1] / "firmware" / "Makefile"
 CONFIG_DIR = Path(__file__).parents[1] / "config"
 WIDE_CONFIG = CONFIG_DIR / "iwr6843_l3dump_wide_24f3ms_53bin_iq16.cfg"
-DENSE_CONFIG = CONFIG_DIR / "iwr6843_l3dump_dense_36f2ms_32bin_iq8.cfg"
+DENSE_CONFIG = CONFIG_DIR / "iwr6843_l3dump_dense_36f2ms_53bin_iq8.cfg"
 
 
 def _function_source(source: str, name: str, next_name: str) -> str:
@@ -132,12 +132,12 @@ def test_wide_profile_uses_24_frames_at_3ms_with_53_bin_iq16_windows():
     assert "phaseCaptureCfg 20 53 9 32 53 7 47 53 47 8 1" in lines
 
 
-def test_dense_profile_uses_36_frames_at_2ms_with_32_bin_iq8_windows():
+def test_dense_profile_uses_36_frames_at_2ms_with_53_bin_iq8_windows():
     lines = _config_lines(DENSE_CONFIG)
 
     assert "frameCfg 0 2 12 0 2 1 0" in lines
     assert "captureFormat iq8" in lines
-    assert "phaseCaptureCfg 20 32 14 32 32 10 47 32 64 12 1" in lines
+    assert "phaseCaptureCfg 20 53 14 32 53 10 47 53 64 12 1" in lines
 
 
 def test_supported_profiles_keep_the_same_72ms_movie():
@@ -156,12 +156,12 @@ def test_supported_profiles_keep_the_same_72ms_movie():
 def test_supported_profiles_fit_the_l3_capture_budget():
     tx, loops, rx = 3, 12, 4
     wide_bytes = tx * loops * rx * 24 * 53 * 4
-    dense_bytes = tx * loops * rx * 36 * 32 * 2
+    dense_bytes = tx * loops * rx * 36 * 53 * 2
 
     assert wide_bytes == 732_672
-    assert dense_bytes == 331_776
+    assert dense_bytes == 549_504
     assert wide_bytes < 786_432
-    assert dense_bytes < 786_432
+    assert dense_bytes < 688_128
 
 
 def test_dynamic_window_start_is_recorded_per_ring_slot():

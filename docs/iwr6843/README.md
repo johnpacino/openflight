@@ -28,7 +28,7 @@ Flash one configurable firmware image, then select one of two runtime profiles:
 |---|---|
 | Firmware | `firmware/releases/l3_dump_configurable_capture_20260806.bin` |
 | Wide/default config | `config/iwr6843_l3dump_wide_24f3ms_53bin_iq16.cfg` |
-| Dense/advanced config | `config/iwr6843_l3dump_dense_36f2ms_32bin_iq8.cfg` |
+| Dense/advanced config | `config/iwr6843_l3dump_dense_36f2ms_53bin_iq8.cfg` |
 | Reference array calibration | `config/iwr6843_calibration_reference.json` |
 | Firmware size | 345,604 bytes |
 | Firmware SHA-256 | `9f031c29569127579c16e3f58a4f3854d85dc7d37194d4ee1ff4064654dd6d2f` |
@@ -41,17 +41,18 @@ Flash one configurable firmware image, then select one of two runtime profiles:
 | Profile | Wide/default | Dense/advanced |
 |---|---:|---:|
 | Frames and spacing | 24 at 3 ms | 36 at 2 ms |
-| Saved window | 53 bins | 32 bins |
+| Saved window | 53 bins | 53 bins |
 | Storage | IQ16 | Block-scaled IQ8 |
-| Complete dump | 732,812 bytes | 332,036 bytes |
+| Complete dump | 732,812 bytes | 549,764 bytes |
 | Choose it for | Ball flight and setup tolerance | Dense impact sampling |
 
 Start with **wide/default**. Its wider range window is more tolerant of tee
 placement, ball speed, and setup geometry, while IQ16 retains full signal
-fidelity. Select **dense/advanced** only when the radar-to-ball geometry is
-measured and temporal density around impact is the priority. Dense vertical
-launch has passed hardware testing, but its horizontal and club metrics remain
-experimental and it still needs source-of-truth TrackMan MAE validation.
+fidelity. Select **dense/advanced** when temporal density around impact is the
+priority. It now preserves the same 53-bin range span while using IQ8 to fit 36
+frames in L3. The 2 ms IQ8 transport has passed hardware cadence testing, but
+the 53-bin dense profile still needs source-of-truth TrackMan MAE validation;
+its horizontal and club metrics remain experimental.
 
 Changing profiles does not require reflashing. It changes only the config
 passed to `--iwr6843-config`. Both profiles use the same host-side mount-tilt
@@ -479,7 +480,7 @@ The example uses the recommended wide profile. To test dense impact sampling,
 change only the config argument to:
 
 ```text
---iwr6843-config config/iwr6843_l3dump_dense_36f2ms_32bin_iq8.cfg
+--iwr6843-config config/iwr6843_l3dump_dense_36f2ms_53bin_iq8.cfg
 ```
 
 Passing `--iwr6843-config` explicitly keeps the selected profile visible in the
@@ -792,7 +793,7 @@ until power, ports, firmware, config, and geometry are verified.
 | Bootloader probe returns no response | Wrong CP2105 port or RESET occurred before the script opened UART | Use Enhanced/UARTA, rerun the probe, type `READY`, then RESET only when prompted |
 | Flash fails after `Erasing existing SFLASH` | Transfer was interrupted after the old image was erased | Leave the board in flash mode and rerun the complete flash; the ROM bootloader is still available |
 | Server starts only after unplugging TI | Board was not reset cleanly, a prior dump was still streaming, or USB/power wedged | Stop the old process, press RESET in functional mode, wait for the port, then reconnect USB only if needed |
-| `short IWR6843 dump` | Interrupted UART transfer, process shutdown during dump, or wrong firmware format | Let the active dump finish, restart, and confirm 732,812 bytes for wide or 332,036 bytes for dense |
+| `short IWR6843 dump` | Interrupted UART transfer, process shutdown during dump, or wrong firmware format | Let the active dump finish, restart, and confirm 732,812 bytes for wide or 549,764 bytes for dense |
 | Dense `stats` accumulates `hwa_missed` or `iq8_overrun` | The 2 ms processing budget is not being sustained | Stop using the capture for measurements, reset, and return to the wide profile while investigating |
 | Clap produces `rejected_by_ball_tracker` | A clap has no moving ball range track | Expected for trigger testing; confirm the dump completed, then hit a ball |
 | `rejected_track_quality` | A ball-like track was found but it was too thin, noisy, inconsistent, or net-contaminated | Verify geometry and aim; inspect the debug dump before relaxing acceptance gates |

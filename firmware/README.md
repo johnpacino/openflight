@@ -21,7 +21,7 @@ then choose a profile by passing its `.cfg` to OpenFlight.
 |---|---|
 | Flash image | `firmware/releases/l3_dump_configurable_capture_20260806.bin` |
 | Default config | `config/iwr6843_l3dump_wide_24f3ms_53bin_iq16.cfg` |
-| Dense config | `config/iwr6843_l3dump_dense_36f2ms_32bin_iq8.cfg` |
+| Dense config | `config/iwr6843_l3dump_dense_36f2ms_53bin_iq8.cfg` |
 | Reference calibration | `config/iwr6843_calibration_reference.json` |
 | Native build | `make -C firmware build-native` |
 | Container build | `make -C firmware docker-build` |
@@ -39,13 +39,13 @@ sha256sum firmware/releases/l3_dump_configurable_capture_20260806.bin
 
 | Profile | Wide/default | Dense/advanced |
 |---|---:|---:|
-| Config | `iwr6843_l3dump_wide_24f3ms_53bin_iq16.cfg` | `iwr6843_l3dump_dense_36f2ms_32bin_iq8.cfg` |
+| Config | `iwr6843_l3dump_wide_24f3ms_53bin_iq16.cfg` | `iwr6843_l3dump_dense_36f2ms_53bin_iq8.cfg` |
 | Frames | 24 | 36 |
 | Frame spacing | 3 ms | 2 ms |
 | Movie duration | 72 ms | 72 ms |
-| Saved bins per frame | 53 | 32 |
+| Saved bins per frame | 53 | 53 |
 | Stored sample format | IQ16 | Block-scaled IQ8 |
-| Payload bytes | 732,672 | 331,776 |
+| Payload bytes | 732,672 | 549,504 |
 | Primary goal | Robust ball flight | Dense impact sampling |
 
 Use **wide/default** unless you are deliberately testing dense impact data. Its
@@ -53,13 +53,13 @@ Use **wide/default** unless you are deliberately testing dense impact data. Its
 geometry, while IQ16 retains the HWA output without quantization. Hardware tests
 held the requested 3 ms cadence without RF or HWA faults.
 
-Use **dense/advanced** when 2 ms temporal sampling is more important than range
-tolerance. It stores a narrower, setup-aware 32-bin window and block-scales each
-frame to IQ8. The reduced packing work sustained 99.99% HWA frame coverage in
-hardware testing, with zero packing overruns or RF faults. A 16-shot session
-produced 16/16 vertical-angle coverage and 0.76 mph TI-versus-OPS track-speed
-MAE. Horizontal launch and club metrics remain experimental, and this profile
-still needs source-of-truth TrackMan MAE validation.
+Use **dense/advanced** to test whether 2 ms temporal sampling improves impact
+and launch measurements. It preserves the same 53-bin range span as the wide
+profile and block-scales each frame to IQ8 so all 36 frames fit in L3. The 2 ms
+IQ8 packing path sustained 99.99% HWA frame coverage in hardware testing, with
+zero packing overruns or RF faults. The 53-bin dense profile still needs
+source-of-truth TrackMan validation; horizontal launch and club metrics remain
+experimental.
 
 Both profiles use 3 TX, 4 RX, 12 TDM loops, 128 acquired ADC samples, and the
 same 72 ms capture duration. Changing profiles does not require reflashing.
@@ -135,7 +135,7 @@ matching host-parser change and regression tests in the same commit.
 | `firmware/releases/` | The single checked-in, validated flash image |
 | `firmware/flash_iwr6843.py` | Pi-compatible IWR6843 ROM bootloader client |
 | `config/iwr6843_l3dump_wide_24f3ms_53bin_iq16.cfg` | Default wide IQ16 capture profile |
-| `config/iwr6843_l3dump_dense_36f2ms_32bin_iq8.cfg` | Dense IQ8 capture profile |
+| `config/iwr6843_l3dump_dense_36f2ms_53bin_iq8.cfg` | Dense IQ8 capture profile |
 | `src/openflight/iwr6843/dump.py` | Python decoder and executable format reference |
 
 ## Where To Build, Flash, And Run
