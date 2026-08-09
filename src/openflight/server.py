@@ -130,6 +130,7 @@ iwr6843_runtime = None
 iwr6843_runtime_config: dict = {"enabled": False}
 camera_capture_runtime = None
 camera_capture_config: dict = {"enabled": False}
+camera_reference_ball_tracker = None
 
 # Optional LIS3DH enclosure orientation used to compensate TI mount tilt.
 inclinometer_service = None
@@ -1084,6 +1085,7 @@ def init_camera_capture(
 ) -> bool:
     """Initialize passive high-speed camera capture for offline alignment."""
     global camera_capture_runtime, camera_capture_config  # pylint: disable=global-statement
+    global camera_reference_ball_tracker  # pylint: disable=global-statement
     try:
         from .camera.capture_runtime import CameraCaptureRuntime, CameraCaptureSettings
 
@@ -1106,6 +1108,11 @@ def init_camera_capture(
             use_gpio_trigger=use_gpio_trigger,
         )
         camera_capture_runtime.start()
+        from openflight.camera.club_delivery import (  # noqa: PLC0415
+            ReferenceBallTracker,
+        )
+
+        camera_reference_ball_tracker = ReferenceBallTracker()
         camera_capture_config = {
             "enabled": True,
             "output_dir": str(Path(output_dir).expanduser()),
@@ -1136,6 +1143,7 @@ def init_camera_capture(
             exc=error,
         )
         camera_capture_runtime = None
+        camera_reference_ball_tracker = None
         camera_capture_config = {"enabled": False, "error": str(error)}
         return False
 
@@ -2565,6 +2573,7 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
                                 image_height_px=int(camera_capture_config["height"]),
                             ),
                             ops_club_speed_mph=shot.club_speed_mph,
+                            ball_tracker=camera_reference_ball_tracker,
                         )
             else:
                 fused = ChainedDelivery(status="rejected_missing_camera_frames")

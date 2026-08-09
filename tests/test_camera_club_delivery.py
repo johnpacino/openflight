@@ -10,12 +10,15 @@ from openflight.camera.club_delivery import (
     CameraDeliveryGeometry,
     ChainedDelivery,
     FusedDelivery,
+    ReferenceBallTracker,
     TraceResult,
+    _detect_impact_index,
     aoa_offset_for_club,
     delivery_from_feature_tracks,
     estimate_delivery_trace,
     fuse_club_delivery,
 )
+from openflight.camera.club_motion import ReferenceBall
 from openflight.launch_monitor import ClubType
 
 
@@ -23,6 +26,50 @@ class _Ball:
     x = 320.0
     y = 200.0
     diameter_px = 28.0
+
+
+def test_impact_detection_ignores_late_ball_like_brightness_after_trigger():
+    frames = np.zeros((60, 9, 9), dtype=np.uint8)
+    yy, xx = np.mgrid[:9, :9]
+    ball = _Ball()
+    ball.x = 4.0
+    ball.y = 4.0
+    ball.diameter_px = 8.0
+    core = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= 3**2
+    frames[:42, core] = 160
+    # Empty background or late motion can accidentally resemble the teed ball.
+    frames[59, core] = 160
+
+    assert _detect_impact_index(frames, ball, trigger_index=44) == 41
+
+
+def test_impact_detection_uses_first_departure_near_trigger():
+    frames = np.zeros((60, 9, 9), dtype=np.uint8)
+    yy, xx = np.mgrid[:9, :9]
+    ball = _Ball()
+    ball.x = 4.0
+    ball.y = 4.0
+    ball.diameter_px = 8.0
+    core = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= 3**2
+    frames[:42, core] = 160
+    frames[45, core] = 160  # club/halo briefly resembles the address frame
+
+    assert _detect_impact_index(frames, ball, trigger_index=44) == 41
+
+
+def test_reference_ball_tracker_falls_back_to_established_tee_anchor():
+    tracker = ReferenceBallTracker()
+    for x in (323.0, 324.0, 325.0):
+        ball, source = tracker.resolve(ReferenceBall(x, 189.0, 13.5, 143))
+        assert source == "detected"
+        assert ball.x == x
+
+    ball, source = tracker.resolve(ReferenceBall(472.0, 274.0, 7.7, 47))
+
+    assert source == "session_anchor"
+    assert ball.x == pytest.approx(324.0)
+    assert ball.y == pytest.approx(189.0)
+    assert ball.diameter_px == pytest.approx(13.5)
 
 
 def _project_impact_tracks(

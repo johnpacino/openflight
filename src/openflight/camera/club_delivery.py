@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from openflight.camera.club_motion import detect_reference_ball
+from openflight.camera.club_motion import ReferenceBall, detect_reference_ball
 from openflight.launch_monitor import ClubType
 
 # --- scene / mask constants -------------------------------------------------
@@ -119,6 +119,46 @@ class ChainedDelivery:
     impact_vs_trigger_ms: float | None = None
     scene_p995: float | None = None
     head_thickness_px: float | None = None
+
+
+class ReferenceBallTracker:
+    """Retain a robust session tee anchor when one frame finds a false blob."""
+
+    def __init__(self, max_samples: int = 15, min_fallback_samples: int = 3):
+        self.max_samples = max_samples
+        self.min_fallback_samples = min_fallback_samples
+        self._samples: list[ReferenceBall] = []
+
+    def _anchor(self) -> ReferenceBall | None:
+        if not self._samples:
+            return None
+        return ReferenceBall(
+            x=float(np.median([ball.x for ball in self._samples])),
+            y=float(np.median([ball.y for ball in self._samples])),
+            diameter_px=float(np.median([ball.diameter_px for ball in self._samples])),
+            area_px=int(round(np.median([ball.area_px for ball in self._samples]))),
+        )
+
+    def resolve(self, candidate: ReferenceBall) -> tuple[ReferenceBall, str]:
+        """Accept a consistent observation or return the established anchor."""
+        anchor = self._anchor()
+        plausible_size = 9.0 <= candidate.diameter_px <= 30.0
+        consistent = plausible_size
+        if anchor is not None:
+            distance_px = math.hypot(candidate.x - anchor.x, candidate.y - anchor.y)
+            size_ratio = candidate.diameter_px / anchor.diameter_px
+            consistent = (
+                plausible_size
+                and distance_px <= max(40.0, 4.0 * anchor.diameter_px)
+                and 0.65 <= size_ratio <= 1.55
+            )
+        if consistent:
+            self._samples.append(candidate)
+            self._samples = self._samples[-self.max_samples :]
+            return candidate, "detected"
+        if anchor is not None and len(self._samples) >= self.min_fallback_samples:
+            return anchor, "session_anchor"
+        return candidate, "unverified"
 
 
 def _pixels_to_world(
@@ -390,6 +430,7 @@ def estimate_chained_delivery(
     range_evidence,
     geometry: CameraDeliveryGeometry,
     ops_club_speed_mph: float | None,
+    ball_tracker: ReferenceBallTracker | None = None,
 ) -> ChainedDelivery:
     """Live impact-centered camera/IWR/OPS club-delivery estimator."""
     if range_evidence is None:
@@ -410,12 +451,14 @@ def estimate_chained_delivery(
         ball = detect_reference_ball(frames)
     except ValueError:
         return ChainedDelivery(status="rejected_no_ball", scene_p995=scene_p995)
+    if ball_tracker is not None:
+        ball, _ball_source = ball_tracker.resolve(ball)
     yy, xx = np.mgrid[0 : frames.shape[1], 0 : frames.shape[2]]
     ball_zone = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= BALL_ZONE_RADIUS_PX**2
     saturated_zone = float(np.mean(background[ball_zone] >= 250))
     camera_quality_clean = saturated_zone <= BALL_ZONE_SATURATION_MAX
 
-    impact_idx = _detect_impact_index(frames, ball)
+    impact_idx = _detect_impact_index(frames, ball, trigger_index=trigger_index)
     if impact_idx is None:
         return ChainedDelivery(status="rejected_no_impact", scene_p995=scene_p995)
     impact_vs_trigger_ms = None
@@ -585,8 +628,18 @@ def _adaptive_thresholds(background: np.ndarray) -> tuple[float, float, float, f
     return scene_p995, ball_threshold, bright_now, dark_bg
 
 
-def _detect_impact_index(frames: np.ndarray, ball) -> int | None:
-    """Last frame the teed ball's core pixels are undisturbed (halo-robust)."""
+def _detect_impact_index(
+    frames: np.ndarray,
+    ball,
+    *,
+    trigger_index: int | None = None,
+) -> int | None:
+    """Last frame the teed ball's core pixels are undisturbed (halo-robust).
+
+    Triggered captures only search the physically plausible contact window.
+    Otherwise, a late club/ball/background brightness match can look like the
+    teed ball and incorrectly move impact to the final frame.
+    """
     radius = max(3, int(round(ball.diameter_px * BALL_PATCH_RADIUS_FRAC)))
     yy, xx = np.mgrid[0 : frames.shape[1], 0 : frames.shape[2]]
     disk = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= radius * radius
@@ -596,11 +649,25 @@ def _detect_impact_index(frames: np.ndarray, ball) -> int | None:
     indexes = np.nonzero(present)[0]
     if len(indexes) == 0:
         return None
-    for idx in reversed(indexes):
+
+    if trigger_index is not None:
+        search_start = max(0, trigger_index - IMPACT_PRE_TRIGGER_MAX)
+        # Keep one following frame available for the chained delivery estimate.
+        search_end = min(len(frames) - 2, trigger_index + IMPACT_POST_TRIGGER_MAX)
+        indexes = indexes[(indexes >= search_start) & (indexes <= search_end)]
+        if len(indexes) == 0:
+            return None
+
+    # The first departure near the trigger is the teed ball leaving. Later
+    # present/absent transitions are club blur or the launched ball crossing
+    # the same patch. Untriggered replay retains the historical reverse scan.
+    candidates = indexes if trigger_index is not None else reversed(indexes)
+    for idx in candidates:
         after = present[idx + 1 : idx + 3]
-        if len(after) == 0 or not after.any():
-            if idx + 1 < len(frames):
-                return int(idx)
+        if len(after) == 2 and not after.any():
+            return int(idx)
+    if trigger_index is not None:
+        return None
     return int(indexes[-1])
 
 
@@ -679,7 +746,7 @@ def estimate_delivery_trace(
             scene_p995=scene_p995,
             detail=f"ball_zone_saturated_frac={saturated_zone:.3f}",
         )
-    impact_idx = _detect_impact_index(frames, ball)
+    impact_idx = _detect_impact_index(frames, ball, trigger_index=trigger_index)
     if impact_idx is None:
         return TraceResult(status="no_impact", scene_p995=scene_p995)
     if trigger_index is not None and not (
