@@ -127,6 +127,8 @@ def test_camera_capture_flags_are_forwarded():
         "1000",
         "--camera-capture-gain",
         "4",
+        "--camera-capture-mount-height-m",
+        "0.20955",
         "--camera-capture-stream",
         "main-y",
         "--camera-capture-scaler-crop",
@@ -143,6 +145,7 @@ def test_camera_capture_flags_are_forwarded():
     assert "--camera-capture-post-ms 50" in command
     assert "--camera-capture-exposure-us 1000" in command
     assert "--camera-capture-gain 4" in command
+    assert "--camera-capture-mount-height-m 0.20955" in command
     assert "--camera-capture-stream main-y" in command
     assert "--camera-capture-scaler-crop 256,160,768,480" in command
     assert "--camera-capture-rotate-180" in command

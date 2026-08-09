@@ -25,6 +25,7 @@ CAMERA_CAPTURE_PRE_MS=""
 CAMERA_CAPTURE_POST_MS=""
 CAMERA_CAPTURE_EXPOSURE_US=""
 CAMERA_CAPTURE_GAIN=""
+CAMERA_CAPTURE_MOUNT_HEIGHT_M=""
 CAMERA_CAPTURE_STREAM=""
 CAMERA_CAPTURE_SCALER_CROP=""
 CAMERA_CAPTURE_ROTATE_180=false
@@ -172,6 +173,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --camera-capture-gain)
             CAMERA_CAPTURE_GAIN="$2"
+            shift 2
+            ;;
+        --camera-capture-mount-height-m)
+            CAMERA_CAPTURE_MOUNT_HEIGHT_M="$2"
             shift 2
             ;;
         --camera-capture-stream)
@@ -616,6 +621,7 @@ if [ "$CAMERA_CAPTURE" = true ]; then
     [ -n "$CAMERA_CAPTURE_POST_MS" ] && SERVER_CMD="$SERVER_CMD --camera-capture-post-ms $CAMERA_CAPTURE_POST_MS"
     [ -n "$CAMERA_CAPTURE_EXPOSURE_US" ] && SERVER_CMD="$SERVER_CMD --camera-capture-exposure-us $CAMERA_CAPTURE_EXPOSURE_US"
     [ -n "$CAMERA_CAPTURE_GAIN" ] && SERVER_CMD="$SERVER_CMD --camera-capture-gain $CAMERA_CAPTURE_GAIN"
+    [ -n "$CAMERA_CAPTURE_MOUNT_HEIGHT_M" ] && SERVER_CMD="$SERVER_CMD --camera-capture-mount-height-m $CAMERA_CAPTURE_MOUNT_HEIGHT_M"
     [ -n "$CAMERA_CAPTURE_STREAM" ] && SERVER_CMD="$SERVER_CMD --camera-capture-stream $CAMERA_CAPTURE_STREAM"
     [ -n "$CAMERA_CAPTURE_SCALER_CROP" ] && SERVER_CMD="$SERVER_CMD --camera-capture-scaler-crop $CAMERA_CAPTURE_SCALER_CROP"
     [ "$CAMERA_CAPTURE_ROTATE_180" = true ] && SERVER_CMD="$SERVER_CMD --camera-capture-rotate-180"

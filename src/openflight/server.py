@@ -1079,6 +1079,7 @@ def init_camera_capture(
     stream: str,
     rotate_180: bool,
     scaler_crop: tuple[int, int, int, int] | None,
+    mount_height_m: float,
     use_gpio_trigger: bool,
 ) -> bool:
     """Initialize passive high-speed camera capture for offline alignment."""
@@ -1122,6 +1123,7 @@ def init_camera_capture(
             "stream": settings.stream,
             "rotate_180": settings.rotate_180,
             "scaler_crop": settings.scaler_crop,
+            "mount_height_m": mount_height_m,
         }
         logger.info("[SERVER] Camera capture initialized: %s", camera_capture_config)
         return True
@@ -2453,6 +2455,7 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
         # but never populate the canonical club fields or silently label them
         # as production radar measurements.
         if club_path is not None:
+            shot.iwr6843_club_range_evidence = getattr(club_path, "range_evidence", None)
             accepted_path = club_path.path_deg if club_path.accepted else None
             candidate_path = (
                 accepted_path
@@ -2521,23 +2524,17 @@ def _emit_iwr6843_trigger_status(
 
 
 def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
-    """Camera-fused club delivery (experimental estimator level).
-
-    Offset-corrects the radar attack-angle candidate per club and derives
-    club path from the camera delivery-plane trace. Runs inside the shot
-    pipeline so the emitted shot already carries the fused values; failures
-    degrade to a status string, never block the shot.
-    """
+    """Impact-centered camera + IWR depth club delivery, experimentally."""
     try:
         import numpy as np  # noqa: PLC0415  pylint: disable=import-outside-toplevel
 
         from openflight.camera.club_delivery import (  # noqa: PLC0415
-            TraceResult,
-            estimate_delivery_trace,
-            fuse_club_delivery,
+            CameraDeliveryGeometry,
+            ChainedDelivery,
+            estimate_chained_delivery,
         )
 
-        trace = TraceResult(status="no_capture")
+        fused = ChainedDelivery(status="rejected_no_camera_capture")
         if camera_capture is not None and camera_capture.valid and camera_capture.path:
             frames_path = Path(camera_capture.path) / "frames.npz"
             if frames_path.exists():
@@ -2547,26 +2544,46 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
                     if "pre_trigger_count" in archive
                     else None
                 )
-                trace = estimate_delivery_trace(
-                    archive["frames"],
-                    archive["host_timestamp_ns"],
-                    trigger_index=trigger_index,
-                )
-        fused = fuse_club_delivery(shot.experimental_attack_angle_deg, trace, shot.club)
+                if iwr6843_runtime is None:
+                    fused = ChainedDelivery(status="rejected_no_iwr_runtime")
+                else:
+                    calibration = iwr6843_runtime.calibration
+                    if calibration.tee_range_m is None:
+                        fused = ChainedDelivery(status="rejected_missing_tee_geometry")
+                    else:
+                        fused = estimate_chained_delivery(
+                            archive["frames"],
+                            archive["host_timestamp_ns"],
+                            trigger_index=trigger_index,
+                            range_evidence=shot.iwr6843_club_range_evidence,
+                            geometry=CameraDeliveryGeometry(
+                                camera_height_m=float(camera_capture_config["mount_height_m"]),
+                                radar_height_m=calibration.radar_height_m,
+                                tee_range_m=float(calibration.tee_range_m),
+                                ball_height_m=calibration.tee_ball_height_m,
+                                image_width_px=int(camera_capture_config["width"]),
+                                image_height_px=int(camera_capture_config["height"]),
+                            ),
+                            ops_club_speed_mph=shot.club_speed_mph,
+                        )
+            else:
+                fused = ChainedDelivery(status="rejected_missing_camera_frames")
         shot.experimental_fused_attack_angle_deg = fused.attack_angle_deg
         shot.experimental_fused_club_path_deg = fused.club_path_deg
         shot.experimental_fused_status = fused.status
-        shot.experimental_camera_trace_deg = fused.trace_deg
-        shot.experimental_aoa_offset_source = fused.offset_source
+        shot.experimental_camera_trace_deg = None
+        shot.experimental_aoa_offset_source = "none_chained_3d"
         logger.info(
-            "[SERVER] Camera-fused club delivery: AoA %s path %s "
-            "(status=%s, trace=%s, offset=%s %s)",
+            "[SERVER] Camera/IWR chained club delivery: AoA %s path %s "
+            "(status=%s, features=%d, speed_ratio=%s, velocity_mad=%s mph, "
+            "impact_frame=%s)",
             fused.attack_angle_deg,
             fused.club_path_deg,
             fused.status,
-            fused.trace_deg,
-            fused.aoa_offset_deg,
-            fused.offset_source,
+            fused.n_features,
+            fused.speed_ratio_ops,
+            fused.velocity_mad_mph,
+            fused.impact_frame,
         )
     except Exception as error:  # pylint: disable=broad-exception-caught
         shot.experimental_fused_status = "error"
@@ -3918,6 +3935,12 @@ def main():
     parser.add_argument("--camera-capture-exposure-us", type=int, default=1000)
     parser.add_argument("--camera-capture-gain", type=float, default=4.0)
     parser.add_argument(
+        "--camera-capture-mount-height-m",
+        type=float,
+        default=0.20955,
+        help="Camera optical-center height above the hitting surface (default: 8.25 in).",
+    )
+    parser.add_argument(
         "--camera-capture-stream",
         choices=("raw", "main-y"),
         default="raw",
@@ -4382,6 +4405,7 @@ def main():
         or args.camera_capture_post_ms <= 0
         or args.camera_capture_exposure_us <= 0
         or args.camera_capture_gain <= 0
+        or args.camera_capture_mount_height_m <= 0
     ):
         parser.error("--camera-capture dimensions, timing, exposure, and gain must be positive")
     camera_capture_scaler_crop = None
@@ -4497,6 +4521,7 @@ def main():
             post_ms=args.camera_capture_post_ms,
             exposure_us=args.camera_capture_exposure_us,
             gain=args.camera_capture_gain,
+            mount_height_m=args.camera_capture_mount_height_m,
             stream=args.camera_capture_stream,
             rotate_180=args.camera_capture_rotate_180,
             scaler_crop=camera_capture_scaler_crop,

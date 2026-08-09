@@ -303,6 +303,13 @@ class Shot:
     experimental_fused_status: Optional[str] = None
     experimental_camera_trace_deg: Optional[float] = None
     experimental_aoa_offset_source: Optional[str] = None
+    # Transient fitted IWR range trajectory consumed by live camera fusion.
+    # Deliberately excluded from websocket/session serializers.
+    iwr6843_club_range_evidence: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     spin_axis_deg: Optional[float] = None  # Spin axis tilt: 0=backspin, +right(fade), -left(draw)
     inclinometer: Optional[dict] = None  # Stable enclosure orientation used for this shot
 

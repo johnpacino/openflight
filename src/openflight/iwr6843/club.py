@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import math
 from bisect import bisect_right
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -123,6 +123,15 @@ CLUB_MAX_PHASE_SPAN_RAD = math.pi / 2
 CLUB_MAX_PHASE_DEVIATION_RAD = 0.6
 
 
+@dataclass(frozen=True)
+class ClubRangeEvidence:
+    """Transient club range trajectory shared with camera fusion."""
+
+    track: tracking.BallTrack
+    geometry: tracking.Geometry
+    impact_t_s: float
+
+
 @dataclass
 class ClubPathResult:
     """One club-path estimate with the evidence behind it."""
@@ -158,6 +167,10 @@ class ClubPathResult:
     path_pre_frames: int = 0
     path_post_frames: int = 0
     path_post_speed_scale: float = 1.0
+    # Kept in memory only. Session JSON already records the scalar track
+    # diagnostics above; serializing the fitted object would couple replay
+    # files to Python implementation details.
+    range_evidence: ClubRangeEvidence | None = field(default=None, repr=False)
 
     @property
     def accepted(self) -> bool:
@@ -166,7 +179,9 @@ class ClubPathResult:
 
     def to_dict(self) -> dict:
         """JSON-safe diagnostics for the session log."""
-        return asdict(self)
+        payload = vars(self).copy()
+        payload.pop("range_evidence", None)
+        return payload
 
 
 @dataclass
@@ -634,24 +649,6 @@ def estimate_club_path(
         return ClubPathResult(status="rejected_no_club_track")
     track = selection.track
 
-    path_window_s = impact_centered_window_s(
-        geo,
-        impact_t_s,
-        pre_frames=window_policy.path_pre_frames,
-        post_frames=window_policy.path_post_frames,
-    )
-    if path_window_s is None:
-        return ClubPathResult(status="rejected_no_impact_frame")
-    path_lo_s, path_hi_s = path_window_s
-    phase_track = _ImpactSegmentedTrack(
-        base=track,
-        impact_t_s=impact_t_s,
-        range_res_m=res,
-        post_speed_scale=window_policy.path_post_speed_scale,
-        t_first=min(track.t_first, path_lo_s),
-        t_last=max(track.t_last, path_hi_s),
-    )
-
     result = ClubPathResult(
         status="pending",
         range_rate_ms=track.slope_bins * res,
@@ -668,7 +665,32 @@ def estimate_club_path(
         path_pre_frames=window_policy.path_pre_frames,
         path_post_frames=window_policy.path_post_frames,
         path_post_speed_scale=window_policy.path_post_speed_scale,
+        range_evidence=ClubRangeEvidence(
+            track=track,
+            geometry=geo,
+            impact_t_s=impact_t_s,
+        ),
     )
+
+    path_window_s = impact_centered_window_s(
+        geo,
+        impact_t_s,
+        pre_frames=window_policy.path_pre_frames,
+        post_frames=window_policy.path_post_frames,
+    )
+    if path_window_s is None:
+        result.status = "rejected_no_impact_frame"
+        return result
+    path_lo_s, path_hi_s = path_window_s
+    phase_track = _ImpactSegmentedTrack(
+        base=track,
+        impact_t_s=impact_t_s,
+        range_res_m=res,
+        post_speed_scale=window_policy.path_post_speed_scale,
+        t_first=min(track.t_first, path_lo_s),
+        t_last=max(track.t_last, path_hi_s),
+    )
+
     logger.info(
         "[CLUB] track=%s OPS=%.1f mph radial=%.1f m/s ratio=%.2f "
         "impact_error=%.3f m inliers=%d rms=%.2f bins",
@@ -894,6 +916,7 @@ def _confidence(result: ClubPathResult) -> float:
 
 __all__ = [
     "ClubPathResult",
+    "ClubRangeEvidence",
     "ClubWindowPolicy",
     "estimate_club_path",
     "find_club",

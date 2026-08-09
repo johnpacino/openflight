@@ -37,6 +37,38 @@ CLUB_SPEED_MS = 22.0
 OPS_CLUB_MPH = CLUB_SPEED_MS * 2.23694
 
 
+def test_range_evidence_is_not_serialized_to_session_json():
+    track = tracking.BallTrack(
+        speed_ms=35.0,
+        slope_bins=700.0,
+        intercept_bins=20.0,
+        rms_bins=0.2,
+        n_inliers=20,
+        t_first=0.0,
+        t_last=0.02,
+        low_confidence=False,
+    )
+    geometry = tracking.Geometry(
+        n_frames=10,
+        chirps_per_frame=36,
+        n_tx=3,
+        n_rx=4,
+        n_samples=32,
+        frame_period_s=0.002,
+        trigger_frame=0,
+    )
+    result = club.ClubPathResult(
+        status="accepted",
+        path_deg=2.0,
+        range_evidence=club.ClubRangeEvidence(track, geometry, 0.012),
+    )
+
+    payload = result.to_dict()
+
+    assert payload["path_deg"] == 2.0
+    assert "range_evidence" not in payload
+
+
 def _synth_club(
     path_deg,
     *,

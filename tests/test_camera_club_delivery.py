@@ -7,13 +7,167 @@ import pytest
 
 from openflight.camera.club_delivery import (
     SCENE_P995_MIN,
+    CameraDeliveryGeometry,
+    ChainedDelivery,
     FusedDelivery,
     TraceResult,
     aoa_offset_for_club,
+    delivery_from_feature_tracks,
     estimate_delivery_trace,
     fuse_club_delivery,
 )
 from openflight.launch_monitor import ClubType
+
+
+class _Ball:
+    x = 320.0
+    y = 200.0
+    diameter_px = 28.0
+
+
+def _project_impact_tracks(
+    *,
+    path_deg: float,
+    aoa_deg: float,
+    speed_ms: float = 35.0,
+    n_features: int = 12,
+):
+    """Synthetic clubhead features viewed by the rear camera at impact."""
+    geometry = CameraDeliveryGeometry(
+        camera_height_m=0.20955,
+        radar_height_m=0.15875,
+        tee_range_m=1.524,
+        ball_height_m=0.021335,
+    )
+    ball = _Ball()
+    times = np.array([-0.0035, 0.0, 0.0035])
+    path = math.radians(path_deg)
+    aoa = math.radians(aoa_deg)
+    forward = speed_ms / math.sqrt(1.0 + math.tan(path) ** 2 + math.tan(aoa) ** 2)
+    velocity = np.array([forward * math.tan(path), forward * math.tan(aoa), forward])
+    ball_forward = geometry.tee_range_m
+    focal_px = (
+        ball.diameter_px
+        * math.hypot(ball_forward, geometry.ball_height_m - geometry.camera_height_m)
+        / geometry.ball_diameter_m
+    )
+    pitch = math.atan2(
+        geometry.ball_height_m - geometry.camera_height_m,
+        ball_forward,
+    )
+
+    tracks = []
+    ranges = []
+    for feature in range(n_features):
+        lateral_offset = (feature - (n_features - 1) / 2) * 0.001
+        height_offset = (feature % 3 - 1) * 0.001
+        pixels = []
+        feature_ranges = []
+        for time_s in times:
+            lateral = lateral_offset + velocity[0] * time_s
+            height = geometry.ball_height_m + height_offset + velocity[1] * time_s
+            forward_m = ball_forward + velocity[2] * time_s
+            vertical_m = height - geometry.camera_height_m
+            camera_forward = math.cos(pitch) * forward_m + math.sin(pitch) * vertical_m
+            camera_vertical = -math.sin(pitch) * forward_m + math.cos(pitch) * vertical_m
+            x_px = geometry.image_width_px / 2 + focal_px * lateral / camera_forward
+            y_px = geometry.image_height_px / 2 - focal_px * camera_vertical / camera_forward
+            pixels.append((x_px, y_px))
+            feature_ranges.append(math.hypot(forward_m, height - geometry.radar_height_m))
+        tracks.append(pixels)
+        ranges.append(feature_ranges)
+    return np.asarray(tracks), times, np.median(np.asarray(ranges), axis=0), ball, geometry
+
+
+class TestChainedImpactDelivery:
+    def test_recovers_known_impact_velocity(self):
+        tracks, times, ranges, ball, geometry = _project_impact_tracks(
+            path_deg=3.0,
+            aoa_deg=-4.0,
+        )
+
+        result = delivery_from_feature_tracks(
+            tracks,
+            times,
+            ranges,
+            ball=ball,
+            geometry=geometry,
+            ops_club_speed_mph=35.0 * 2.23694,
+            timing_plausible=True,
+        )
+
+        assert isinstance(result, ChainedDelivery)
+        assert result.status == "chained_high"
+        assert result.club_path_deg == pytest.approx(3.0, abs=0.15)
+        assert result.attack_angle_deg == pytest.approx(-4.0, abs=0.15)
+        assert result.n_features == 12
+
+    def test_ops_speed_mismatch_withholds_both_angles(self):
+        tracks, times, ranges, ball, geometry = _project_impact_tracks(
+            path_deg=3.0,
+            aoa_deg=-4.0,
+        )
+
+        result = delivery_from_feature_tracks(
+            tracks,
+            times,
+            ranges,
+            ball=ball,
+            geometry=geometry,
+            ops_club_speed_mph=35.0,
+            timing_plausible=True,
+        )
+
+        assert result.status == "rejected_speed_ratio"
+        assert result.club_path_deg is None
+        assert result.attack_angle_deg is None
+
+    def test_static_image_features_do_not_steal_the_club_track(self):
+        tracks, times, ranges, ball, geometry = _project_impact_tracks(
+            path_deg=3.0,
+            aoa_deg=-4.0,
+        )
+        static = np.repeat(tracks[:8, :1, :], 3, axis=1)
+        tracks = np.concatenate((tracks, static), axis=0)
+
+        result = delivery_from_feature_tracks(
+            tracks,
+            times,
+            ranges,
+            ball=ball,
+            geometry=geometry,
+            ops_club_speed_mph=35.0 * 2.23694,
+            timing_plausible=True,
+        )
+
+        assert result.status == "chained_high"
+        assert result.club_path_deg == pytest.approx(3.0, abs=0.15)
+        assert result.attack_angle_deg == pytest.approx(-4.0, abs=0.15)
+        assert result.n_features == 12
+
+    def test_interval_disagreement_demotes_to_experimental(self):
+        tracks, times, ranges, ball, geometry = _project_impact_tracks(
+            path_deg=3.0,
+            aoa_deg=-4.0,
+        )
+        # Move only the post-impact point sideways. The central interval stays
+        # physically bounded, but pre/cross no longer corroborate each other.
+        tracks[:, 2, 0] += 10.0
+
+        result = delivery_from_feature_tracks(
+            tracks,
+            times,
+            ranges,
+            ball=ball,
+            geometry=geometry,
+            ops_club_speed_mph=35.0 * 2.23694,
+            timing_plausible=True,
+        )
+
+        assert result.status == "chained_experimental"
+        assert result.club_path_deg is not None
+        assert result.attack_angle_deg is not None
+
 
 # ---------------------------------------------------------------------------
 # Per-club AoA offsets
