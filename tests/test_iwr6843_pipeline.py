@@ -31,8 +31,10 @@ from openflight.iwr6843.dump import (
 )
 from openflight.iwr6843.lcmf import (
     ANGLE_CORRECTION_DEG,
+    HORIZONTAL_COHERENCE_MIN,
     TX2_LOOP_PERIOD_S,
     TX2_VERTICAL_TDM_TAU_S,
+    _frame_balanced_horizontal_mean,
     _tx2_horizontal_proxy,
 )
 from openflight.iwr6843.music import LAM, steer
@@ -1043,4 +1045,56 @@ def test_tx2_horizontal_uses_tail_of_ball_track_not_fixed_ring_tail():
 
     assert angle_deg is not None
     assert coherence is not None and coherence > 0.25
-    assert status == "hlcmf_v0_accepted"
+    assert status == "hlcmf_v1_accepted"
+
+
+def test_horizontal_fusion_gives_each_frame_equal_influence():
+    """A bright frame must not drown out the rest of the outgoing movie."""
+    snapshots = [(0.0, 0.0, 1000.0)] * 12
+    for frame in range(1, 8):
+        snapshots.extend([(float(frame), 0.2, 1.0)] * 3)
+
+    angle_deg, coherence = _frame_balanced_horizontal_mean(
+        snapshots,
+        phase_reference_rad=0.0,
+    )
+
+    expected_phase = 7.0 * 0.2 / 8.0
+    expected_deg = -np.degrees(np.arcsin(expected_phase / np.pi))
+    assert angle_deg == pytest.approx(expected_deg, abs=0.02)
+    assert coherence > HORIZONTAL_COHERENCE_MIN
+
+
+def test_horizontal_proxy_withholds_incoherent_frames(monkeypatch):
+    n_frames, n_loops, n_tx, n_rx, n_bins = 12, 10, 3, 4, 80
+    cube = np.zeros((n_frames, n_loops * n_tx, n_rx, n_bins), dtype=complex)
+    raw = pack_dump(
+        cube,
+        n_tx=3,
+        version=3,
+        frame_period_us=6000,
+        sample_fmt=SAMPLE_RANGE_FFT_IQ16,
+        range_bin_start=20,
+    )
+    track = BallTrack(
+        speed_ms=45.0,
+        slope_bins=0.0,
+        intercept_bins=31.0,
+        rms_bins=0.2,
+        n_inliers=80,
+        t_first=0.0,
+        t_last=0.067,
+        low_confidence=False,
+    )
+    shot = ShotMeasurement(geometry=None, ball_found=True, track=track)
+
+    def alternating_frame_phase(_mti, frame, *_args, **_kwargs):
+        return (0.0 if frame % 2 == 0 else np.pi), 1.0
+
+    monkeypatch.setattr(lcmf.doa, "tx2_phase_at", alternating_frame_phase)
+
+    angle_deg, coherence, status = _tx2_horizontal_proxy(raw, shot, tdm_sign=1)
+
+    assert angle_deg is None
+    assert coherence is not None and coherence < HORIZONTAL_COHERENCE_MIN
+    assert status == "hlcmf_v1_low_coherence"

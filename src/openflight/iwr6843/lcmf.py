@@ -42,6 +42,8 @@ MAX_RANGE_M = 4.7
 MAX_PER_FRAME = 4
 LATERAL_TEE_OFFSET_M = 0.064
 MPH_PER_MS = 2.23694
+HORIZONTAL_TAIL_FRAMES = 8
+HORIZONTAL_COHERENCE_MIN = 0.90
 
 # One collapsed channel must not drag the answer down. 8.0 sits in an observed
 # gap: agreeing channels spread 4.59 deg, collapsed ones 15.9-20.2 deg
@@ -606,6 +608,35 @@ def _referenced_horizontal_mean(
     return -_phase_to_angle_deg(phase_rad), coherence
 
 
+def _frame_balanced_horizontal_mean(
+    snapshots: list[tuple[float, float, float]],
+    *,
+    phase_reference_rad: float | None,
+) -> tuple[float, float]:
+    """Fuse the outgoing phase movie without letting one bright frame dominate.
+
+    Power remains useful inside each radar frame, where the loops observe
+    nearly the same ball position. Across frames, every retained instant gets
+    one vote. TrackMan holdout testing on 2026-08-09 found the final eight
+    observed frames materially more precise than pooling all loop snapshots.
+    """
+    observed_frames = sorted({frame for frame, _phase, _weight in snapshots})
+    tail_frames = observed_frames[-HORIZONTAL_TAIL_FRAMES:]
+    frame_phases: list[float] = []
+    for frame in tail_frames:
+        frame_snapshots = [snapshot for snapshot in snapshots if snapshot[0] == frame]
+        phase_rad, _within_frame_coherence = _weighted_circular_mean(
+            [phase for _frame, phase, _weight in frame_snapshots],
+            [weight for _frame, _phase, weight in frame_snapshots],
+        )
+        frame_phases.append(phase_rad)
+    return _referenced_horizontal_mean(
+        frame_phases,
+        [1.0] * len(frame_phases),
+        phase_reference_rad=phase_reference_rad,
+    )
+
+
 def _tx2_horizontal_proxy(
     raw: bytes,
     shot: ShotMeasurement,
@@ -614,14 +645,13 @@ def _tx2_horizontal_proxy(
     phase_reference_rad: float | None = None,
     phase_velocity_ms: float | None = None,
 ) -> tuple[float | None, float | None, str | None]:
-    """HLCMF-v0: experimental TX2 horizontal launch proxy.
+    """HLCMF-v1: frame-balanced TX2 horizontal launch estimator.
 
-    Horizontal Late Complex Median Fusion mirrors the vertical-launch lesson:
-    use fewer, cleaner snapshots, follow the fitted ball range track, correct
-    TDM motion, robustly median TX2 phase per RX channel, then fuse the tail
-    frame slots that separated the pushed-shot experiment. The final sign is
-    flipped into TrackMan convention: positive starts right of the target line,
-    negative starts left.
+    Follow the fitted ball range track, correct TDM motion, robustly median
+    TX2 phase per RX channel, and power-fuse loops within each frame. The final
+    eight observed frames are then fused with equal frame influence. The final
+    sign is flipped into TrackMan convention: positive starts right of the
+    target line, negative starts left.
     """
     meta, cube = parse_dump(raw)
     if meta["n_tx"] != 3 or shot.track is None:
@@ -659,22 +689,15 @@ def _tx2_horizontal_proxy(
             if sample is not None:
                 phase, weight = sample
                 snapshots.append((float(frame), phase, weight))
-    # A boundary-frozen HWA block can contain impact in any physical ring slot.
-    # Follow the observed flight instead of assuming slots 9-11 are always late.
-    observed_frames = sorted({frame for frame, _phase, _weight in snapshots})
-    tail_frames = set(observed_frames[-3:])
-    snapshots = [snapshot for snapshot in snapshots if snapshot[0] in tail_frames]
     if len(snapshots) < 6:
-        return None, None, "hlcmf_v0_insufficient_tail_snapshots"
-    phases = [phase for _frame, phase, _weight in snapshots]
-    weights = [weight for _frame, _phase, weight in snapshots]
-    angle_deg, coherence = _referenced_horizontal_mean(
-        phases,
-        weights,
+        return None, None, "hlcmf_v1_insufficient_tail_snapshots"
+    angle_deg, coherence = _frame_balanced_horizontal_mean(
+        snapshots,
         phase_reference_rad=phase_reference_rad,
     )
-    status = "hlcmf_v0_accepted" if coherence >= 0.25 else "hlcmf_v0_low_coherence"
-    return angle_deg, coherence, status
+    if coherence < HORIZONTAL_COHERENCE_MIN:
+        return None, coherence, "hlcmf_v1_low_coherence"
+    return angle_deg, coherence, "hlcmf_v1_accepted"
 
 
 def estimate_lcmf_v1(
