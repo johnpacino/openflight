@@ -59,6 +59,15 @@ CHANNEL_SPREAD_MAX_DEG = 8.0
 SINGLE_CHANNEL_CONFIDENCE_FACTOR = 0.7
 
 
+@dataclass(frozen=True)
+class BallRangeEvidence:
+    """Transient fitted ball trajectory shared with camera fusion."""
+
+    track: tracking.BallTrack
+    geometry: tracking.Geometry
+    impact_t_s: float
+
+
 @dataclass
 class LCMFResult:
     """One LCMF-v1 estimate with enough evidence for session replay."""
@@ -84,6 +93,11 @@ class LCMFResult:
     horizontal_status: str | None = None
     effective_tdm_tau_s: float = doa.TDM_TAU_S
     effective_loop_period_s: float = tracking.LOOP_PRI_S
+    range_evidence: BallRangeEvidence | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def accepted(self) -> bool:
@@ -165,6 +179,12 @@ def _result_from_track(
     effective_loop_period_s: float = tracking.LOOP_PRI_S,
 ) -> LCMFResult:
     track = shot.track
+    impact_t_s = impact_time_s(
+        track,
+        shot.geometry,
+        cal.tee_range_m,
+        range_bias_m=cal.range_bias_m,
+    )
     return LCMFResult(
         status=status,
         tracker_quality=shot.quality,
@@ -172,6 +192,12 @@ def _result_from_track(
         track_rms_bins=track.rms_bins if track is not None else None,
         track_inliers=track.n_inliers if track is not None else None,
         track_span_s=(track.t_last - track.t_first) if track is not None else None,
+        impact_t_s=impact_t_s,
+        range_evidence=(
+            BallRangeEvidence(track, shot.geometry, impact_t_s)
+            if track is not None and impact_t_s is not None
+            else None
+        ),
         tdm_sign_used=shot.tdm_sign_used,
         effective_tdm_tau_s=effective_tdm_tau_s,
         effective_loop_period_s=effective_loop_period_s,
@@ -918,6 +944,7 @@ def estimate_lcmf_v1(
 
 __all__ = [
     "ANGLE_CORRECTION_DEG",
+    "BallRangeEvidence",
     "DISPLAY_NAME",
     "LCMFResult",
     "NAME",

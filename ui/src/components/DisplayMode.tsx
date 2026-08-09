@@ -142,6 +142,10 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
       label: 'H. Launch',
       value: formatOptionalNumber(shot.launch_angle_horizontal, 1, true),
       unit: shot.launch_angle_horizontal === null ? undefined : 'deg',
+      detail:
+        shot.launch_angle_horizontal_source === 'camera_assisted_experimental'
+          ? 'camera assisted (exp.)'
+          : undefined,
     },
   ];
 }

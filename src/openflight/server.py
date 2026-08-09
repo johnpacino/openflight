@@ -921,6 +921,14 @@ def shot_to_dict(shot: Shot) -> dict:
         "experimental_fused_status": shot.experimental_fused_status,
         "experimental_camera_trace_deg": shot.experimental_camera_trace_deg,
         "experimental_aoa_offset_source": shot.experimental_aoa_offset_source,
+        "iwr6843_horizontal_deg": shot.iwr6843_horizontal_deg,
+        "iwr6843_horizontal_confidence": shot.iwr6843_horizontal_confidence,
+        "experimental_camera_horizontal_deg": shot.experimental_camera_horizontal_deg,
+        "experimental_camera_horizontal_confidence": (
+            shot.experimental_camera_horizontal_confidence
+        ),
+        "experimental_camera_horizontal_status": shot.experimental_camera_horizontal_status,
+        "experimental_camera_iwr_delta_deg": shot.experimental_camera_iwr_delta_deg,
         "spin_axis_deg": shot.spin_axis_deg,
         "inclinometer": shot.inclinometer,
         # Spin data from rolling buffer mode
@@ -2363,6 +2371,8 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
         capture = shot_result.capture
         measurement = shot_result.measurement
         club_path = getattr(shot_result, "club_path", None)
+        if measurement is not None:
+            shot.iwr6843_ball_range_evidence = getattr(measurement, "range_evidence", None)
         session_log = get_session_logger()
         if session_log:
             session_log.log_iwr6843_capture(
@@ -2422,10 +2432,12 @@ def _process_iwr6843_angle(shot: Shot) -> float | None:
             horizontal_confidence = getattr(measurement, "horizontal_confidence", None)
             horizontal_status = getattr(measurement, "horizontal_status", None)
             if horizontal_deg is not None:
-                shot.launch_angle_horizontal = horizontal_deg
-                shot.launch_angle_horizontal_confidence = horizontal_confidence_from(
+                shot.iwr6843_horizontal_deg = horizontal_deg
+                shot.iwr6843_horizontal_confidence = horizontal_confidence_from(
                     horizontal_confidence
                 )
+                shot.launch_angle_horizontal = horizontal_deg
+                shot.launch_angle_horizontal_confidence = shot.iwr6843_horizontal_confidence
                 shot.launch_angle_horizontal_source = "radar"
                 logger.info(
                     "[SERVER] IWR6843 TX2 horizontal proxy: %.2f° (coherence %.0f%%, status=%s)",
@@ -2601,6 +2613,92 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
             "Camera club-delivery fusion failed",
             component="camera_capture",
             context={"stage": "club_delivery_fusion", "ball_speed_mph": shot.ball_speed_mph},
+            exc=error,
+        )
+
+
+def _fuse_camera_ball_flight(shot: Shot, camera_capture) -> None:
+    """Select experimental camera horizontal while preserving IWR fallback."""
+    try:
+        import numpy as np  # noqa: PLC0415  pylint: disable=import-outside-toplevel
+
+        from openflight.camera.ball_flight import (  # noqa: PLC0415
+            CameraBallEstimate,
+            CameraBallGeometry,
+            estimate_camera_ball_flight,
+            select_camera_assisted_horizontal,
+        )
+
+        estimate = CameraBallEstimate(status="rejected_no_camera_capture")
+        if camera_capture is not None and camera_capture.valid and camera_capture.path:
+            frames_path = Path(camera_capture.path) / "frames.npz"
+            if not frames_path.exists():
+                estimate = CameraBallEstimate(status="rejected_missing_camera_frames")
+            elif iwr6843_runtime is None:
+                estimate = CameraBallEstimate(status="rejected_no_iwr_runtime")
+            else:
+                calibration = iwr6843_runtime.calibration
+                if calibration.tee_range_m is None:
+                    estimate = CameraBallEstimate(status="rejected_missing_tee_geometry")
+                else:
+                    with np.load(frames_path) as archive:
+                        trigger_ns = int(archive["trigger_host_timestamp_ns"])
+                        estimate = estimate_camera_ball_flight(
+                            archive["frames"],
+                            archive["host_timestamp_ns"],
+                            trigger_ns=trigger_ns,
+                            range_evidence=shot.iwr6843_ball_range_evidence,
+                            geometry=CameraBallGeometry(
+                                camera_height_m=float(camera_capture_config["mount_height_m"]),
+                                radar_height_m=calibration.radar_height_m,
+                                tee_range_m=float(calibration.tee_range_m),
+                                ball_height_m=calibration.tee_ball_height_m,
+                                image_width_px=int(camera_capture_config["width"]),
+                                image_height_px=int(camera_capture_config["height"]),
+                            ),
+                            ops_ball_speed_mph=shot.ball_speed_raw_mph or shot.ball_speed_mph,
+                            iwr_vertical_deg=shot.launch_angle_vertical,
+                            ball_tracker=camera_reference_ball_tracker,
+                        )
+
+        decision = select_camera_assisted_horizontal(
+            estimate,
+            iwr_horizontal_deg=shot.iwr6843_horizontal_deg,
+            iwr_confidence=shot.iwr6843_horizontal_confidence,
+        )
+        shot.experimental_camera_horizontal_deg = decision.camera_horizontal_deg
+        shot.experimental_camera_horizontal_confidence = (
+            decision.confidence
+            if decision.source == "camera_assisted_experimental"
+            else None
+        )
+        shot.experimental_camera_horizontal_status = (
+            decision.status
+            if estimate.confidence_tier != "withheld"
+            else f"{decision.status}:{estimate.status}"
+        )
+        shot.experimental_camera_iwr_delta_deg = decision.camera_iwr_delta_deg
+        if decision.selected_deg is not None:
+            shot.launch_angle_horizontal = decision.selected_deg
+            shot.launch_angle_horizontal_confidence = decision.confidence
+            shot.launch_angle_horizontal_source = decision.source
+        logger.info(
+            "[SERVER] Camera-assisted horizontal: selected=%s camera=%s IWR=%s "
+            "delta=%s status=%s support=%d/27",
+            decision.selected_deg,
+            decision.camera_horizontal_deg,
+            decision.iwr_horizontal_deg,
+            decision.camera_iwr_delta_deg,
+            decision.status,
+            estimate.support,
+        )
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        shot.experimental_camera_horizontal_status = "error"
+        logger.warning("[SERVER] Camera ball-flight fusion error: %s", error, exc_info=True)
+        log_session_error(
+            "Camera ball-flight fusion failed",
+            component="camera_capture",
+            context={"stage": "ball_flight_fusion", "ball_speed_mph": shot.ball_speed_mph},
             exc=error,
         )
 
@@ -2970,6 +3068,7 @@ def on_shot_detected(shot: Shot):
         )
 
     if shot.mode != "mock":
+        _fuse_camera_ball_flight(shot, camera_capture)
         _fuse_camera_club_delivery(shot, camera_capture)
 
     # Always emit user-facing launch angles. Radar/camera measurements win;
@@ -3102,6 +3201,14 @@ def on_shot_detected(shot: Shot):
                 experimental_fused_status=shot.experimental_fused_status,
                 experimental_camera_trace_deg=shot.experimental_camera_trace_deg,
                 experimental_aoa_offset_source=shot.experimental_aoa_offset_source,
+                iwr6843_horizontal_deg=shot.iwr6843_horizontal_deg,
+                iwr6843_horizontal_confidence=shot.iwr6843_horizontal_confidence,
+                experimental_camera_horizontal_deg=shot.experimental_camera_horizontal_deg,
+                experimental_camera_horizontal_confidence=(
+                    shot.experimental_camera_horizontal_confidence
+                ),
+                experimental_camera_horizontal_status=(shot.experimental_camera_horizontal_status),
+                experimental_camera_iwr_delta_deg=shot.experimental_camera_iwr_delta_deg,
                 spin_axis_deg=shot.spin_axis_deg,
                 impact_timestamp=shot.impact_timestamp,
                 player_name=shot.player_name,

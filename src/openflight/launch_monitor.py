@@ -303,9 +303,23 @@ class Shot:
     experimental_fused_status: Optional[str] = None
     experimental_camera_trace_deg: Optional[float] = None
     experimental_aoa_offset_source: Optional[str] = None
+    # Independent horizontal ball-flight evidence. The camera-assisted value
+    # may become the displayed experimental result while the original IWR
+    # value remains available for replay and comparison.
+    iwr6843_horizontal_deg: Optional[float] = None
+    iwr6843_horizontal_confidence: Optional[float] = None
+    experimental_camera_horizontal_deg: Optional[float] = None
+    experimental_camera_horizontal_confidence: Optional[float] = None
+    experimental_camera_horizontal_status: Optional[str] = None
+    experimental_camera_iwr_delta_deg: Optional[float] = None
     # Transient fitted IWR range trajectory consumed by live camera fusion.
     # Deliberately excluded from websocket/session serializers.
     iwr6843_club_range_evidence: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    iwr6843_ball_range_evidence: object | None = field(
         default=None,
         repr=False,
         compare=False,

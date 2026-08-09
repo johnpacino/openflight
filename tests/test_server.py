@@ -1139,6 +1139,87 @@ class TestShotToDict:
         assert result["launch_angle_horizontal_confidence"] is None
         assert result["launch_angle_horizontal_source"] is None
 
+    def test_camera_assisted_horizontal_provenance_is_included(self):
+        shot = Shot(
+            ball_speed_mph=110.0,
+            timestamp=datetime.now(),
+            launch_angle_horizontal=0.6,
+            launch_angle_horizontal_confidence=0.75,
+            launch_angle_horizontal_source="camera_assisted_experimental",
+            iwr6843_horizontal_deg=17.9,
+            iwr6843_horizontal_confidence=0.8,
+            experimental_camera_horizontal_deg=0.6,
+            experimental_camera_horizontal_confidence=0.75,
+            experimental_camera_horizontal_status="camera_assisted_high",
+            experimental_camera_iwr_delta_deg=-17.3,
+        )
+
+        result = shot_to_dict(shot)
+
+        assert result["launch_angle_horizontal"] == 0.6
+        assert result["launch_angle_horizontal_source"] == "camera_assisted_experimental"
+        assert result["iwr6843_horizontal_deg"] == 17.9
+        assert result["experimental_camera_horizontal_deg"] == 0.6
+        assert result["experimental_camera_horizontal_status"] == "camera_assisted_high"
+        assert result["experimental_camera_iwr_delta_deg"] == -17.3
+        assert "iwr6843_ball_range_evidence" not in result
+
+    def test_live_fusion_selects_camera_and_preserves_iwr(self, monkeypatch, tmp_path):
+        import numpy as np
+
+        from openflight.camera import ball_flight
+
+        np.savez(
+            tmp_path / "frames.npz",
+            frames=np.zeros((8, 4, 4), dtype=np.uint8),
+            host_timestamp_ns=np.arange(8, dtype=np.int64),
+            trigger_host_timestamp_ns=np.int64(3),
+        )
+        monkeypatch.setattr(
+            ball_flight,
+            "estimate_camera_ball_flight",
+            lambda *_args, **_kwargs: ball_flight.CameraBallEstimate(
+                status="accepted",
+                confidence_tier="high",
+                horizontal_deg=0.6,
+                support=20,
+            ),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "iwr6843_runtime",
+            SimpleNamespace(
+                calibration=SimpleNamespace(
+                    tee_range_m=1.524,
+                    radar_height_m=0.15875,
+                    tee_ball_height_m=0.04,
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "camera_capture_config",
+            {"mount_height_m": 0.20955, "width": 640, "height": 400},
+        )
+        shot = Shot(
+            ball_speed_mph=110.0,
+            timestamp=datetime.now(),
+            launch_angle_horizontal=17.9,
+            launch_angle_horizontal_confidence=0.8,
+            launch_angle_horizontal_source="radar",
+            iwr6843_horizontal_deg=17.9,
+            iwr6843_horizontal_confidence=0.8,
+            iwr6843_ball_range_evidence=object(),
+        )
+        capture = SimpleNamespace(valid=True, path=tmp_path)
+
+        server_module._fuse_camera_ball_flight(shot, capture)
+
+        assert shot.launch_angle_horizontal == 0.6
+        assert shot.launch_angle_horizontal_source == "camera_assisted_experimental"
+        assert shot.experimental_camera_horizontal_status == "camera_assisted_high"
+        assert shot.iwr6843_horizontal_deg == 17.9
+
     def test_angle_source_none_by_default(self):
         """Shot without angle source should have None."""
         shot = Shot(

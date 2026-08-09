@@ -369,6 +369,12 @@ class SessionLogger:
         experimental_fused_status: Optional[str] = None,
         experimental_camera_trace_deg: Optional[float] = None,
         experimental_aoa_offset_source: Optional[str] = None,
+        iwr6843_horizontal_deg: Optional[float] = None,
+        iwr6843_horizontal_confidence: Optional[float] = None,
+        experimental_camera_horizontal_deg: Optional[float] = None,
+        experimental_camera_horizontal_confidence: Optional[float] = None,
+        experimental_camera_horizontal_status: Optional[str] = None,
+        experimental_camera_iwr_delta_deg: Optional[float] = None,
         spin_axis_deg: Optional[float] = None,
         pipeline_ms: Optional[Dict] = None,
         impact_timestamp: Optional[float] = None,
@@ -484,6 +490,20 @@ class SessionLogger:
             data["experimental_camera_trace_deg"] = experimental_camera_trace_deg
         if experimental_aoa_offset_source is not None:
             data["experimental_aoa_offset_source"] = experimental_aoa_offset_source
+        if iwr6843_horizontal_deg is not None:
+            data["iwr6843_horizontal_deg"] = iwr6843_horizontal_deg
+        if iwr6843_horizontal_confidence is not None:
+            data["iwr6843_horizontal_confidence"] = iwr6843_horizontal_confidence
+        if experimental_camera_horizontal_deg is not None:
+            data["experimental_camera_horizontal_deg"] = experimental_camera_horizontal_deg
+        if experimental_camera_horizontal_confidence is not None:
+            data["experimental_camera_horizontal_confidence"] = (
+                experimental_camera_horizontal_confidence
+            )
+        if experimental_camera_horizontal_status is not None:
+            data["experimental_camera_horizontal_status"] = experimental_camera_horizontal_status
+        if experimental_camera_iwr_delta_deg is not None:
+            data["experimental_camera_iwr_delta_deg"] = experimental_camera_iwr_delta_deg
         if spin_axis_deg is not None:
             data["spin_axis_deg"] = spin_axis_deg
         if pipeline_ms is not None:
