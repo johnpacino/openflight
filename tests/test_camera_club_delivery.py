@@ -72,6 +72,23 @@ def test_reference_ball_tracker_falls_back_to_established_tee_anchor():
     assert ball.diameter_px == pytest.approx(13.5)
 
 
+def test_reference_ball_tracker_returns_rolling_anchor_for_stable_geometry():
+    tracker = ReferenceBallTracker()
+
+    first, first_source = tracker.resolve_stable(ReferenceBall(320.0, 190.0, 14.0, 140))
+    second, second_source = tracker.resolve_stable(ReferenceBall(322.0, 192.0, 16.0, 160))
+    third, third_source = tracker.resolve_stable(ReferenceBall(321.0, 191.0, 15.0, 150))
+
+    assert first_source == "warming"
+    assert second_source == "warming"
+    assert first.x == 320.0
+    assert second.x == 322.0
+    assert third_source == "session_anchor"
+    assert third.x == pytest.approx(321.0)
+    assert third.y == pytest.approx(191.0)
+    assert third.diameter_px == pytest.approx(15.0)
+
+
 def _project_impact_tracks(
     *,
     path_deg: float,

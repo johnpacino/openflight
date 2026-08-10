@@ -160,6 +160,14 @@ class ReferenceBallTracker:
             return anchor, "session_anchor"
         return candidate, "unverified"
 
+    def resolve_stable(self, candidate: ReferenceBall) -> tuple[ReferenceBall, str]:
+        """Return a rolling session anchor once enough valid observations exist."""
+        resolved, source = self.resolve(candidate)
+        anchor = self._anchor()
+        if anchor is not None and len(self._samples) >= self.min_fallback_samples:
+            return anchor, "session_anchor"
+        return resolved, "warming" if source == "detected" else source
+
 
 def _pixels_to_world(
     points_px: np.ndarray,

@@ -1169,6 +1169,17 @@ class TestShotToDict:
 
         from openflight.camera import ball_flight
 
+        estimate_call = {}
+
+        def fake_estimate(*_args, **kwargs):
+            estimate_call.update(kwargs)
+            return ball_flight.CameraBallEstimate(
+                status="accepted",
+                confidence_tier="high",
+                horizontal_deg=0.6,
+                support=20,
+            )
+
         np.savez(
             tmp_path / "frames.npz",
             frames=np.zeros((8, 4, 4), dtype=np.uint8),
@@ -1178,12 +1189,7 @@ class TestShotToDict:
         monkeypatch.setattr(
             ball_flight,
             "estimate_camera_ball_flight",
-            lambda *_args, **_kwargs: ball_flight.CameraBallEstimate(
-                status="accepted",
-                confidence_tier="high",
-                horizontal_deg=0.6,
-                support=20,
-            ),
+            fake_estimate,
         )
         monkeypatch.setattr(
             server_module,
@@ -1199,7 +1205,18 @@ class TestShotToDict:
         monkeypatch.setattr(
             server_module,
             "camera_capture_config",
-            {"mount_height_m": 0.20955, "width": 640, "height": 400},
+            {
+                "mount_height_m": 0.20955,
+                "horizontal_offset_deg": -0.45,
+                "width": 640,
+                "height": 400,
+            },
+        )
+        ball_flight_tracker = object()
+        monkeypatch.setattr(
+            server_module,
+            "camera_ball_flight_reference_tracker",
+            ball_flight_tracker,
         )
         shot = Shot(
             ball_speed_mph=110.0,
@@ -1219,6 +1236,28 @@ class TestShotToDict:
         assert shot.launch_angle_horizontal_source == "camera_assisted_experimental"
         assert shot.experimental_camera_horizontal_status == "camera_assisted_high"
         assert shot.iwr6843_horizontal_deg == 17.9
+        assert estimate_call["geometry"].horizontal_offset_deg == -0.45
+        assert estimate_call["ball_tracker"] is ball_flight_tracker
+
+    def test_live_fusion_without_camera_preserves_radar_horizontal(self):
+        shot = Shot(
+            ball_speed_mph=110.0,
+            timestamp=datetime.now(),
+            launch_angle_horizontal=-2.0,
+            launch_angle_horizontal_confidence=0.7,
+            launch_angle_horizontal_source="radar",
+            iwr6843_horizontal_deg=-2.0,
+            iwr6843_horizontal_confidence=0.7,
+        )
+
+        server_module._fuse_camera_ball_flight(shot, None)
+
+        assert shot.launch_angle_horizontal == -2.0
+        assert shot.launch_angle_horizontal_confidence == 0.7
+        assert shot.launch_angle_horizontal_source == "radar"
+        assert shot.experimental_camera_horizontal_status == (
+            "camera_withheld_fallback_iwr:rejected_no_camera_capture"
+        )
 
     def test_angle_source_none_by_default(self):
         """Shot without angle source should have None."""

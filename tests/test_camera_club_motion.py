@@ -26,6 +26,21 @@ def test_detect_reference_ball_prefers_round_center_candidate():
     assert ball.diameter_px == pytest.approx(math.sqrt(4 * 81 / math.pi), rel=0.1)
 
 
+def test_detect_reference_ball_finds_dark_ball_in_bright_spotlight():
+    frames = np.full((12, 100, 160), 185, dtype=np.uint8)
+    yy, xx = np.indices(frames.shape[1:])
+    spotlight = np.clip(55 - np.hypot(xx - 80, yy - 55), 0, 55)
+    frames[:] = np.clip(frames.astype(np.int16) + spotlight.astype(np.int16), 0, 255)
+    frames[:, (xx - 82) ** 2 + (yy - 54) ** 2 <= 6**2] = 65
+    frames[:, 18:78, 20:24] = 40  # Dark golfer/club-like edge away from center.
+
+    ball = detect_reference_ball(frames)
+
+    assert ball.x == pytest.approx(82.0, abs=1.0)
+    assert ball.y == pytest.approx(54.0, abs=1.0)
+    assert 9.0 <= ball.diameter_px <= 15.0
+
+
 def test_image_plane_motion_uses_terminal_interval_and_ball_scale():
     points = [
         ImagePoint(frame_index=4, x=10.0, y=20.0),

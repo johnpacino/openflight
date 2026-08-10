@@ -131,6 +131,7 @@ iwr6843_runtime_config: dict = {"enabled": False}
 camera_capture_runtime = None
 camera_capture_config: dict = {"enabled": False}
 camera_reference_ball_tracker = None
+camera_ball_flight_reference_tracker = None
 
 # Optional LIS3DH enclosure orientation used to compensate TI mount tilt.
 inclinometer_service = None
@@ -1089,11 +1090,13 @@ def init_camera_capture(
     rotate_180: bool,
     scaler_crop: tuple[int, int, int, int] | None,
     mount_height_m: float,
+    horizontal_offset_deg: float,
     use_gpio_trigger: bool,
 ) -> bool:
     """Initialize passive high-speed camera capture for offline alignment."""
     global camera_capture_runtime, camera_capture_config  # pylint: disable=global-statement
     global camera_reference_ball_tracker  # pylint: disable=global-statement
+    global camera_ball_flight_reference_tracker  # pylint: disable=global-statement
     try:
         from .camera.capture_runtime import CameraCaptureRuntime, CameraCaptureSettings
 
@@ -1121,6 +1124,7 @@ def init_camera_capture(
         )
 
         camera_reference_ball_tracker = ReferenceBallTracker()
+        camera_ball_flight_reference_tracker = ReferenceBallTracker()
         camera_capture_config = {
             "enabled": True,
             "output_dir": str(Path(output_dir).expanduser()),
@@ -1139,6 +1143,7 @@ def init_camera_capture(
             "rotate_180": settings.rotate_180,
             "scaler_crop": settings.scaler_crop,
             "mount_height_m": mount_height_m,
+            "horizontal_offset_deg": horizontal_offset_deg,
         }
         logger.info("[SERVER] Camera capture initialized: %s", camera_capture_config)
         return True
@@ -1152,6 +1157,7 @@ def init_camera_capture(
         )
         camera_capture_runtime = None
         camera_reference_ball_tracker = None
+        camera_ball_flight_reference_tracker = None
         camera_capture_config = {"enabled": False, "error": str(error)}
         return False
 
@@ -2653,12 +2659,15 @@ def _fuse_camera_ball_flight(shot: Shot, camera_capture) -> None:
                                 radar_height_m=calibration.radar_height_m,
                                 tee_range_m=float(calibration.tee_range_m),
                                 ball_height_m=calibration.tee_ball_height_m,
+                                horizontal_offset_deg=float(
+                                    camera_capture_config.get("horizontal_offset_deg", 0.0)
+                                ),
                                 image_width_px=int(camera_capture_config["width"]),
                                 image_height_px=int(camera_capture_config["height"]),
                             ),
                             ops_ball_speed_mph=shot.ball_speed_raw_mph or shot.ball_speed_mph,
                             iwr_vertical_deg=shot.launch_angle_vertical,
-                            ball_tracker=camera_reference_ball_tracker,
+                            ball_tracker=camera_ball_flight_reference_tracker,
                         )
 
         decision = select_camera_assisted_horizontal(
@@ -4057,6 +4066,12 @@ def main():
         help="Camera optical-center height above the hitting surface (default: 8.25 in).",
     )
     parser.add_argument(
+        "--camera-capture-horizontal-offset-deg",
+        type=float,
+        default=0.0,
+        help="Measured camera target-line correction added to horizontal launch angles.",
+    )
+    parser.add_argument(
         "--camera-capture-stream",
         choices=("raw", "main-y"),
         default="raw",
@@ -4638,6 +4653,7 @@ def main():
             exposure_us=args.camera_capture_exposure_us,
             gain=args.camera_capture_gain,
             mount_height_m=args.camera_capture_mount_height_m,
+            horizontal_offset_deg=args.camera_capture_horizontal_offset_deg,
             stream=args.camera_capture_stream,
             rotate_180=args.camera_capture_rotate_180,
             scaler_crop=camera_capture_scaler_crop,

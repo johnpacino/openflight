@@ -44,6 +44,7 @@ class CameraBallGeometry:
     radar_height_m: float
     tee_range_m: float
     ball_height_m: float
+    horizontal_offset_deg: float = 0.0
     ball_diameter_m: float = BALL_DIAMETER_MM / 1000.0
     image_width_px: int = 640
     image_height_px: int = 400
@@ -98,9 +99,8 @@ class _PathEstimate:
 def _camera_model(
     anchor: ReferenceBall,
     geometry: CameraBallGeometry,
-) -> tuple[float, float, float, np.ndarray]:
+) -> tuple[float, float, np.ndarray]:
     """Infer focal scale and pose from the stationary regulation-size ball."""
-    center_x = geometry.image_width_px / 2.0
     center_y = geometry.image_height_px / 2.0
     camera_ball_range = math.hypot(
         geometry.tee_range_m,
@@ -111,19 +111,18 @@ def _camera_model(
         geometry.ball_height_m - geometry.camera_height_m,
         geometry.tee_range_m,
     ) - math.atan2(-(anchor.y - center_y) / focal_px, 1.0)
-    target_yaw = math.atan2((anchor.x - center_x) / focal_px, 1.0)
     radar_from_camera = np.array([0.0, 0.0, geometry.camera_height_m - geometry.radar_height_m])
-    return focal_px, pitch, target_yaw, radar_from_camera
+    return focal_px, pitch, radar_from_camera
 
 
 def _project(
     candidate: BallCandidate,
     radar_range_m: float,
     *,
-    model: tuple[float, float, float, np.ndarray],
+    model: tuple[float, float, np.ndarray],
     geometry: CameraBallGeometry,
 ) -> np.ndarray | None:
-    focal_px, pitch, _target_yaw, radar_from_camera = model
+    focal_px, pitch, radar_from_camera = model
     image_z = -(candidate.y - geometry.image_height_px / 2.0) / focal_px
     ray = np.array(
         [
@@ -254,9 +253,15 @@ def _robust_velocity(times: np.ndarray, positions: np.ndarray) -> tuple[np.ndarr
     return velocity, float(np.median(residual))
 
 
-def _horizontal(velocity: np.ndarray, target_yaw: float) -> float:
-    angle = math.atan2(float(velocity[0]), float(velocity[1])) - target_yaw
+def _horizontal(velocity: np.ndarray) -> float:
+    """Return motion direction relative to the camera optical target line."""
+    angle = math.atan2(float(velocity[0]), float(velocity[1]))
     return (math.degrees(angle) + 180.0) % 360.0 - 180.0
+
+
+def _apply_horizontal_offset(angle_deg: float, offset_deg: float) -> float:
+    """Apply a measured setup yaw correction while preserving angle wrapping."""
+    return (angle_deg + offset_deg + 180.0) % 360.0 - 180.0
 
 
 def _path_estimate(
@@ -268,12 +273,12 @@ def _path_estimate(
     range_evidence,
     ops_ball_speed_mph: float,
     iwr_vertical_deg: float | None,
-    model: tuple[float, float, float, np.ndarray],
+    model: tuple[float, float, np.ndarray],
     geometry: CameraBallGeometry,
     thresholds: tuple[int, int, int],  # retained for replay/debug provenance
 ) -> tuple[float, _PathEstimate] | None:
     del thresholds
-    _focal_px, _pitch, target_yaw, _radar_from_camera = model
+    _focal_px, _pitch, _radar_from_camera = model
     times: list[float] = []
     positions: list[np.ndarray] = []
     actual_frames: list[int] = []
@@ -299,7 +304,10 @@ def _path_estimate(
     times_array = np.asarray(times)
     positions_array = np.stack(positions)
     velocity, fit_median = _robust_velocity(times_array, positions_array)
-    horizontal = _horizontal(velocity, target_yaw)
+    horizontal = _apply_horizontal_offset(
+        _horizontal(velocity),
+        geometry.horizontal_offset_deg,
+    )
     vertical = math.degrees(
         math.atan2(float(velocity[2]), math.hypot(float(velocity[0]), float(velocity[1])))
     )
@@ -307,7 +315,12 @@ def _path_estimate(
     step_velocity = np.diff(positions_array, axis=0) / np.diff(times_array)[:, None]
     step_speeds = np.linalg.norm(step_velocity, axis=1) * MPH_PER_MS
     step_speed_mad = float(np.median(np.abs(step_speeds - np.median(step_speeds))))
-    step_angles = np.asarray([_horizontal(step, target_yaw) for step in step_velocity])
+    step_angles = np.asarray(
+        [
+            _apply_horizontal_offset(_horizontal(step), geometry.horizontal_offset_deg)
+            for step in step_velocity
+        ]
+    )
     window_mad = float(np.median(np.abs(step_angles - horizontal)))
     shape = np.asarray(
         [abs(math.log(candidate.width / max(candidate.height, 1))) for candidate in used_candidates]
@@ -366,6 +379,16 @@ def _path_estimate(
     )
 
 
+def _confidence_tier(support: int, parameter_mad: float, window_mad: float) -> str:
+    """Map detector consensus and local trajectory coherence to a confidence tier."""
+    stable_consensus = parameter_mad <= 1.0
+    if support >= 9 and stable_consensus and window_mad <= 0.5:
+        return "high"
+    if support >= 2 and stable_consensus and window_mad <= 1.5:
+        return "experimental"
+    return "withheld"
+
+
 def estimate_camera_ball_flight(
     frames: np.ndarray,
     timestamps_ns: np.ndarray,
@@ -387,7 +410,8 @@ def estimate_camera_ball_flight(
     except ValueError:
         return CameraBallEstimate("rejected_reference_ball_not_found")
     if ball_tracker is not None:
-        anchor, _anchor_source = ball_tracker.resolve(anchor)
+        resolver = getattr(ball_tracker, "resolve_stable", ball_tracker.resolve)
+        anchor, _anchor_source = resolver(anchor)
     if not 9.0 <= anchor.diameter_px <= 30.0:
         return CameraBallEstimate("rejected_implausible_reference_ball")
 
@@ -441,13 +465,7 @@ def estimate_camera_ball_flight(
     median_horizontal = float(np.median(horizontal))
     parameter_mad = float(np.median(np.abs(horizontal - median_horizontal)))
     window_mad = float(np.median([estimate.window_mad_deg for estimate in estimates]))
-    stable = parameter_mad <= 1.0 and window_mad <= 1.5
-    if len(estimates) >= 9 and stable:
-        tier = "high"
-    elif len(estimates) >= 2 and stable:
-        tier = "experimental"
-    else:
-        tier = "withheld"
+    tier = _confidence_tier(len(estimates), parameter_mad, window_mad)
     representative = min(estimates, key=lambda item: abs(item.horizontal_deg - median_horizontal))
     return CameraBallEstimate(
         status="accepted" if tier != "withheld" else "rejected_unstable_consensus",
@@ -494,16 +512,31 @@ def select_camera_assisted_horizontal(
             delta,
         )
     if estimate.confidence_tier == "experimental" and camera_deg is not None:
-        agrees = delta is not None and abs(delta) <= 3.0
+        if iwr_horizontal_deg is not None:
+            if delta is not None and abs(delta) <= 3.0:
+                return HorizontalFusionDecision(
+                    camera_deg,
+                    "camera_assisted_experimental",
+                    0.45,
+                    "camera_assisted_experimental_agreement",
+                    iwr_horizontal_deg,
+                    camera_deg,
+                    delta,
+                )
+            return HorizontalFusionDecision(
+                iwr_horizontal_deg,
+                "radar",
+                iwr_confidence,
+                "camera_experimental_disagreement_fallback_iwr",
+                iwr_horizontal_deg,
+                camera_deg,
+                delta,
+            )
         return HorizontalFusionDecision(
             camera_deg,
             "camera_assisted_experimental",
-            0.45 if agrees else 0.30,
-            (
-                "camera_assisted_experimental_agreement"
-                if agrees
-                else "camera_assisted_experimental_disagreement"
-            ),
+            0.30,
+            "camera_experimental_no_iwr",
             iwr_horizontal_deg,
             camera_deg,
             delta,
