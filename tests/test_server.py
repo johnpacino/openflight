@@ -52,6 +52,16 @@ class TestCameraCaptureSettings:
                 applied.append((exposure_us, gain))
                 return {"exposure_us": exposure_us, "gain": gain}
 
+            @staticmethod
+            def vertical_crop_status():
+                return {
+                    "raw_crop_adjustable": True,
+                    "vertical_offset_px": -10,
+                    "vertical_offset_min_px": -150,
+                    "vertical_offset_max_px": 0,
+                    "vertical_offset_step_px": 10,
+                }
+
         config = {
             "enabled": True,
             "exposure_us": 500,
@@ -82,7 +92,56 @@ class TestCameraCaptureSettings:
         assert config["alignment_y_pct"] == 58.0
         assert emitted[-1][0] == "camera_capture_settings"
         assert emitted[-1][1]["max_exposure_us"] == 1666
-        assert emitted[-1][1]["raw_crop_adjustable"] is False
+        assert emitted[-1][1]["raw_crop_adjustable"] is True
+        assert emitted[-1][1]["vertical_offset_px"] == -10
+
+    def test_update_moves_real_sensor_crop(self, monkeypatch):
+        emitted = []
+        moved = []
+
+        class FakeRuntime:
+            settings = SimpleNamespace(fps=450.0)
+
+            @staticmethod
+            def status():
+                return {"running": True, "armed": True}
+
+            @staticmethod
+            def update_image_controls(**_kwargs):
+                return {"exposure_us": 500, "gain": 15.0}
+
+            @staticmethod
+            def update_vertical_crop(offset_px):
+                moved.append(offset_px)
+                return {"vertical_offset_px": offset_px}
+
+            @staticmethod
+            def vertical_crop_status():
+                return {
+                    "raw_crop_adjustable": True,
+                    "vertical_offset_px": -20,
+                    "vertical_offset_min_px": -150,
+                    "vertical_offset_max_px": 0,
+                    "vertical_offset_step_px": 10,
+                }
+
+        monkeypatch.setattr(server_module, "camera_capture_runtime", FakeRuntime())
+        monkeypatch.setattr(
+            server_module,
+            "camera_capture_config",
+            {"exposure_us": 500, "gain": 15.0},
+        )
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(
+            server_module.socketio,
+            "emit",
+            lambda event, payload: emitted.append((event, payload)),
+        )
+
+        server_module.handle_set_camera_capture_settings({"vertical_offset_px": -20})
+
+        assert moved == [-20]
+        assert emitted[-1][1]["vertical_offset_px"] == -20
 
     def test_update_rejects_out_of_range_alignment(self, monkeypatch):
         emitted = []

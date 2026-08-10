@@ -16,7 +16,7 @@
 +
 +/* Output-row offset for the experimental vertically sampled strip modes. */
 +static int strip_y_offset;
-+module_param(strip_y_offset, int, 0644);
++module_param(strip_y_offset, int, 0666);
 +MODULE_PARM_DESC(strip_y_offset,
 +		 "Vertical strip offset in output pixels; negative is up, positive is down");
  
@@ -225,6 +225,9 @@
 +{
 +	int max_offset;
 +
++	if (mode->width == 320 && mode->height == 200)
++		return clamp(strip_y_offset, -150, 0);
++
 +	if (!(mode->width == 640 &&
 +	      (mode->height == 200 || mode->height == 100)))
 +		return 0;
@@ -250,14 +253,19 @@
 +	u32 y_end;
 +	int ret;
 +
-+	if (!(mode->width == 640 &&
-+	      (mode->height == 200 || mode->height == 100)))
++	if (mode->width == 320 && mode->height == 200) {
++		/* Preserve InnoMaker's 516-row native window while moving it up. */
++		y_start = 300 + 2 * offset;
++		y_end = 815 + 2 * offset;
++	} else if (mode->width == 640 &&
++		   (mode->height == 200 || mode->height == 100)) {
++		sensor_y_start = mode->crop.top - OV9282_PIXEL_ARRAY_TOP + 2 * offset;
++		y_start = sensor_y_start;
++		/* The sensor window includes the eight dummy rows on each edge. */
++		y_end = y_start + mode->crop.height + 15;
++	} else {
 +		return 0;
-+
-+	sensor_y_start = mode->crop.top - OV9282_PIXEL_ARRAY_TOP + 2 * offset;
-+	y_start = sensor_y_start;
-+	/* The sensor window includes the eight dummy rows on each edge. */
-+	y_end = y_start + mode->crop.height + 15;
++	}
 +
 +	ret = ov9282_write_reg(ov9282, OV9282_REG_Y_ADDR_START, 2, y_start);
 +	if (ret)

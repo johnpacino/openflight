@@ -35,6 +35,10 @@ const CAMERA_PROFILES = [
 function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPanelProps) {
   const [alignmentX, setAlignmentX] = useState(settings.alignment_x_pct ?? 50);
   const [alignmentY, setAlignmentY] = useState(settings.alignment_y_pct ?? 50);
+  const verticalOffset = settings.vertical_offset_px ?? 0;
+  const verticalMin = settings.vertical_offset_min_px ?? verticalOffset;
+  const verticalMax = settings.vertical_offset_max_px ?? verticalOffset;
+  const verticalStep = settings.vertical_offset_step_px ?? 10;
 
   const isDirty =
     alignmentX !== (settings.alignment_x_pct ?? 50) ||
@@ -61,6 +65,33 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
       </div>
 
       <form onSubmit={apply}>
+        <section className="camera-settings__section">
+          <div className="camera-settings__section-title">
+            <span>Sensor view</span>
+            <small>real 320 × 200 crop</small>
+          </div>
+          <div className="camera-settings__view-controls">
+            <button
+              type="button"
+              disabled={!settings.raw_crop_adjustable || verticalOffset <= verticalMin}
+              onClick={() => onUpdate({ vertical_offset_px: verticalOffset - verticalStep })}
+            >
+              View up
+            </button>
+            <output>{`${verticalOffset > 0 ? '+' : ''}${verticalOffset} px`}</output>
+            <button
+              type="button"
+              disabled={!settings.raw_crop_adjustable || verticalOffset >= verticalMax}
+              onClick={() => onUpdate({ vertical_offset_px: verticalOffset + verticalStep })}
+            >
+              View down
+            </button>
+          </div>
+          <p className="camera-settings__note">
+            Moves the captured sensor window by 10 pixels and briefly rearms the rolling buffer.
+          </p>
+        </section>
+
         <section className="camera-settings__section">
           <div className="camera-settings__section-title">
             <span>Environment profile</span>
@@ -120,7 +151,7 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
             <output>{alignmentY.toFixed(0)}%</output>
           </label>
           <p className="camera-settings__note">
-            This moves the alignment guide. The raw high-speed crop remains fixed by the camera mode.
+            This moves only the alignment crosshair and does not move the sensor view.
           </p>
         </section>
 

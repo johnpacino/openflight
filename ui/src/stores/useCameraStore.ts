@@ -29,6 +29,10 @@ export interface CameraCaptureSettings {
   alignment_x_pct?: number;
   alignment_y_pct?: number;
   raw_crop_adjustable?: boolean;
+  vertical_offset_px?: number;
+  vertical_offset_min_px?: number;
+  vertical_offset_max_px?: number;
+  vertical_offset_step_px?: number;
 }
 
 interface CameraState {

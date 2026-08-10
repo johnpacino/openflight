@@ -28,6 +28,11 @@ const captureSettings: CameraCaptureSettings = {
   gain: 2,
   alignment_x_pct: 48,
   alignment_y_pct: 55,
+  raw_crop_adjustable: true,
+  vertical_offset_px: -20,
+  vertical_offset_min_px: -150,
+  vertical_offset_max_px: 0,
+  vertical_offset_step_px: 10,
 };
 
 describe('CameraFeed', () => {
@@ -52,6 +57,10 @@ describe('CameraFeed', () => {
     expect(html).toContain('Indoor bright');
     expect(html).toContain('Indoor dark');
     expect(html).toContain('Alignment guide');
+    expect(html).toContain('Sensor view');
+    expect(html).toContain('View up');
+    expect(html).toContain('View down');
+    expect(html).toContain('-20 px');
     expect(html).toContain('320 × 200');
     expect(html).toContain('600 fps');
     expect(html).toContain('Armed');

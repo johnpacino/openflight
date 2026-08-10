@@ -31,6 +31,15 @@ logger = logging.getLogger(__name__)
 CameraCaptureStream = Literal["raw", "main-y"]
 
 RASPBERRY_PI_DIST_PACKAGES = Path("/usr/lib/python3/dist-packages")
+OV9281_VERTICAL_OFFSET_PATH = Path("/sys/module/ov9282/parameters/strip_y_offset")
+
+
+def vertical_crop_limits(width: int, height: int) -> dict[str, int] | None:
+    """Return safe output-pixel crop limits for a supported sensor mode."""
+    if (width, height) == (320, 200):
+        # This mode starts at the sensor's lower edge, so it can only move up.
+        return {"min_px": -150, "max_px": 0, "step_px": 10}
+    return None
 
 
 @dataclass(frozen=True)
@@ -122,11 +131,13 @@ class CameraCaptureRuntime:
         settings: CameraCaptureSettings | None = None,
         button_factory: Callable | None = None,
         use_gpio_trigger: bool = True,
+        vertical_offset_path: str | Path = OV9281_VERTICAL_OFFSET_PATH,
     ):
         self.output_dir = Path(output_dir).expanduser()
         self.settings = settings or CameraCaptureSettings()
         self._button_factory = button_factory
         self._use_gpio_trigger = use_gpio_trigger
+        self._vertical_offset_path = Path(vertical_offset_path)
         self._camera = None
         self._button = None
         self._ring = TriggeredFrameBuffer(self.settings.pre_frames, self.settings.post_frames)
@@ -138,6 +149,7 @@ class CameraCaptureRuntime:
         self._condition = threading.Condition()
         self._trigger_epochs: queue.Queue[float] = queue.Queue()
         self._camera_control_lock = threading.Lock()
+        self._reconfigure_lock = threading.Lock()
 
     def start(self) -> None:
         """Start the camera and, optionally, the GPIO edge listener."""
@@ -267,6 +279,86 @@ class CameraCaptureRuntime:
             gain,
         )
         return {"exposure_us": exposure_us, "gain": gain}
+
+    def vertical_crop_status(self) -> dict:
+        """Describe the live sensor-window adjustment available to the UI."""
+        limits = vertical_crop_limits(self.settings.width, self.settings.height)
+        adjustable = limits is not None and self._vertical_offset_path.exists()
+        offset = 0
+        if adjustable:
+            try:
+                offset = int(self._vertical_offset_path.read_text(encoding="ascii").strip())
+            except (OSError, ValueError):
+                logger.warning("[CAMERA] Could not read vertical crop parameter", exc_info=True)
+                adjustable = False
+        payload = {
+            "raw_crop_adjustable": adjustable,
+            "vertical_offset_px": offset,
+        }
+        if limits is not None:
+            payload.update(
+                {
+                    "vertical_offset_min_px": limits["min_px"],
+                    "vertical_offset_max_px": limits["max_px"],
+                    "vertical_offset_step_px": limits["step_px"],
+                }
+            )
+        return payload
+
+    def update_vertical_crop(self, offset_px: int) -> dict:
+        """Move the hardware sensor window and restart the rolling capture."""
+        limits = vertical_crop_limits(self.settings.width, self.settings.height)
+        if limits is None:
+            raise ValueError(
+                f"vertical crop is unavailable for {self.settings.width}x{self.settings.height}"
+            )
+        offset_px = int(offset_px)
+        if not limits["min_px"] <= offset_px <= limits["max_px"]:
+            raise ValueError(
+                f"vertical crop must be between {limits['min_px']} and "
+                f"{limits['max_px']} pixels"
+            )
+        if offset_px % limits["step_px"]:
+            raise ValueError(f"vertical crop must use {limits['step_px']}-pixel steps")
+        if not self._running:
+            raise RuntimeError("camera capture is not running")
+
+        with self._reconfigure_lock:
+            status = self.vertical_crop_status()
+            if not status["raw_crop_adjustable"]:
+                raise RuntimeError(
+                    "OV9281 vertical crop is unavailable; install the OpenFlight driver "
+                    "and make strip_y_offset writable"
+                )
+            previous = int(status["vertical_offset_px"])
+            if offset_px == previous:
+                return status
+
+            self.stop()
+            try:
+                self._vertical_offset_path.write_text(f"{offset_px}\n", encoding="ascii")
+            except OSError as exc:
+                self._reset_capture_state()
+                self.start()
+                raise RuntimeError(f"could not update OV9281 vertical crop: {exc}") from exc
+
+            self._reset_capture_state()
+            try:
+                self.start()
+            except Exception:
+                logger.exception("[CAMERA] Crop restart failed; restoring %+d px", previous)
+                self._vertical_offset_path.write_text(f"{previous}\n", encoding="ascii")
+                self._reset_capture_state()
+                self.start()
+                raise
+            logger.info("[CAMERA] Sensor view moved to %+d output pixels", offset_px)
+            return self.vertical_crop_status()
+
+    def _reset_capture_state(self) -> None:
+        """Prepare one runtime instance to start again after a controlled stop."""
+        self._ring = TriggeredFrameBuffer(self.settings.pre_frames, self.settings.post_frames)
+        self._ready = queue.Queue()
+        self._trigger_epochs = queue.Queue()
 
     def status(self) -> dict:
         """Return lightweight state for the operator UI."""

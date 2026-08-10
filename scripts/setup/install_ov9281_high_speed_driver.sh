@@ -170,10 +170,39 @@ if [[ ! -f "$driver_source" ]]; then
     exit 1
 fi
 
+restore_stock_driver_source() {
+    local source_archive
+    local archive_member
+    local restored_source
+
+    source_archive="$(
+        find "$WORK_ROOT/package/usr/src" -maxdepth 1 -name 'linux-source-*.tar.*' -print -quit \
+            2>/dev/null || true
+    )"
+    if [[ -z "$source_archive" ]]; then
+        return 1
+    fi
+    archive_member="$(
+        tar -tf "$source_archive" |
+            awk '/\/drivers\/media\/i2c\/ov9282\.c$/ && !member { member=$0 } END { print member }'
+    )"
+    if [[ -z "$archive_member" ]]; then
+        return 1
+    fi
+
+    restored_source="${driver_source}.openflight-restore"
+    tar -xOf "$source_archive" "$archive_member" >"$restored_source"
+    mv "$restored_source" "$driver_source"
+}
+
 if patch --dry-run -d "$SOURCE_DIR" -p1 <"$PATCH_FILE" >/dev/null; then
     patch -d "$SOURCE_DIR" -p1 <"$PATCH_FILE"
 elif patch --dry-run -R -d "$SOURCE_DIR" -p1 <"$PATCH_FILE" >/dev/null; then
     echo "Driver patch is already applied in $SOURCE_DIR."
+elif restore_stock_driver_source && \
+    patch --dry-run -d "$SOURCE_DIR" -p1 <"$PATCH_FILE" >/dev/null; then
+    echo "Refreshing the cached OV9281/OV9282 source with the updated patch..."
+    patch -d "$SOURCE_DIR" -p1 <"$PATCH_FILE"
 else
     echo "The driver patch does not match this kernel source tree." >&2
     echo "Remove $SOURCE_DIR and retry, or update the patch for this kernel." >&2

@@ -11,6 +11,7 @@ from openflight.camera.capture_runtime import (
     CameraCaptureSettings,
     ensure_picamera2_import_path,
     parse_scaler_crop,
+    vertical_crop_limits,
 )
 from openflight.camera.triggered_buffer import (
     CameraFrame,
@@ -211,3 +212,47 @@ def test_live_image_controls_reject_invalid_values(tmp_path, exposure_us, gain, 
 
     with pytest.raises(ValueError, match=message):
         runtime.update_image_controls(exposure_us=exposure_us, gain=gain)
+
+
+def test_vertical_crop_limits_fix_320x200_to_safe_ten_pixel_steps():
+    assert vertical_crop_limits(320, 200) == {
+        "min_px": -150,
+        "max_px": 0,
+        "step_px": 10,
+    }
+    assert vertical_crop_limits(640, 400) is None
+
+
+def test_vertical_crop_update_restarts_camera_and_writes_driver_parameter(tmp_path, monkeypatch):
+    parameter = tmp_path / "strip_y_offset"
+    parameter.write_text("0\n", encoding="ascii")
+    runtime = CameraCaptureRuntime(
+        output_dir=tmp_path,
+        settings=CameraCaptureSettings(width=320, height=200),
+        vertical_offset_path=parameter,
+    )
+    calls = []
+    runtime._running = True
+    monkeypatch.setattr(runtime, "stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(runtime, "start", lambda: calls.append("start"))
+
+    result = runtime.update_vertical_crop(-10)
+
+    assert calls == ["stop", "start"]
+    assert parameter.read_text(encoding="ascii") == "-10\n"
+    assert result["vertical_offset_px"] == -10
+
+
+@pytest.mark.parametrize("offset", [-151, -5, 10])
+def test_vertical_crop_update_rejects_unsafe_or_unaligned_offsets(tmp_path, offset):
+    parameter = tmp_path / "strip_y_offset"
+    parameter.write_text("0\n", encoding="ascii")
+    runtime = CameraCaptureRuntime(
+        output_dir=tmp_path,
+        settings=CameraCaptureSettings(width=320, height=200),
+        vertical_offset_path=parameter,
+    )
+    runtime._running = True
+
+    with pytest.raises(ValueError, match="vertical crop"):
+        runtime.update_vertical_crop(offset)

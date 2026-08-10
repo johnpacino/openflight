@@ -363,6 +363,39 @@
   opacity: 0.5;
 }
 
+.camera-settings__view-controls {
+  display: grid;
+  grid-template-columns: 1fr 58px 1fr;
+  align-items: center;
+  gap: 7px;
+}
+
+.camera-settings__view-controls button {
+  min-height: 38px;
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.09);
+  color: var(--color-success);
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.camera-settings__view-controls button:disabled {
+  border-color: rgba(245, 240, 230, 0.08);
+  background: rgba(245, 240, 230, 0.025);
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.camera-settings__view-controls output {
+  color: var(--color-cream);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .camera-settings input[type='range'] {
   width: 100%;
   accent-color: var(--color-success);

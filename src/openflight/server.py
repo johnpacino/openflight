@@ -1554,9 +1554,9 @@ def _camera_capture_settings_payload() -> dict:
     payload["available"] = camera_capture_runtime is not None
     payload.setdefault("alignment_x_pct", 50.0)
     payload.setdefault("alignment_y_pct", 50.0)
-    payload["raw_crop_adjustable"] = False
     if camera_capture_runtime is not None:
         payload.update(camera_capture_runtime.status())
+        payload.update(camera_capture_runtime.vertical_crop_status())
         frame_period_us = round(1_000_000 / camera_capture_runtime.settings.fps)
         payload["max_exposure_us"] = frame_period_us - 1
     return payload
@@ -1598,6 +1598,12 @@ def handle_set_camera_capture_settings(data):
         if not 0.0 <= alignment_y_pct <= 100.0:
             raise ValueError("vertical alignment must be between 0 and 100 percent")
 
+        crop_update = {}
+        if "vertical_offset_px" in data:
+            crop_update = camera_capture_runtime.update_vertical_crop(
+                int(data["vertical_offset_px"])
+            )
+
         applied = camera_capture_runtime.update_image_controls(
             exposure_us=exposure_us,
             gain=gain,
@@ -1605,6 +1611,7 @@ def handle_set_camera_capture_settings(data):
         camera_capture_config.update(
             {
                 **applied,
+                **crop_update,
                 "alignment_x_pct": alignment_x_pct,
                 "alignment_y_pct": alignment_y_pct,
             }

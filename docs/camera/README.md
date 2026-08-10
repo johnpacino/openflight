@@ -43,7 +43,7 @@ contain:
 
 TrackMan-aligned 7-iron and 9-iron captures showed that a `200`-row view was
 needed to retain both the final clubhead approach and early ball flight. The
-tested high-speed `320x200` mode uses the sensor's centered `(480,300)` crop.
+tested high-speed `320x200` mode defaults to the sensor's `(480,300)` crop.
 A `150`-row crop was too tight for robust combined clubhead and ball-path
 tracking. A raised `200`-row crop remains a future experiment, not part of the
 checked-in driver.
@@ -128,7 +128,9 @@ Measured modes on the test Pi 5:
 | `320x200` | Dense impact and early-flight capture | about `576 FPS` |
 | `640x100` | Timing experiment only; vertically fragile | not recommended |
 
-The production experiment should start with `320x200` requested at `600 FPS`.
+The production experiment should use the fixed `320x200` mode requested at
+`450 FPS`. Higher requests require exposures too short for reliable golf
+capture in the tested lighting environments.
 The delivered cadence is expected to be lower than the request and is recorded
 in each capture's `metadata.json`.
 
@@ -155,8 +157,14 @@ preview is rotated for the tested inverted camera mount.
 When `--camera-capture` is enabled, the Camera tab keeps the preview visible
 beside an operator-control column. Exposure and analogue gain apply to the
 running Picamera2 pipeline without stopping the rolling buffer. The horizontal
-and vertical alignment controls move the preview guide only; they do not move
-the raw sensor crop.
+and vertical alignment controls move the preview guide only.
+
+With the OpenFlight driver and the fixed `320x200` capture mode, **View up** and
+**View down** move the real sensor window in safe 10-pixel steps. Each move
+briefly restarts the camera and refills the pre-trigger ring. Wait for the tab
+to report **Armed** before hitting. The tested sensor window starts at its
+lowest position, so it can move up by as much as 150 output pixels and then
+back down toward zero.
 
 Resolution, requested frame rate, and pre/post-trigger timing are shown as
 read-only capture provenance. Changing those values requires a controlled
@@ -195,7 +203,7 @@ uv run --no-project --python /usr/bin/python3 \
   python scripts/hardware-test/test_camera_clap_buffer.py \
   --width 320 \
   --height 200 \
-  --fps 600 \
+  --fps 450 \
   --pre-ms 150 \
   --post-ms 50 \
   --exposure-us 500 \
@@ -218,11 +226,11 @@ scripts/start-kiosk.sh \
   --camera-capture \
   --camera-capture-width 320 \
   --camera-capture-height 200 \
-  --camera-capture-fps 600 \
+  --camera-capture-fps 450 \
   --camera-capture-pre-ms 150 \
   --camera-capture-post-ms 50 \
   --camera-capture-exposure-us 500 \
-  --camera-capture-gain 2 \
+  --camera-capture-gain 15 \
   --camera-capture-rotate-180 \
   --session-location home
 ```
