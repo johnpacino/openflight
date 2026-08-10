@@ -230,7 +230,7 @@
 }
 
 .camera-settings::-webkit-scrollbar {
-  width: 16px;
+  width: 40px;
 }
 
 .camera-settings::-webkit-scrollbar-track {
@@ -466,7 +466,7 @@
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 700px) {
   .camera-feed__workspace {
     grid-template-columns: 1fr;
     overflow-y: auto;
