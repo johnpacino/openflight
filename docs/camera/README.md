@@ -1,0 +1,278 @@
+# OV9281 High-Speed Camera
+
+OpenFlight can capture a short, synchronized camera movie around impact. The
+camera does not replace the OPS243 or IWR6843: OPS anchors speed and trigger
+timing, the IWR6843 measures radar angles, and the camera provides a visual
+record of the clubhead and early ball flight.
+
+Camera capture is experimental. Camera-assisted horizontal launch, club path,
+and attack angle must remain quality-gated until they are validated against a
+launch-monitor source of truth.
+
+## Supported Hardware
+
+The tested camera is an InnoMaker OV9281 monochrome global-shutter module on a
+Raspberry Pi 5. Other OV9281 modules may expose different register programming
+or lens geometry even when they use the same sensor.
+
+Required hardware:
+
+- Raspberry Pi 5 running Raspberry Pi OS.
+- InnoMaker OV9281 monochrome global-shutter camera.
+- Correct Pi 5 camera ribbon cable for the selected CAM/DISP connector.
+- Rigid, focusable camera mount.
+- Shared sound-trigger wiring on BCM17 when using OPS and IWR6843 capture.
+
+Power the Pi off before connecting or disconnecting the ribbon cable. Confirm
+that the cable contacts face the correct direction for both the Pi connector
+and camera board before applying power.
+
+## Mounting
+
+Mount the camera directly above the IWR6843 receive antennas and point it down
+the target line. The tested antenna/camera assembly places the camera center
+about `8.25 in` (`0.20955 m`) above the hitting surface.
+
+The useful image does not need to contain the golfer or the full shaft. It must
+contain:
+
+- The stationary ball and impact point.
+- The clubhead for the final frames before impact.
+- The clubhead through impact.
+- The first several milliseconds of ball flight.
+
+TrackMan-aligned 7-iron and 9-iron captures showed that the useful native
+sensor envelope occupied approximately rows `232-421`. The high-speed
+`320x200` mode therefore uses a vertically raised crop near `(480,224)` rather
+than the sensor's geometric center. A `150`-row crop was too tight for robust
+combined clubhead and ball-path tracking.
+
+This result has not yet been validated for wedges or driver. Use the alignment
+preview before each new physical mounting configuration.
+
+## Raspberry Pi Packages
+
+Install the Raspberry Pi camera stack and preview dependency:
+
+```bash
+sudo apt update
+sudo apt install -y rpicam-apps python3-picamera2 ffmpeg
+```
+
+Reboot after enabling or changing camera hardware:
+
+```bash
+sudo reboot
+```
+
+Verify that the camera is detected:
+
+```bash
+rpicam-hello --list-cameras
+```
+
+The standard Raspberry Pi driver should list the stock OV9281 modes. The
+OpenFlight high-speed driver additionally lists `640x200`, `640x100`, and
+`320x200` raw modes.
+
+## High-Speed Driver
+
+The Raspberry Pi kernel's stock OV9281/OV9282 driver does not expose the
+cropped high-speed modes used by OpenFlight. The repository includes a narrow
+kernel patch and installer under:
+
+```text
+drivers/ov9281/
+scripts/setup/install_ov9281_high_speed_driver.sh
+```
+
+Install the driver on the Pi with:
+
+```bash
+cd ~/openflight
+scripts/setup/install_ov9281_high_speed_driver.sh
+sudo reboot
+```
+
+The installer builds against the exact running Raspberry Pi kernel, backs up
+the installed `ov9282` module, installs the patched module, and runs `depmod`.
+Kernel upgrades require rebuilding the module for the new kernel before the
+custom modes are available again.
+
+Do not unload or replace the active camera module while the camera pipeline is
+running. Stop OpenFlight and reboot after installing or restoring a driver.
+
+## Capture Modes
+
+Measured modes on the test Pi 5:
+
+| Mode | Purpose | Observed cadence |
+|---|---|---:|
+| `640x400` | Full-field setup and baseline capture | about `288 FPS` |
+| `640x200` | Wide impact strip | about `536 FPS` |
+| `320x200` | Dense impact and early-flight capture | about `576 FPS` |
+| `640x100` | Timing experiment only; vertically fragile | not recommended |
+
+The production experiment should start with `320x200` requested at `600 FPS`.
+The delivered cadence is expected to be lower than the request and is recorded
+in each capture's `metadata.json`.
+
+## Alignment Preview
+
+Stop OpenFlight before opening the camera preview:
+
+```bash
+cd ~/openflight
+CAMERA_WIDTH=320 \
+CAMERA_HEIGHT=200 \
+CAMERA_FPS=120 \
+CAMERA_EXPOSURE_US=500 \
+CAMERA_GAIN=2 \
+scripts/hardware-test/preview_camera_alignment.sh
+```
+
+Use the preview to place the ball near the horizontal center and ensure the
+clubhead and expected launch corridor remain within the vertical window. The
+preview is rotated for the tested inverted camera mount.
+
+## Exposure Calibration
+
+Lighting varies too much for one universal exposure. Calibrate in the actual
+hitting environment:
+
+```bash
+cd ~/openflight
+uv run --no-project --python /usr/bin/python3 \
+  python scripts/hardware-test/calibrate_camera_exposure.py \
+  --rotate-180 \
+  --fps 300 \
+  --width 640 \
+  --height 400 \
+  --exposures-us 250,350,500,700,900,1100 \
+  --gains 1,2,4 \
+  --settle-ms 150
+```
+
+Outdoor testing favored approximately `500 us / gain 2`. Indoor testing may
+require more analogue gain, but excessive gain reduces clubhead edge quality.
+Prefer adding light to the hitting area over raising gain indefinitely.
+
+## Standalone Trigger Test
+
+Use the clap-buffer test before starting OpenFlight:
+
+```bash
+cd ~/openflight
+uv run --no-project --python /usr/bin/python3 \
+  python scripts/hardware-test/test_camera_clap_buffer.py \
+  --width 320 \
+  --height 200 \
+  --fps 600 \
+  --pre-ms 150 \
+  --post-ms 50 \
+  --exposure-us 500 \
+  --gain 2 \
+  --rotate-180 \
+  --captures 5
+```
+
+Check that every capture reports the expected pre/post frame counts, plausible
+delivered FPS, and `gaps=0`.
+
+## Running OpenFlight
+
+Enable synchronized rolling capture with `--camera-capture`:
+
+```bash
+scripts/start-kiosk.sh \
+  --debug \
+  --iwr6843 \
+  --camera-capture \
+  --camera-capture-width 320 \
+  --camera-capture-height 200 \
+  --camera-capture-fps 600 \
+  --camera-capture-pre-ms 150 \
+  --camera-capture-post-ms 50 \
+  --camera-capture-exposure-us 500 \
+  --camera-capture-gain 2 \
+  --camera-capture-rotate-180 \
+  --session-location home
+```
+
+`--camera-capture` is separate from the legacy camera tracker. When capture is
+enabled, OpenFlight keeps a rolling pre-trigger frame buffer and freezes it
+from the same sound-trigger event used by the radar pipeline.
+
+## Saved Artifacts
+
+Camera captures are written under:
+
+```text
+~/openflight_sessions/<location>/camera/camera_<timestamp>_<sequence>/
+```
+
+Each capture contains:
+
+- `frames.npz`: grayscale frames and per-frame timing/control metadata.
+- `metadata.json`: delivered cadence, frame gaps, brightness, timing, and settings.
+- `first.pgm`: first buffered frame.
+- `trigger.pgm`: frame nearest the hardware trigger.
+- `last.pgm`: final post-trigger frame.
+
+The session JSONL contains a `camera_capture` entry linking the shot number to
+the camera directory. Keep the JSONL, OPS capture, IWR6843 dump, and camera
+directory together when copying a session for offline analysis.
+
+## Troubleshooting
+
+### No camera detected
+
+1. Stop OpenFlight.
+2. Power the Pi off.
+3. Reseat both ends of the ribbon cable.
+4. Boot and run `rpicam-hello --list-cameras`.
+
+### `picamera2` import fails under `uv`
+
+Raspberry Pi OS installs Picamera2 for the system Python. Run hardware scripts
+with:
+
+```bash
+uv run --no-project --python /usr/bin/python3 python <script>
+```
+
+### Requested high-speed mode is missing
+
+The custom module was not built for the running kernel, or a kernel update
+restored the stock driver. Re-run the high-speed driver installer and reboot.
+
+### Frames are dark
+
+Use the exposure calibration script in the real hitting environment. Verify
+that the lens cap is removed and that light reaches the clubhead path, not just
+the stationary ball.
+
+### Highlights are solid white
+
+Reduce exposure first, then gain. Clipped ball and club pixels cannot provide
+reliable centroids even when the image looks bright enough to a person.
+
+### Frame gaps increase
+
+Stop preview applications, verify that only one process owns the camera, and
+check the Pi for thermal throttling. Capture to RAM first; persistence happens
+after the frame window freezes.
+
+### Camera works once and then remains busy
+
+Stop OpenFlight cleanly and look for stale `rpicam-*`, `ffplay`, or Python
+processes. Reboot rather than hot-unloading the camera kernel module.
+
+## Current Limitations
+
+- The `320x200` crop has only been evaluated with 7-iron and 9-iron TrackMan shots.
+- Camera pose is not yet a complete metric calibration.
+- Camera-assisted club path and attack angle remain experimental.
+- A kernel update requires rebuilding the custom module.
+- The tested down-the-line view cannot independently measure downrange speed;
+  OPS remains necessary for converting image-plane motion into delivery angles.
