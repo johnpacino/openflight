@@ -101,46 +101,14 @@ def _save_pgm(path: Path, image: np.ndarray) -> None:
         handle.write(image.tobytes())
 
 
-def _crop_yuv420_to_size(frame: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Remove Picamera2 stride padding before OpenCV decodes YUV420."""
-    expected_rows = height * 3 // 2
-    if (
-        frame.ndim != 2
-        or frame.shape[0] < expected_rows
-        or frame.shape[1] < width
-        or width % 2
-        or height % 2
-        or frame.shape[1] % 2
-    ):
+def _crop_preview_to_size(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Remove decoded Picamera2 stride padding from a preview image."""
+    if frame.ndim != 3 or frame.shape[0] < height or frame.shape[1] < width:
         raise ValueError(
-            f"unexpected YUV420 preview shape {frame.shape}; "
-            f"need at least ({expected_rows}, {width})"
+            f"unexpected decoded preview shape {frame.shape}; "
+            f"need at least ({height}, {width}, channels)"
         )
-
-    # Picamera2 exposes the padded I420 buffer as one 2D array. The Y plane
-    # uses the full stride, while U and V each use half that stride; slicing
-    # every displayed row equally therefore interleaves chroma padding.
-    stride = frame.shape[1]
-    chroma_stride = stride // 2
-    chroma_height = height // 2
-    flat = np.ascontiguousarray(frame).reshape(-1)
-    y_size = stride * height
-    chroma_size = chroma_stride * chroma_height
-    required_size = y_size + 2 * chroma_size
-    if flat.size < required_size:
-        raise ValueError(
-            f"unexpected YUV420 preview size {flat.size}; need at least {required_size}"
-        )
-
-    y_plane = flat[:y_size].reshape(height, stride)[:, :width]
-    u_plane = flat[y_size : y_size + chroma_size].reshape(chroma_height, chroma_stride)[
-        :, : width // 2
-    ]
-    v_plane = flat[y_size + chroma_size : required_size].reshape(chroma_height, chroma_stride)[
-        :, : width // 2
-    ]
-    packed = np.concatenate((y_plane.ravel(), u_plane.ravel(), v_plane.ravel()))
-    return packed.reshape(expected_rows, width)
+    return np.ascontiguousarray(frame[:height, :width])
 
 
 def ensure_picamera2_import_path() -> bool:
@@ -267,12 +235,14 @@ class CameraCaptureRuntime:
 
             with self._camera_control_lock:
                 yuv = self._camera.capture_array("main")
-            yuv = _crop_yuv420_to_size(
-                yuv,
+            # Decode the complete stride-padded I420 buffer first. Cropping
+            # its planes before conversion corrupts U/V row boundaries.
+            bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+            bgr = _crop_preview_to_size(
+                bgr,
                 self.settings.width,
                 self.settings.height,
             )
-            bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
             if self.settings.rotate_180:
                 # Inverted mount: the natural (non-mirrored) operator view is
                 # a vertical flip -- 180 rotation plus a horizontal mirror.

@@ -9,7 +9,7 @@ from openflight.camera import capture_runtime
 from openflight.camera.capture_runtime import (
     CameraCaptureRuntime,
     CameraCaptureSettings,
-    _crop_yuv420_to_size,
+    _crop_preview_to_size,
     ensure_picamera2_import_path,
     parse_scaler_crop,
 )
@@ -124,28 +124,17 @@ def test_unpack_yuv420_y_plane_rejects_short_frame():
         unpack_yuv420_y_plane(np.zeros((1, 2), dtype=np.uint8), 3, 2, False)
 
 
-def test_preview_crop_removes_yuv_stride_padding():
+def test_preview_crop_removes_decoded_stride_padding():
     width = 4
     height = 4
     stride = 8
-    y_plane = np.full((height, stride), 255, dtype=np.uint8)
-    u_plane = np.full((height // 2, stride // 2), 255, dtype=np.uint8)
-    v_plane = np.full((height // 2, stride // 2), 255, dtype=np.uint8)
-    y_plane[:, :width] = np.arange(1, 17, dtype=np.uint8).reshape(height, width)
-    u_plane[:, : width // 2] = np.arange(21, 25, dtype=np.uint8).reshape(height // 2, width // 2)
-    v_plane[:, : width // 2] = np.arange(31, 35, dtype=np.uint8).reshape(height // 2, width // 2)
-    padded = np.concatenate((y_plane.ravel(), u_plane.ravel(), v_plane.ravel())).reshape(6, stride)
+    padded = np.full((height, stride, 3), 255, dtype=np.uint8)
+    expected = np.arange(height * width * 3, dtype=np.uint8).reshape(height, width, 3)
+    padded[:, :width] = expected
 
-    cropped = _crop_yuv420_to_size(padded, width=width, height=height)
-    expected = np.concatenate(
-        (
-            y_plane[:, :width].ravel(),
-            u_plane[:, : width // 2].ravel(),
-            v_plane[:, : width // 2].ravel(),
-        )
-    ).reshape(height * 3 // 2, width)
+    cropped = _crop_preview_to_size(padded, width=width, height=height)
 
-    assert cropped.shape == (height * 3 // 2, width)
+    assert cropped.shape == (height, width, 3)
     assert np.array_equal(cropped, expected)
 
 
