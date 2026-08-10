@@ -6,7 +6,12 @@ import numpy as np
 import pytest
 
 from openflight.camera import capture_runtime
-from openflight.camera.capture_runtime import ensure_picamera2_import_path, parse_scaler_crop
+from openflight.camera.capture_runtime import (
+    CameraCaptureRuntime,
+    CameraCaptureSettings,
+    ensure_picamera2_import_path,
+    parse_scaler_crop,
+)
 from openflight.camera.triggered_buffer import (
     CameraFrame,
     TriggeredFrameBuffer,
@@ -147,3 +152,47 @@ def test_timing_summary_reports_fps_and_gap():
     frames[-1] = make_frame(6)
     summary = timing_summary(frames)
     assert summary["gap_count"] == 1
+
+
+def test_live_image_controls_update_camera_without_restarting(tmp_path):
+    class FakeCamera:
+        def __init__(self):
+            self.controls = []
+
+        def set_controls(self, controls):
+            self.controls.append(controls)
+
+    runtime = CameraCaptureRuntime(
+        output_dir=tmp_path,
+        settings=CameraCaptureSettings(fps=300.0, exposure_us=500, gain=2.0),
+    )
+    camera = FakeCamera()
+    runtime._camera = camera
+    runtime._running = True
+
+    result = runtime.update_image_controls(exposure_us=750, gain=3.5)
+
+    assert camera.controls == [{"ExposureTime": 750, "AnalogueGain": 3.5}]
+    assert result == {"exposure_us": 750, "gain": 3.5}
+    assert runtime.settings.exposure_us == 750
+    assert runtime.settings.gain == 3.5
+
+
+@pytest.mark.parametrize(
+    ("exposure_us", "gain", "message"),
+    [
+        (0, 2.0, "exposure"),
+        (1000, 0.0, "gain"),
+        (4000, 2.0, "frame period"),
+    ],
+)
+def test_live_image_controls_reject_invalid_values(tmp_path, exposure_us, gain, message):
+    runtime = CameraCaptureRuntime(
+        output_dir=tmp_path,
+        settings=CameraCaptureSettings(fps=300.0),
+    )
+    runtime._camera = object()
+    runtime._running = True
+
+    with pytest.raises(ValueError, match=message):
+        runtime.update_image_controls(exposure_us=exposure_us, gain=gain)

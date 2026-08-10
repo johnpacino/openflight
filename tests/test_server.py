@@ -28,6 +28,91 @@ from openflight.server import (
 from openflight.swing_speed import SwingSpeedEvent
 
 
+class TestCameraCaptureSettings:
+    """Tests for live-safe Camera tab controls."""
+
+    def test_update_applies_controls_and_alignment(self, monkeypatch):
+        emitted = []
+        applied = []
+
+        class FakeRuntime:
+            settings = SimpleNamespace(fps=600.0)
+
+            @staticmethod
+            def status():
+                return {
+                    "running": True,
+                    "armed": True,
+                    "buffered_frames": 90,
+                    "required_pre_frames": 90,
+                }
+
+            @staticmethod
+            def update_image_controls(*, exposure_us, gain):
+                applied.append((exposure_us, gain))
+                return {"exposure_us": exposure_us, "gain": gain}
+
+        config = {
+            "enabled": True,
+            "exposure_us": 500,
+            "gain": 2.0,
+            "width": 320,
+            "height": 200,
+        }
+        monkeypatch.setattr(server_module, "camera_capture_runtime", FakeRuntime())
+        monkeypatch.setattr(server_module, "camera_capture_config", config)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(
+            server_module.socketio,
+            "emit",
+            lambda event, payload: emitted.append((event, payload)),
+        )
+
+        server_module.handle_set_camera_capture_settings(
+            {
+                "exposure_us": 650,
+                "gain": 3.0,
+                "alignment_x_pct": 47,
+                "alignment_y_pct": 58,
+            }
+        )
+
+        assert applied == [(650, 3.0)]
+        assert config["alignment_x_pct"] == 47.0
+        assert config["alignment_y_pct"] == 58.0
+        assert emitted[-1][0] == "camera_capture_settings"
+        assert emitted[-1][1]["max_exposure_us"] == 1666
+        assert emitted[-1][1]["raw_crop_adjustable"] is False
+
+    def test_update_rejects_out_of_range_alignment(self, monkeypatch):
+        emitted = []
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(fps=300.0),
+            status=lambda: {"running": True, "armed": True},
+            update_image_controls=lambda **_kwargs: pytest.fail("controls should not update"),
+        )
+        monkeypatch.setattr(server_module, "camera_capture_runtime", runtime)
+        monkeypatch.setattr(
+            server_module,
+            "camera_capture_config",
+            {"exposure_us": 500, "gain": 2.0},
+        )
+        monkeypatch.setattr(
+            server_module.socketio,
+            "emit",
+            lambda event, payload: emitted.append((event, payload)),
+        )
+
+        server_module.handle_set_camera_capture_settings({"alignment_x_pct": 101})
+
+        assert emitted == [
+            (
+                "camera_capture_settings_error",
+                {"error": "horizontal alignment must be between 0 and 100 percent"},
+            )
+        ]
+
+
 class TestShutdownCleanup:
     """Tests for UI/server shutdown hardware cleanup."""
 

@@ -1144,6 +1144,8 @@ def init_camera_capture(
             "scaler_crop": settings.scaler_crop,
             "mount_height_m": mount_height_m,
             "horizontal_offset_deg": horizontal_offset_deg,
+            "alignment_x_pct": 50.0,
+            "alignment_y_pct": 50.0,
         }
         logger.info("[SERVER] Camera capture initialized: %s", camera_capture_config)
         return True
@@ -1544,6 +1546,79 @@ def camera_capture_preview():
     if jpeg is None:
         return "Camera not running", 503
     return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+def _camera_capture_settings_payload() -> dict:
+    """Return camera controls and capture state for the Camera tab."""
+    payload = dict(camera_capture_config)
+    payload["available"] = camera_capture_runtime is not None
+    payload.setdefault("alignment_x_pct", 50.0)
+    payload.setdefault("alignment_y_pct", 50.0)
+    payload["raw_crop_adjustable"] = False
+    if camera_capture_runtime is not None:
+        payload.update(camera_capture_runtime.status())
+        frame_period_us = round(1_000_000 / camera_capture_runtime.settings.fps)
+        payload["max_exposure_us"] = frame_period_us - 1
+    return payload
+
+
+@socketio.on("get_camera_capture_settings")
+def handle_get_camera_capture_settings():
+    """Send current high-speed capture settings to the requesting UI."""
+    socketio.emit("camera_capture_settings", _camera_capture_settings_payload())
+
+
+@socketio.on("set_camera_capture_settings")
+def handle_set_camera_capture_settings(data):
+    """Apply live-safe camera controls and alignment-guide position."""
+    if camera_capture_runtime is None:
+        socketio.emit(
+            "camera_capture_settings_error",
+            {"error": "High-speed camera capture is not running"},
+        )
+        return
+    if not isinstance(data, dict):
+        socketio.emit(
+            "camera_capture_settings_error",
+            {"error": "Camera settings must be an object"},
+        )
+        return
+
+    try:
+        exposure_us = int(data.get("exposure_us", camera_capture_config["exposure_us"]))
+        gain = float(data.get("gain", camera_capture_config["gain"]))
+        alignment_x_pct = float(
+            data.get("alignment_x_pct", camera_capture_config.get("alignment_x_pct", 50.0))
+        )
+        alignment_y_pct = float(
+            data.get("alignment_y_pct", camera_capture_config.get("alignment_y_pct", 50.0))
+        )
+        if not 0.0 <= alignment_x_pct <= 100.0:
+            raise ValueError("horizontal alignment must be between 0 and 100 percent")
+        if not 0.0 <= alignment_y_pct <= 100.0:
+            raise ValueError("vertical alignment must be between 0 and 100 percent")
+
+        applied = camera_capture_runtime.update_image_controls(
+            exposure_us=exposure_us,
+            gain=gain,
+        )
+        camera_capture_config.update(
+            {
+                **applied,
+                "alignment_x_pct": alignment_x_pct,
+                "alignment_y_pct": alignment_y_pct,
+            }
+        )
+        session_log = get_session_logger()
+        if session_log:
+            session_log.log_config_change(
+                {"camera_capture": dict(camera_capture_config)},
+                source="camera_ui",
+            )
+        socketio.emit("camera_capture_settings", _camera_capture_settings_payload())
+    except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        logger.warning("[SERVER] Camera settings update rejected: %s", error)
+        socketio.emit("camera_capture_settings_error", {"error": str(error)})
 
 
 @socketio.on("toggle_camera")

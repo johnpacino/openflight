@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import { useSystemStore } from '../stores/useSystemStore';
 import { useShotStore } from '../stores/useShotStore';
-import { useCameraStore, type CameraStatus } from '../stores/useCameraStore';
+import { useCameraStore, type CameraCaptureSettings, type CameraStatus } from '../stores/useCameraStore';
 import { useDebugStore } from '../stores/useDebugStore';
 import {
   isSwingSpeedShot,
@@ -48,6 +48,7 @@ class SocketService {
       this.socket?.emit('get_session');
       this.socket?.emit('get_trigger_status');
       this.socket?.emit('get_radar_config');
+      this.socket?.emit('get_camera_capture_settings');
     });
 
     this.socket.on('disconnect', () => {
@@ -170,6 +171,14 @@ class SocketService {
       useCameraStore.getState().setCameraStatus(data);
     });
 
+    this.socket.on('camera_capture_settings', (data: CameraCaptureSettings) => {
+      useCameraStore.getState().setCaptureSettings(data);
+    });
+
+    this.socket.on('camera_capture_settings_error', (data: { error: string }) => {
+      useCameraStore.getState().setCaptureSettingsError(data.error);
+    });
+
     this.socket.on('ball_detection', (data: { detected: boolean; confidence: number }) => {
       useCameraStore.getState().setCameraStatus({
         ball_detected: data.detected,
@@ -247,6 +256,10 @@ class SocketService {
 
   toggleCameraStream() {
     this.socket?.emit('toggle_camera_stream');
+  }
+
+  setCameraCaptureSettings(settings: Partial<CameraCaptureSettings>) {
+    this.socket?.emit('set_camera_capture_settings', settings);
   }
 }
 

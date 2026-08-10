@@ -23,6 +23,21 @@
   border-bottom: 1px solid rgba(245, 240, 230, 0.06);
 }
 
+.camera-feed__header > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.camera-feed__eyebrow,
+.camera-settings__eyebrow {
+  color: var(--color-success);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
 .camera-feed__title {
   margin: 0;
   font-size: 1rem;
@@ -78,6 +93,34 @@
   padding: var(--space-md);
 }
 
+.camera-feed__workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: var(--space-md);
+  min-height: 0;
+  flex: 1;
+  padding: var(--space-md);
+  background: radial-gradient(circle at 22% 18%, rgba(65, 120, 98, 0.13), transparent 34%), var(--color-bg-card);
+}
+
+.camera-feed__preview-column {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-feed__message--preview {
+  width: 100%;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(245, 240, 230, 0.14);
+  border-radius: var(--radius-md);
+}
+
 .camera-feed__message {
   text-align: center;
   color: var(--text-secondary);
@@ -127,11 +170,15 @@
 .camera-feed__stream {
   position: relative;
   width: 100%;
-  max-width: 640px;
+  max-width: 960px;
   border-radius: var(--radius-md);
   overflow: hidden;
   background: #000;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.camera-feed--capture .camera-feed__stream {
+  max-width: none;
 }
 
 .camera-feed__video {
@@ -162,6 +209,197 @@
 
 .camera-feed__status--detected {
   color: var(--color-success);
+}
+
+.camera-settings {
+  min-width: 0;
+  overflow-y: auto;
+  border: 1px solid rgba(245, 240, 230, 0.08);
+  border-radius: var(--radius-md);
+  background: rgba(12, 17, 16, 0.78);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+}
+
+.camera-settings__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border-bottom: 1px solid rgba(245, 240, 230, 0.08);
+}
+
+.camera-settings__heading h3 {
+  margin: 3px 0 0;
+  color: var(--color-cream);
+  font-size: 1rem;
+}
+
+.camera-settings__armed {
+  padding: 5px 9px;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: var(--radius-xl);
+  color: var(--color-warning);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.camera-settings__armed--ready {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.08);
+  color: var(--color-success);
+}
+
+.camera-settings form {
+  display: flex;
+  flex-direction: column;
+}
+
+.camera-settings__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border-bottom: 1px solid rgba(245, 240, 230, 0.07);
+}
+
+.camera-settings__section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: var(--color-cream);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.camera-settings__section-title small {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: none;
+}
+
+.camera-settings__field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px var(--space-sm);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.camera-settings__field > input[type='range'] {
+  grid-column: 1 / -1;
+}
+
+.camera-settings__value {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.camera-settings__value input {
+  width: 72px;
+  padding: 5px 7px;
+  border: 1px solid rgba(245, 240, 230, 0.14);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--color-cream);
+  font: inherit;
+  text-align: right;
+}
+
+.camera-settings__value input:focus {
+  border-color: rgba(74, 222, 128, 0.55);
+}
+
+.camera-settings__value em {
+  min-width: 14px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-style: normal;
+}
+
+.camera-settings input[type='range'] {
+  width: 100%;
+  accent-color: var(--color-success);
+}
+
+.camera-settings__compact-field {
+  display: grid;
+  grid-template-columns: 70px 1fr 34px;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.camera-settings__compact-field output {
+  color: var(--color-cream);
+  text-align: right;
+}
+
+.camera-settings__note {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  line-height: 1.45;
+}
+
+.camera-settings__summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-xs);
+  margin: 0;
+}
+
+.camera-settings__summary div {
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(245, 240, 230, 0.035);
+}
+
+.camera-settings__summary dt {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  text-transform: uppercase;
+}
+
+.camera-settings__summary dd {
+  margin: 3px 0 0;
+  color: var(--color-cream);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.camera-settings__error {
+  margin: var(--space-sm) var(--space-md) 0;
+  color: var(--color-danger);
+  font-size: 0.68rem;
+}
+
+.camera-settings__apply {
+  min-height: 40px;
+  margin: var(--space-md);
+  border: 1px solid rgba(74, 222, 128, 0.42);
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--color-success);
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.camera-settings__apply:disabled {
+  border-color: rgba(245, 240, 230, 0.09);
+  background: rgba(245, 240, 230, 0.03);
+  color: var(--text-muted);
+  cursor: default;
 }
 
 /* Small screens */
@@ -197,6 +435,17 @@
   }
 }
 
+@media (max-width: 900px) {
+  .camera-feed__workspace {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .camera-settings {
+    overflow: visible;
+  }
+}
+
 .camera-feed__timestamp {
   font-size: 0.8rem;
   color: var(--text-secondary, #9aa4b2);
@@ -219,8 +468,8 @@
 
 .camera-feed__center-cross {
   position: absolute;
-  left: 50%;
-  top: 50%;
+  left: var(--camera-crosshair-x, 50%);
+  top: var(--camera-crosshair-y, 50%);
   width: 28px;
   height: 28px;
   transform: translate(-50%, -50%);

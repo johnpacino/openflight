@@ -92,7 +92,13 @@ function AppContent() {
       shotVersion: state.shotVersion,
     }))
   );
-  const cameraStatus = useCameraStore((state) => state.cameraStatus);
+  const { cameraStatus, captureSettings, captureSettingsError } = useCameraStore(
+    useShallow((state) => ({
+      cameraStatus: state.cameraStatus,
+      captureSettings: state.captureSettings,
+      captureSettingsError: state.captureSettingsError,
+    }))
+  );
   const selectedPlayer = usePlayerStore((state) => state.selectedPlayer);
   const {
     debugReadings,
@@ -370,8 +376,11 @@ function AppContent() {
         {currentView === 'camera' && (
           <CameraFeed
             cameraStatus={cameraStatus}
+            captureSettings={captureSettings}
+            captureSettingsError={captureSettingsError}
             onToggleCamera={() => socketService.toggleCamera()}
             onToggleStream={() => socketService.toggleCameraStream()}
+            onUpdateCaptureSettings={(settings) => socketService.setCameraCaptureSettings(settings)}
           />
         )}
         {currentView === 'debug' && (

@@ -9,7 +9,7 @@ import queue
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal
@@ -137,6 +137,7 @@ class CameraCaptureRuntime:
         self._captures: list[SavedCameraCapture] = []
         self._condition = threading.Condition()
         self._trigger_epochs: queue.Queue[float] = queue.Queue()
+        self._camera_control_lock = threading.Lock()
 
     def start(self) -> None:
         """Start the camera and, optionally, the GPIO edge listener."""
@@ -222,7 +223,8 @@ class CameraCaptureRuntime:
         try:
             import cv2  # pylint: disable=import-error,import-outside-toplevel
 
-            yuv = self._camera.capture_array("main")
+            with self._camera_control_lock:
+                yuv = self._camera.capture_array("main")
             bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
             if self.settings.rotate_180:
                 # Inverted mount: the natural (non-mirrored) operator view is
@@ -235,6 +237,51 @@ class CameraCaptureRuntime:
         except Exception:  # pylint: disable=broad-exception-caught
             logger.warning("[CAMERA] Preview capture failed", exc_info=True)
             return None
+
+    def update_image_controls(self, *, exposure_us: int, gain: float) -> dict:
+        """Apply exposure and gain without stopping the rolling buffer."""
+        exposure_us = int(exposure_us)
+        gain = float(gain)
+        frame_period_us = round(1_000_000 / self.settings.fps)
+        if exposure_us <= 0:
+            raise ValueError("camera exposure must be positive")
+        if exposure_us >= frame_period_us:
+            raise ValueError(
+                f"camera exposure must be shorter than the {frame_period_us}us frame period"
+            )
+        if gain <= 0:
+            raise ValueError("camera gain must be positive")
+        if not self._running or self._camera is None:
+            raise RuntimeError("camera capture is not running")
+
+        with self._camera_control_lock:
+            self._camera.set_controls(
+                {
+                    "ExposureTime": exposure_us,
+                    "AnalogueGain": gain,
+                }
+            )
+        self.settings = replace(
+            self.settings,
+            exposure_us=exposure_us,
+            gain=gain,
+        )
+        logger.info(
+            "[CAMERA] Live controls updated: exposure=%dus gain=%.2f",
+            exposure_us,
+            gain,
+        )
+        return {"exposure_us": exposure_us, "gain": gain}
+
+    def status(self) -> dict:
+        """Return lightweight state for the operator UI."""
+        buffered_frames = self._ring.buffered_frames
+        return {
+            "running": self._running,
+            "armed": self._running and buffered_frames >= self.settings.pre_frames,
+            "buffered_frames": buffered_frames,
+            "required_pre_frames": self.settings.pre_frames,
+        }
 
     def notify_trigger(self, timestamp: float | None = None) -> bool:
         """Freeze the camera ring on a sound-trigger edge."""

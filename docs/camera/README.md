@@ -150,6 +150,19 @@ Use the preview to place the ball near the horizontal center and ensure the
 clubhead and expected launch corridor remain within the vertical window. The
 preview is rotated for the tested inverted camera mount.
 
+## Camera Tab Controls
+
+When `--camera-capture` is enabled, the Camera tab keeps the preview visible
+beside an operator-control column. Exposure and analogue gain apply to the
+running Picamera2 pipeline without stopping the rolling buffer. The horizontal
+and vertical alignment controls move the preview guide only; they do not move
+the raw sensor crop.
+
+Resolution, requested frame rate, and pre/post-trigger timing are shown as
+read-only capture provenance. Changing those values requires a controlled
+camera restart and is intentionally not part of the first live-control pass.
+The UI clamps exposure below the configured frame period.
+
 ## Exposure Calibration
 
 Lighting varies too much for one universal exposure. Calibrate in the actual
