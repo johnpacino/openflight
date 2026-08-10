@@ -551,7 +551,23 @@ the phase measured by horizontal aim calibration when starting OpenFlight:
 
 ```bash
 scripts/start-kiosk.sh --iwr6843 \
-  --iwr6843-horizontal-phase-reference-rad -0.5
+  --iwr6843-horizontal-phase-reference-rad -0.33434
+```
+
+`-0.33434 rad` is the measured reference for the OpenFlight prototype setup,
+not a universal default. It was calibrated from 18 wide-IQ16 shots against
+TrackMan using the eight-frame horizontal estimator, then frozen before a
+separate 41-shot holdout. The holdout produced 0.948 degrees MAE at full
+coverage and 0.797 degrees MAE on the 37 shots that passed the 0.90 phase-
+coherence gate.
+
+Recalibrate this value after changing the radar board, enclosure, antenna
+orientation, or target-line alignment. To evaluate a TrackMan-aligned session
+and calculate a setup-specific phase reference, run:
+
+```bash
+uv run python scripts/analysis/evaluate_iwr_horizontal_models.py \
+  path/to/trackman_openflight_aligned.csv
 ```
 
 The value is subtracted in phase space before conversion to degrees. Omitting
