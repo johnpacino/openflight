@@ -61,6 +61,20 @@ class TriggeredFrameBuffer:
         with self._condition:
             return len(self._pre)
 
+    @property
+    def latest_frame(self) -> Optional[CameraFrame]:
+        """Most recent frame available without disturbing capture state."""
+        with self._condition:
+            if self._post:
+                return self._post[-1]
+            if self._pre:
+                return self._pre[-1]
+            if self._frozen_pre:
+                return self._frozen_pre[-1]
+            if self._ready is not None and self._ready.frames:
+                return self._ready.frames[-1]
+            return None
+
     def add_frame(self, frame: CameraFrame) -> None:
         """Add one frame from the camera callback."""
         with self._condition:

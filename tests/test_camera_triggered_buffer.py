@@ -9,7 +9,6 @@ from openflight.camera import capture_runtime
 from openflight.camera.capture_runtime import (
     CameraCaptureRuntime,
     CameraCaptureSettings,
-    _crop_preview_to_size,
     ensure_picamera2_import_path,
     parse_scaler_crop,
 )
@@ -48,6 +47,21 @@ def test_ring_freezes_latest_pre_frames_and_post_tail():
     assert capture.pre_trigger_count == 3
     assert capture.post_trigger_count == 2
     assert capture.trigger_host_timestamp_ns == 19_000_000
+
+
+def test_ring_exposes_latest_frame_during_capture():
+    ring = TriggeredFrameBuffer(pre_trigger_frames=2, post_trigger_frames=2)
+    ring.add_frame(make_frame(1))
+    ring.add_frame(make_frame(2))
+
+    assert ring.latest_frame is not None
+    assert ring.latest_frame.image[0, 0] == 2
+
+    assert ring.trigger()
+    ring.add_frame(make_frame(3))
+
+    assert ring.latest_frame is not None
+    assert ring.latest_frame.image[0, 0] == 3
 
 
 def test_ring_rejects_overlapping_trigger():
@@ -122,20 +136,6 @@ def test_unpack_yuv420_y_plane_with_stride_and_chroma_rows():
 def test_unpack_yuv420_y_plane_rejects_short_frame():
     with pytest.raises(ValueError, match="unexpected YUV420 frame"):
         unpack_yuv420_y_plane(np.zeros((1, 2), dtype=np.uint8), 3, 2, False)
-
-
-def test_preview_crop_removes_decoded_stride_padding():
-    width = 4
-    height = 4
-    stride = 8
-    padded = np.full((height, stride, 3), 255, dtype=np.uint8)
-    expected = np.arange(height * width * 3, dtype=np.uint8).reshape(height, width, 3)
-    padded[:, :width] = expected
-
-    cropped = _crop_preview_to_size(padded, width=width, height=height)
-
-    assert cropped.shape == (height, width, 3)
-    assert np.array_equal(cropped, expected)
 
 
 def test_parse_scaler_crop():

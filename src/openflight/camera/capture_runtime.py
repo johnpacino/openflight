@@ -101,16 +101,6 @@ def _save_pgm(path: Path, image: np.ndarray) -> None:
         handle.write(image.tobytes())
 
 
-def _crop_preview_to_size(frame: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Remove decoded Picamera2 stride padding from a preview image."""
-    if frame.ndim != 3 or frame.shape[0] < height or frame.shape[1] < width:
-        raise ValueError(
-            f"unexpected decoded preview shape {frame.shape}; "
-            f"need at least ({height}, {width}, channels)"
-        )
-    return np.ascontiguousarray(frame[:height, :width])
-
-
 def ensure_picamera2_import_path() -> bool:
     """Expose Raspberry Pi OS camera packages when running inside uv's venv."""
     path = str(RASPBERRY_PI_DIST_PACKAGES)
@@ -222,34 +212,22 @@ class CameraCaptureRuntime:
             self._worker = None
 
     def capture_preview_jpeg(self, quality: int = 80) -> bytes | None:
-        """One processed frame from the concurrent main stream, as JPEG.
+        """Encode the latest rolling-buffer frame as a preview JPEG.
 
-        The preview reads the YUV main stream that runs alongside the raw
-        high-speed stream, so the rolling buffer keeps filling and triggered
-        shots are never lost while the UI camera tab is open.
+        Reusing the compact raw frame avoids a second capture request and
+        remains reliable in high-FPS modes where the processed YUV companion
+        stream may not produce usable pixels.
         """
         if not self._running or self._camera is None:
             return None
         try:
             import cv2  # pylint: disable=import-error,import-outside-toplevel
 
-            with self._camera_control_lock:
-                yuv = self._camera.capture_array("main")
-            # Decode the complete stride-padded I420 buffer first. Cropping
-            # its planes before conversion corrupts U/V row boundaries.
-            bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
-            bgr = _crop_preview_to_size(
-                bgr,
-                self.settings.width,
-                self.settings.height,
-            )
-            if self.settings.rotate_180:
-                # Inverted mount: the natural (non-mirrored) operator view is
-                # a vertical flip -- 180 rotation plus a horizontal mirror.
-                # Saved frames keep the unpackers' rotate-180 convention that
-                # the delivery-trace sign chain was validated against.
-                bgr = cv2.flip(bgr, 0)
-            ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+            frame = self._ring.latest_frame
+            if frame is None:
+                return None
+            image = np.ascontiguousarray(frame.image)
+            ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
             return encoded.tobytes() if ok else None
         except Exception:  # pylint: disable=broad-exception-caught
             logger.warning("[CAMERA] Preview capture failed", exc_info=True)
