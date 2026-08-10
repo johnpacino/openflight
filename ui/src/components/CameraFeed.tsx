@@ -24,24 +24,25 @@ const PREVIEW_REFRESH_MS = 5000;
 
 type PreviewState = 'checking' | 'available' | 'unavailable';
 
+const CAMERA_PROFILES = [
+  { id: 'outdoor-sun', label: 'Outdoor sun', exposureUs: 100, gain: 2 },
+  { id: 'outdoor-shade', label: 'Outdoor shade', exposureUs: 200, gain: 4 },
+  { id: 'evening', label: 'Evening', exposureUs: 300, gain: 10 },
+  { id: 'indoor-bright', label: 'Indoor bright', exposureUs: 250, gain: 10 },
+  { id: 'indoor-dark', label: 'Indoor dark', exposureUs: 500, gain: 15 },
+] as const;
+
 function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPanelProps) {
-  const [exposureUs, setExposureUs] = useState(settings.exposure_us ?? 500);
-  const [gain, setGain] = useState(settings.gain ?? 2);
   const [alignmentX, setAlignmentX] = useState(settings.alignment_x_pct ?? 50);
   const [alignmentY, setAlignmentY] = useState(settings.alignment_y_pct ?? 50);
 
-  const maxExposureUs = Math.max(25, settings.max_exposure_us ?? 3000);
   const isDirty =
-    exposureUs !== (settings.exposure_us ?? 500) ||
-    gain !== (settings.gain ?? 2) ||
     alignmentX !== (settings.alignment_x_pct ?? 50) ||
     alignmentY !== (settings.alignment_y_pct ?? 50);
 
   const apply = (event: FormEvent) => {
     event.preventDefault();
     onUpdate({
-      exposure_us: exposureUs,
-      gain,
       alignment_x_pct: alignmentX,
       alignment_y_pct: alignmentY,
     });
@@ -62,53 +63,31 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
       <form onSubmit={apply}>
         <section className="camera-settings__section">
           <div className="camera-settings__section-title">
-            <span>Image</span>
+            <span>Environment profile</span>
             <small>applies live</small>
           </div>
-          <label className="camera-settings__field">
-            <span>Exposure</span>
-            <div className="camera-settings__value">
-              <input
-                type="number"
-                min={25}
-                max={maxExposureUs}
-                step={25}
-                value={exposureUs}
-                onChange={(event) => setExposureUs(Number(event.target.value))}
-              />
-              <em>µs</em>
-            </div>
-            <input
-              type="range"
-              min={25}
-              max={maxExposureUs}
-              step={25}
-              value={Math.min(exposureUs, maxExposureUs)}
-              onChange={(event) => setExposureUs(Number(event.target.value))}
-            />
-          </label>
-          <label className="camera-settings__field">
-            <span>Analog gain</span>
-            <div className="camera-settings__value">
-              <input
-                type="number"
-                min={1}
-                max={16}
-                step={0.5}
-                value={gain}
-                onChange={(event) => setGain(Number(event.target.value))}
-              />
-              <em>×</em>
-            </div>
-            <input
-              type="range"
-              min={1}
-              max={16}
-              step={0.5}
-              value={gain}
-              onChange={(event) => setGain(Number(event.target.value))}
-            />
-          </label>
+          <div className="camera-settings__profiles">
+            {CAMERA_PROFILES.map((profile) => {
+              const isActive = settings.exposure_us === profile.exposureUs && settings.gain === profile.gain;
+              return (
+                <button
+                  key={profile.id}
+                  type="button"
+                  className={`camera-settings__profile ${isActive ? 'camera-settings__profile--active' : ''}`}
+                  disabled={!settings.available}
+                  onClick={() => onUpdate({ exposure_us: profile.exposureUs, gain: profile.gain })}
+                >
+                  <strong>{profile.label}</strong>
+                  <span>
+                    {profile.exposureUs} µs · {profile.gain}×
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="camera-settings__note">
+            Brighter profiles keep the club sharper. Indoor dark trades additional motion blur for visibility.
+          </p>
         </section>
 
         <section className="camera-settings__section">
@@ -180,7 +159,7 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
 
         {error && <p className="camera-settings__error">{error}</p>}
         <button type="submit" className="camera-settings__apply" disabled={!settings.available || !isDirty}>
-          {isDirty ? 'Apply camera settings' : 'Settings applied'}
+          {isDirty ? 'Apply alignment guide' : 'Alignment applied'}
         </button>
       </form>
     </aside>

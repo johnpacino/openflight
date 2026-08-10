@@ -45,8 +45,12 @@ describe('CameraFeed', () => {
 
     expect(html).toContain('camera-feed__workspace');
     expect(html).toContain('Camera setup');
-    expect(html).toContain('Exposure');
-    expect(html).toContain('Analog gain');
+    expect(html).toContain('Environment profile');
+    expect(html).toContain('Outdoor sun');
+    expect(html).toContain('Outdoor shade');
+    expect(html).toContain('Evening');
+    expect(html).toContain('Indoor bright');
+    expect(html).toContain('Indoor dark');
     expect(html).toContain('Alignment guide');
     expect(html).toContain('320 × 200');
     expect(html).toContain('600 fps');
