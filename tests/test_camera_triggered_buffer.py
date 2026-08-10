@@ -9,6 +9,7 @@ from openflight.camera import capture_runtime
 from openflight.camera.capture_runtime import (
     CameraCaptureRuntime,
     CameraCaptureSettings,
+    _crop_yuv420_to_size,
     ensure_picamera2_import_path,
     parse_scaler_crop,
 )
@@ -121,6 +122,16 @@ def test_unpack_yuv420_y_plane_with_stride_and_chroma_rows():
 def test_unpack_yuv420_y_plane_rejects_short_frame():
     with pytest.raises(ValueError, match="unexpected YUV420 frame"):
         unpack_yuv420_y_plane(np.zeros((1, 2), dtype=np.uint8), 3, 2, False)
+
+
+def test_preview_crop_removes_yuv_stride_padding():
+    padded = np.full((3, 6), 255, dtype=np.uint8)
+    padded[:, :4] = np.arange(12, dtype=np.uint8).reshape(3, 4)
+
+    cropped = _crop_yuv420_to_size(padded, width=4, height=2)
+
+    assert cropped.shape == (3, 4)
+    assert np.array_equal(cropped, padded[:, :4])
 
 
 def test_parse_scaler_crop():

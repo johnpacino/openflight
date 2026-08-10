@@ -101,6 +101,17 @@ def _save_pgm(path: Path, image: np.ndarray) -> None:
         handle.write(image.tobytes())
 
 
+def _crop_yuv420_to_size(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Remove Picamera2 stride padding before OpenCV decodes YUV420."""
+    expected_rows = height * 3 // 2
+    if frame.ndim != 2 or frame.shape[0] < expected_rows or frame.shape[1] < width:
+        raise ValueError(
+            f"unexpected YUV420 preview shape {frame.shape}; "
+            f"need at least ({expected_rows}, {width})"
+        )
+    return np.ascontiguousarray(frame[:expected_rows, :width])
+
+
 def ensure_picamera2_import_path() -> bool:
     """Expose Raspberry Pi OS camera packages when running inside uv's venv."""
     path = str(RASPBERRY_PI_DIST_PACKAGES)
@@ -225,6 +236,11 @@ class CameraCaptureRuntime:
 
             with self._camera_control_lock:
                 yuv = self._camera.capture_array("main")
+            yuv = _crop_yuv420_to_size(
+                yuv,
+                self.settings.width,
+                self.settings.height,
+            )
             bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
             if self.settings.rotate_180:
                 # Inverted mount: the natural (non-mirrored) operator view is

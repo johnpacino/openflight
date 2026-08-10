@@ -179,6 +179,13 @@
 
 .camera-feed--capture .camera-feed__stream {
   max-width: none;
+  aspect-ratio: 8 / 5;
+}
+
+.camera-feed--capture .camera-feed__video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .camera-feed__video {
@@ -218,6 +225,30 @@
   border-radius: var(--radius-md);
   background: rgba(12, 17, 16, 0.78);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+  scrollbar-color: rgba(74, 222, 128, 0.65) rgba(245, 240, 230, 0.06);
+  scrollbar-width: auto;
+}
+
+.camera-settings::-webkit-scrollbar {
+  width: 16px;
+}
+
+.camera-settings::-webkit-scrollbar-track {
+  background: rgba(245, 240, 230, 0.05);
+  border-left: 1px solid rgba(245, 240, 230, 0.06);
+}
+
+.camera-settings::-webkit-scrollbar-thumb {
+  min-height: 48px;
+  border: 4px solid transparent;
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.65);
+  background-clip: padding-box;
+}
+
+.camera-settings::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 222, 128, 0.9);
+  background-clip: padding-box;
 }
 
 .camera-settings__heading {
