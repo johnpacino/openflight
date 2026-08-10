@@ -41,11 +41,12 @@ contain:
 - The clubhead through impact.
 - The first several milliseconds of ball flight.
 
-TrackMan-aligned 7-iron and 9-iron captures showed that the useful native
-sensor envelope occupied approximately rows `232-421`. The high-speed
-`320x200` mode therefore uses a vertically raised crop near `(480,224)` rather
-than the sensor's geometric center. A `150`-row crop was too tight for robust
-combined clubhead and ball-path tracking.
+TrackMan-aligned 7-iron and 9-iron captures showed that a `200`-row view was
+needed to retain both the final clubhead approach and early ball flight. The
+tested high-speed `320x200` mode uses the sensor's centered `(480,300)` crop.
+A `150`-row crop was too tight for robust combined clubhead and ball-path
+tracking. A raised `200`-row crop remains a future experiment, not part of the
+checked-in driver.
 
 This result has not yet been validated for wedges or driver. Use the alignment
 preview before each new physical mounting configuration.
@@ -86,6 +87,10 @@ drivers/ov9281/
 scripts/setup/install_ov9281_high_speed_driver.sh
 ```
 
+The experimental `320x200` register sequence is derived from InnoMaker's
+[CAM-OV9281RAW-V2 reference repository](https://github.com/INNO-MAKER/CAM-OV9281RAW-V2)
+and adapted to Raspberry Pi's upstream `ov9282` driver.
+
 Install the driver on the Pi with:
 
 ```bash
@@ -94,10 +99,20 @@ scripts/setup/install_ov9281_high_speed_driver.sh
 sudo reboot
 ```
 
-The installer builds against the exact running Raspberry Pi kernel, backs up
-the installed `ov9282` module, installs the patched module, and runs `depmod`.
-Kernel upgrades require rebuilding the module for the new kernel before the
-custom modes are available again.
+The installer resolves the source package matching the running Raspberry Pi
+kernel, builds against that source, backs up the installed `ov9282` module,
+installs the patched module, and runs `depmod`. The first build can take several
+minutes. Later runs reuse the prepared source tree. Kernel upgrades require
+rebuilding the module for the new kernel before the custom modes are available
+again.
+
+Restore the stock module with:
+
+```bash
+cd ~/openflight
+scripts/setup/install_ov9281_high_speed_driver.sh --restore
+sudo reboot
+```
 
 Do not unload or replace the active camera module while the camera pipeline is
 running. Stop OpenFlight and reboot after installing or restoring a driver.
