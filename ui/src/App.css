@@ -27,7 +27,9 @@
     .debug-panel__tab-content,
     .trigger-history,
     .club-select__panel,
-    .display-mode
+    .display-mode,
+    .camera-settings,
+    .camera-feed__workspace
   ) {
   touch-action: pan-y;
   overscroll-behavior-y: contain;

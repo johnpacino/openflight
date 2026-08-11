@@ -25,4 +25,9 @@ describe('touch interaction policy', () => {
     expect(appCss).toMatch(/touch-action:\s*pan-y;/);
     expect(appCss).toMatch(/overscroll-behavior-y:\s*contain;/);
   });
+
+  it('enables vertical touch panning on camera configuration regions', () => {
+    expect(appCss).toContain('.camera-settings');
+    expect(appCss).toContain('.camera-feed__workspace');
+  });
 });
