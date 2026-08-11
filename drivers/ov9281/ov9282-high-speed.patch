@@ -16,7 +16,7 @@
 +
 +/* Output-row offset for the experimental vertically sampled strip modes. */
 +static int strip_y_offset;
-+module_param(strip_y_offset, int, 0666);
++module_param(strip_y_offset, int, 0664);
 +MODULE_PARM_DESC(strip_y_offset,
 +		 "Vertical strip offset in output pixels; negative is up, positive is down");
  

@@ -99,12 +99,12 @@ scripts/setup/install_ov9281_high_speed_driver.sh
 sudo reboot
 ```
 
-The installer resolves the source package matching the running Raspberry Pi
-kernel, builds against that source, backs up the installed `ov9282` module,
-installs the patched module, and runs `depmod`. The first build can take several
-minutes. Later runs reuse the prepared source tree. Kernel upgrades require
-rebuilding the module for the new kernel before the custom modes are available
-again.
+The installer resolves the stock driver source matching the running Raspberry
+Pi kernel, builds only the `ov9282` module against the installed kernel headers,
+backs up the stock module, installs the patched module, and runs `depmod`. It
+also grants members of the `video` group access to the live vertical sensor
+position control. Kernel upgrades require rebuilding the module for the new
+kernel before the custom modes are available again.
 
 Restore the stock module with:
 

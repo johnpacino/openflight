@@ -315,8 +315,7 @@ class CameraCaptureRuntime:
         offset_px = int(offset_px)
         if not limits["min_px"] <= offset_px <= limits["max_px"]:
             raise ValueError(
-                f"vertical crop must be between {limits['min_px']} and "
-                f"{limits['max_px']} pixels"
+                f"vertical crop must be between {limits['min_px']} and {limits['max_px']} pixels"
             )
         if offset_px % limits["step_px"]:
             raise ValueError(f"vertical crop must use {limits['step_px']}-pixel steps")
