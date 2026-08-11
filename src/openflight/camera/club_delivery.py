@@ -78,6 +78,13 @@ CHAINED_FEATURE_SPEED_RANGE_MPH = (25.0, 140.0)
 CHAINED_FEATURE_PATH_RANGE_DEG = (-60.0, 60.0)
 CHAINED_FEATURE_AOA_RANGE_DEG = (-45.0, 30.0)
 GOLF_BALL_DIAMETER_M = 0.04267
+REFERENCE_IMAGE_SIZE = (640, 400)
+
+
+def _image_scale(shape: tuple[int, ...]) -> float:
+    """Scale legacy 640x400 pixel windows to the active camera crop."""
+    height, width = shape[-2:]
+    return min(width / REFERENCE_IMAGE_SIZE[0], height / REFERENCE_IMAGE_SIZE[1])
 
 
 @dataclass(frozen=True)
@@ -374,7 +381,10 @@ def _clubhead_feature_tracks(
     difference = cv2.absdiff(seed, background.astype(np.uint8))
     moving = (difference > 15).astype(np.uint8)
     yy, xx = np.mgrid[0 : seed.shape[0], 0 : seed.shape[1]]
-    local = (xx - head[0]) ** 2 + (yy - head[1]) ** 2 <= 75.0**2
+    scale = _image_scale(seed.shape)
+    local_radius = max(24.0, 75.0 * scale)
+    feature_radius = max(14, round(38 * scale))
+    local = (xx - head[0]) ** 2 + (yy - head[1]) ** 2 <= local_radius**2
     distance = cv2.distanceTransform(moving, cv2.DIST_L2, 5)
     head_score = np.where(local, distance, 0.0)
     center_y, center_x = np.unravel_index(np.argmax(head_score), head_score.shape)
@@ -382,7 +392,7 @@ def _clubhead_feature_tracks(
     if head_thickness < 2.5:
         return None, head_thickness
     feature_mask = np.zeros_like(moving)
-    cv2.circle(feature_mask, (int(center_x), int(center_y)), 38, 255, -1)
+    cv2.circle(feature_mask, (int(center_x), int(center_y)), feature_radius, 255, -1)
     feature_mask[difference < 8] = 0
 
     points0 = cv2.goodFeaturesToTrack(
@@ -462,7 +472,9 @@ def estimate_chained_delivery(
     if ball_tracker is not None:
         ball, _ball_source = ball_tracker.resolve(ball)
     yy, xx = np.mgrid[0 : frames.shape[1], 0 : frames.shape[2]]
-    ball_zone = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= BALL_ZONE_RADIUS_PX**2
+    image_scale = _image_scale(frames.shape)
+    ball_zone_radius = max(50.0, BALL_ZONE_RADIUS_PX * image_scale)
+    ball_zone = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= ball_zone_radius**2
     saturated_zone = float(np.mean(background[ball_zone] >= 250))
     camera_quality_clean = saturated_zone <= BALL_ZONE_SATURATION_MAX
 
@@ -746,7 +758,9 @@ def estimate_delivery_trace(
             status=status, scene_p995=scene_p995, detail=f"saturated_frac={saturated_global:.3f}"
         )
     yy, xx = np.mgrid[0 : frames.shape[1], 0 : frames.shape[2]]
-    ball_zone = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= BALL_ZONE_RADIUS_PX**2
+    image_scale = _image_scale(frames.shape)
+    ball_zone_radius = max(50.0, BALL_ZONE_RADIUS_PX * image_scale)
+    ball_zone = (xx - ball.x) ** 2 + (yy - ball.y) ** 2 <= ball_zone_radius**2
     saturated_zone = float(np.mean(background[ball_zone] >= 250))
     if saturated_zone > BALL_ZONE_SATURATION_MAX:
         return TraceResult(
@@ -779,21 +793,23 @@ def estimate_delivery_trace(
 
     velocities: list[tuple[float, float]] = []
     scores: list[float] = []
+    patch_half = max(16, round(PATCH_HALF_PX * image_scale))
+    search_half = max(patch_half + 12, round(SEARCH_HALF_PX * image_scale))
     for offset in PAIR_OFFSETS:
         first, second = impact_idx + offset, impact_idx + offset + 1
         if first not in masks or second not in masks or heads.get(first) is None:
             continue
         head = heads[first]
-        template = _crop(masks[first].astype(np.float32), head[0], head[1], PATCH_HALF_PX)
-        window = _crop(masks[second].astype(np.float32), head[0], head[1], SEARCH_HALF_PX)
+        template = _crop(masks[first].astype(np.float32), head[0], head[1], patch_half)
+        window = _crop(masks[second].astype(np.float32), head[0], head[1], search_half)
         if template is None or window is None or template.sum() < 30:
             continue
         response = cv2.matchTemplate(window, template, cv2.TM_CCORR_NORMED)
         _, score, _, location = cv2.minMaxLoc(response)
         if score < MIN_MATCH_SCORE:
             continue
-        dx = location[0] - (SEARCH_HALF_PX - PATCH_HALF_PX)
-        dy = location[1] - (SEARCH_HALF_PX - PATCH_HALF_PX)
+        dx = location[0] - (search_half - patch_half)
+        dy = location[1] - (search_half - patch_half)
         if math.hypot(dx, dy) < MIN_PAIR_STEP_PX:
             continue  # self-match on a static blob, not club motion
         dt_s = (int(host_timestamp_ns[second]) - int(host_timestamp_ns[first])) / 1e9

@@ -18,7 +18,7 @@ from openflight.camera.club_delivery import (
     estimate_delivery_trace,
     fuse_club_delivery,
 )
-from openflight.camera.club_motion import ReferenceBall
+from openflight.camera.club_motion import ReferenceBall, detect_reference_ball
 from openflight.launch_monitor import ClubType
 
 
@@ -477,3 +477,52 @@ class TestTraceEstimation:
     def test_rejects_malformed_input(self):
         result = estimate_delivery_trace(np.zeros((5, 4, 4), dtype=np.uint8), np.arange(5))
         assert result.status == "error"
+
+    def test_320x200_capture_prefers_bright_ball_over_dark_background_blob(self):
+        import cv2
+
+        frames = np.full((20, 200, 320), 70, dtype=np.uint8)
+        frames[:, :20, :] = 165
+        for frame in frames:
+            cv2.circle(frame, (155, 105), 8, 35, -1)
+            cv2.circle(frame, (160, 140), 6, 245, -1)
+
+        ball = detect_reference_ball(frames, brightness_threshold=220)
+
+        assert ball.x == pytest.approx(160.0, abs=1.0)
+        assert ball.y == pytest.approx(140.0, abs=1.0)
+        assert ball.diameter_px == pytest.approx(12.0, abs=2.0)
+
+    def test_320x200_capture_produces_impact_trace(self):
+        import cv2
+
+        frames = np.full((99, 200, 320), 70, dtype=np.uint8)
+        frames += np.random.default_rng(7).integers(0, 8, size=frames.shape, dtype=np.uint8)
+        frames[:, :20, :] = 165
+        ball_x, ball_y = 160, 140
+        impact_frame = 73
+        yy, xx = np.mgrid[:200, :320]
+        ball_mask = (xx - ball_x) ** 2 + (yy - ball_y) ** 2 <= 6**2
+        for frame_index, frame in enumerate(frames):
+            cv2.circle(frame, (155, 105), 8, 35, -1)
+            if frame_index <= impact_frame:
+                frame[ball_mask] = 245
+            steps_to_impact = impact_frame + 0.5 - frame_index
+            head_x = ball_x - 8.0 * steps_to_impact
+            head_y = ball_y + 5.0 * steps_to_impact
+            if 0 <= head_x < 320 and 0 <= head_y < 200:
+                cv2.line(
+                    frame,
+                    (round(head_x), round(head_y)),
+                    (round(head_x + 45), round(head_y - 70)),
+                    240,
+                    2,
+                )
+                cv2.circle(frame, (round(head_x), round(head_y)), 5, 180, -1)
+        timestamps_ns = (np.arange(len(frames)) * (1e9 / 468.0)).astype(np.int64)
+
+        result = estimate_delivery_trace(frames, timestamps_ns, trigger_index=impact_frame)
+
+        assert result.status == "ok", result
+        assert result.impact_frame == pytest.approx(impact_frame, abs=1)
+        assert result.n_pairs >= 2

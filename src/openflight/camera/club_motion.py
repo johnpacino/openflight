@@ -122,6 +122,21 @@ def detect_reference_ball(
             )
         return found
 
+    # Prefer a clean white-ball component in the compact high-speed crop. The
+    # dark-first order remains useful for spotlight-washed 640x400 indoor
+    # scenes, but at 320x200 it can select dark foliage instead of the ball.
+    bright_mask = np.zeros_like(background, dtype=bool)
+    bright_mask[y0:y1, x0:x1] = background[y0:y1, x0:x1] >= brightness_threshold
+    bright_candidates = components(
+        bright_mask,
+        min_area=20,
+        aspect_limits=(0.55, 1.8),
+        min_fill=0.45,
+    )
+    compact_capture = background.shape[0] <= 200 and background.shape[1] <= 320
+    if compact_capture and bright_candidates:
+        return min(bright_candidates, key=lambda item: item[0])[1]
+
     # A spotlight can wash the white face of the ball into the turf while its
     # lower silhouette remains dark. Local contrast is more stable than an
     # absolute dark threshold across indoor and outdoor exposure settings.
@@ -175,18 +190,9 @@ def detect_reference_ball(
                 )
         return seed
 
-    bright_mask = np.zeros_like(background, dtype=bool)
-    bright_mask[y0:y1, x0:x1] = background[y0:y1, x0:x1] >= brightness_threshold
-    bright_candidates = components(
-        bright_mask,
-        min_area=30,
-        aspect_limits=(0.55, 1.8),
-        min_fill=0.45,
-    )
-
-    if not bright_candidates:
-        raise ValueError("no stable reference ball found")
-    return min(bright_candidates, key=lambda item: item[0])[1]
+    if bright_candidates:
+        return min(bright_candidates, key=lambda item: item[0])[1]
+    raise ValueError("no stable reference ball found")
 
 
 def _shaft_candidates(
