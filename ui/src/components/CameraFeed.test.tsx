@@ -63,6 +63,8 @@ describe('CameraFeed', () => {
     expect(html).toContain('Evening');
     expect(html).toContain('Indoor bright');
     expect(html).toContain('Indoor dark');
+    expect(html).toContain('Night');
+    expect(html).toContain('1000<!-- --> µs · <!-- -->20<!-- -->×');
     expect(html).toContain('Alignment guide');
     expect(html).toContain('Sensor view');
     expect(html).toContain('View up');

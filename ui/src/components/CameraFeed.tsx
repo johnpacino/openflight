@@ -31,6 +31,7 @@ const CAMERA_PROFILES = [
   { id: 'evening', label: 'Evening', exposureUs: 300, gain: 10 },
   { id: 'indoor-bright', label: 'Indoor bright', exposureUs: 250, gain: 10 },
   { id: 'indoor-dark', label: 'Indoor dark', exposureUs: 500, gain: 15 },
+  { id: 'night', label: 'Night', exposureUs: 1000, gain: 20 },
 ] as const;
 
 function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPanelProps) {
@@ -129,7 +130,7 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
             })}
           </div>
           <p className="camera-settings__note">
-            Brighter profiles keep the club sharper. Indoor dark trades additional motion blur for visibility.
+            Brighter profiles keep the club sharper. Night prioritizes flashlight visibility and may add motion blur.
           </p>
         </section>
 
