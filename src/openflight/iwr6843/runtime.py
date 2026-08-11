@@ -15,7 +15,12 @@ from openflight.iwr6843.lcmf import (
     prepare_lcmf_capture,
 )
 from openflight.iwr6843.monitor import IWR6843Capture, IWR6843CaptureMonitor
-from openflight.iwr6843.recovery import RecoveryCandidate, find_recovery_candidates
+from openflight.iwr6843.recovery import (
+    RecoveryCandidate,
+    RecoveryPrior,
+    find_recovery_candidates,
+    select_recovery_candidate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +126,50 @@ class IWR6843Runtime:
     # ball-departure timing. Applied to the club estimators only; the ball
     # pipeline keeps its own anchor.
     club_impact_correction_s: float = -0.002
+    # Accepted ball tracks establish a truth-free rolling prior. A rejected
+    # vertical solution may use that prior to recover impact timing for the
+    # independent experimental club search, never to publish vertical launch.
+    recovery_observations: list[tuple[float, float, float]] = field(default_factory=list)
+
+    def _remember_recovery_observation(
+        self, measurement: LCMFResult, ball_speed_mph: float
+    ) -> None:
+        if (
+            not getattr(measurement, "accepted", False)
+            or getattr(measurement, "impact_t_s", None) is None
+            or getattr(measurement, "track_speed_mph", None) is None
+            or getattr(measurement, "track_span_s", None) is None
+        ):
+            return
+        self.recovery_observations.append(
+            (
+                float(measurement.track_speed_mph) / ball_speed_mph,
+                float(measurement.impact_t_s),
+                float(measurement.track_span_s),
+            )
+        )
+        del self.recovery_observations[:-50]
+
+    def _recover_impact_time(
+        self, raw: bytes, calibration: Calibration, ball_speed_mph: float
+    ) -> float | None:
+        if len(self.recovery_observations) < 3:
+            return None
+        ratios, impacts, spans = zip(*self.recovery_observations)
+        try:
+            prior = RecoveryPrior.fit(list(ratios), list(impacts), list(spans))
+            candidates = find_recovery_candidates(
+                raw,
+                calibration,
+                ball_speed_mph=ball_speed_mph,
+                net_range_m=self.net_range_m,
+            )
+        except ValueError:
+            # Older/raw-ADC firmware formats cannot run the snapshot recovery.
+            # Preserve the original no-impact behavior rather than losing the shot.
+            return None
+        candidate = select_recovery_candidate(candidates, prior)
+        return candidate.impact_s if candidate is not None else None
 
     def _ops_guided_measurement(  # pylint: disable=too-many-return-statements
         self,
@@ -244,6 +293,7 @@ class IWR6843Runtime:
                 horizontal_deg=horizontal_deg + self.azimuth_offset_deg,
                 horizontal_raw_deg=horizontal_deg,
             )
+        self._remember_recovery_observation(measurement, ball_speed_mph)
         club_path = None
         # No OPS club speed means no identity gate to distinguish the club
         # track from hands, body, or the ball itself, so an estimate here
@@ -253,6 +303,14 @@ class IWR6843Runtime:
             fallback = ball_sign not in (-1, 1)
             policy_sign = _TDM_SIGN_BY_POLICY.get(self.tdm_sign_policy, 1)
             impact_t_s = getattr(measurement, "impact_t_s", None)
+            recovered_impact = False
+            if impact_t_s is None:
+                impact_t_s = self._recover_impact_time(
+                    capture.raw,
+                    shot_calibration,
+                    ball_speed_mph,
+                )
+                recovered_impact = impact_t_s is not None
             if impact_t_s is not None:
                 impact_t_s += self.club_impact_correction_s
             club_path = estimate_club_path(
@@ -270,6 +328,8 @@ class IWR6843Runtime:
                 tdm_sign=policy_sign if fallback else ball_sign,
                 window_policy=self.club_window_policy,
             )
+            if recovered_impact:
+                club_path.status = f"{club_path.status}_recovered_impact"
             if fallback:
                 # The ball measurement had no usable sign, so this is the
                 # configured policy's guess, not a measured value. Recorded

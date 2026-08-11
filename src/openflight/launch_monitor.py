@@ -301,6 +301,8 @@ class Shot:
     experimental_fused_attack_angle_deg: Optional[float] = None
     experimental_fused_club_path_deg: Optional[float] = None
     experimental_fused_status: Optional[str] = None
+    experimental_fused_attack_angle_confidence: Optional[str] = None
+    experimental_fused_club_path_confidence: Optional[str] = None
     experimental_camera_trace_deg: Optional[float] = None
     experimental_aoa_offset_source: Optional[str] = None
     # Independent horizontal ball-flight evidence. The camera-assisted value

@@ -367,6 +367,8 @@ class SessionLogger:
         experimental_fused_attack_angle_deg: Optional[float] = None,
         experimental_fused_club_path_deg: Optional[float] = None,
         experimental_fused_status: Optional[str] = None,
+        experimental_fused_attack_angle_confidence: Optional[str] = None,
+        experimental_fused_club_path_confidence: Optional[str] = None,
         experimental_camera_trace_deg: Optional[float] = None,
         experimental_aoa_offset_source: Optional[str] = None,
         iwr6843_horizontal_deg: Optional[float] = None,
@@ -486,6 +488,14 @@ class SessionLogger:
             data["experimental_fused_club_path_deg"] = experimental_fused_club_path_deg
         if experimental_fused_status is not None:
             data["experimental_fused_status"] = experimental_fused_status
+        if experimental_fused_attack_angle_confidence is not None:
+            data["experimental_fused_attack_angle_confidence"] = (
+                experimental_fused_attack_angle_confidence
+            )
+        if experimental_fused_club_path_confidence is not None:
+            data["experimental_fused_club_path_confidence"] = (
+                experimental_fused_club_path_confidence
+            )
         if experimental_camera_trace_deg is not None:
             data["experimental_camera_trace_deg"] = experimental_camera_trace_deg
         if experimental_aoa_offset_source is not None:

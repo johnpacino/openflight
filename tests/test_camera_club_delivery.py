@@ -190,11 +190,11 @@ class TestChainedImpactDelivery:
         assert result.club_path_deg == pytest.approx(3.0, abs=0.15)
         assert result.attack_angle_deg == pytest.approx(-4.0, abs=0.15)
 
-    def test_approach_consensus_gates_path_and_aoa_independently(self):
+    def test_approach_consensus_keeps_low_confidence_aoa_visible(self):
         path_windows = [
             ApproachPairEstimate(path, -4.0, 1.0, 1.0, 12) for path in (2.5, 3.0, 3.5, 4.0)
         ]
-        implausible_aoa = ApproachPairEstimate(3.0, -18.0, 1.0, 1.0, 12)
+        implausible_aoa = ApproachPairEstimate(3.0, -22.0, 1.0, 1.0, 12)
 
         result = combine_approach_estimates(
             path_windows,
@@ -203,10 +203,11 @@ class TestChainedImpactDelivery:
         )
 
         assert result.club_path_deg == pytest.approx(3.25)
-        assert result.attack_angle_deg is None
-        assert result.status == "approach_path_only"
+        assert result.attack_angle_deg == pytest.approx(-22.0)
+        assert result.path_confidence_tier == "high"
+        assert result.attack_confidence_tier == "low"
 
-    def test_approach_consensus_withholds_unstable_path_but_keeps_aoa(self):
+    def test_approach_consensus_keeps_unstable_path_visible_as_low_confidence(self):
         path_windows = [
             ApproachPairEstimate(path, -4.0, 1.0, 1.0, 12) for path in (-13.0, 2.5, 5.0, 14.0)
         ]
@@ -218,9 +219,23 @@ class TestChainedImpactDelivery:
             timing_plausible=True,
         )
 
-        assert result.club_path_deg is None
+        assert result.club_path_deg == pytest.approx(3.75)
         assert result.attack_angle_deg == pytest.approx(-4.2)
-        assert result.status == "approach_aoa_only"
+        assert result.path_confidence_tier == "low"
+        assert result.attack_confidence_tier == "high"
+
+    def test_approach_consensus_assigns_medium_to_near_miss_aoa(self):
+        paths = [ApproachPairEstimate(path, -4.0, 1.0, 1.0, 12) for path in (2.5, 3.0, 3.5, 4.0)]
+        near_miss = ApproachPairEstimate(3.0, -16.0, 1.31, 3.0, 12)
+
+        result = combine_approach_estimates(
+            paths,
+            attack_estimate=near_miss,
+            timing_plausible=True,
+        )
+
+        assert result.attack_angle_deg == pytest.approx(-16.0)
+        assert result.attack_confidence_tier == "medium"
 
     def test_ops_speed_mismatch_withholds_both_angles(self):
         tracks, times, ranges, ball, geometry = _project_impact_tracks(

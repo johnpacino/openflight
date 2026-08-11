@@ -122,6 +122,31 @@ describe('ShotDisplay', () => {
       expect(html.match(/metric-card__confidence--experimental/g)).toHaveLength(3);
     });
 
+    it('shows independent confidence dots for camera-fused experimental delivery', () => {
+      const html = renderToString(
+        <ShotDisplay
+          shot={{
+            ...withAngles,
+            club_angle_deg: null,
+            club_path_deg: null,
+            experimental_fused_attack_angle_deg: -4.2,
+            experimental_fused_attack_angle_confidence: 'medium',
+            experimental_fused_club_path_deg: 3.1,
+            experimental_fused_club_path_confidence: 'high',
+            experimental_fused_status: 'approach_mixed',
+          }}
+        />,
+      );
+
+      expect(html).toContain('camera fused (experimental)');
+      expect(html).toContain('metric-card__confidence--medium');
+      expect(html).toContain('metric-card__confidence--high');
+      // Horizontal launch also carries dots in this fixture.
+      expect(html.match(/metric-card__confidence-dots/g)).toHaveLength(3);
+      // Experimental spin is the third confidence label in this fixture.
+      expect(html.match(/metric-card__confidence-label">experimental/g)).toHaveLength(3);
+    });
+
     it('omits each card when the radar produced no measurement', () => {
       const html = renderToString(
         <ShotDisplay

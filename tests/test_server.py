@@ -1414,6 +1414,22 @@ class TestShotToDict:
         assert result["launch_angle_vertical_source"] is None
         assert result["launch_angle_horizontal_source"] is None
 
+    def test_camera_club_delivery_confidence_is_serialized(self):
+        shot = Shot(
+            ball_speed_mph=105.0,
+            timestamp=datetime.now(),
+            experimental_fused_attack_angle_deg=-4.2,
+            experimental_fused_attack_angle_confidence="medium",
+            experimental_fused_club_path_deg=3.1,
+            experimental_fused_club_path_confidence="high",
+            experimental_fused_status="approach_mixed",
+        )
+
+        result = shot_to_dict(shot)
+
+        assert result["experimental_fused_attack_angle_confidence"] == "medium"
+        assert result["experimental_fused_club_path_confidence"] == "high"
+
     def test_spin_diagnostics_included(self):
         """Rejected spin diagnostics should be present in UI payloads."""
         shot = Shot(
@@ -1503,7 +1519,9 @@ class TestSwingSpeedMode:
         """Selected UI player should be stamped on subsequent swing speed reps."""
         emitted = []
         monkeypatch.setattr(server_module, "current_player_name", "Player 1")
-        monkeypatch.setattr(server_module.socketio, "emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(
+            server_module.socketio, "emit", lambda *args, **kwargs: emitted.append(args)
+        )
 
         server_module.handle_set_player({"player_name": "David"})
         event = SwingSpeedEvent(
@@ -1655,7 +1673,10 @@ class TestSwingSpeedMode:
         """Mock reps should use the selected training implement metadata."""
         monitor = MockSwingSpeedMonitor()
 
-        assert server_module.TRAINING_IMPLEMENT_LABELS["rypstick-3w-cw"] == "Rypstick 3 Weights + Counterweight"
+        assert (
+            server_module.TRAINING_IMPLEMENT_LABELS["rypstick-3w-cw"]
+            == "Rypstick 3 Weights + Counterweight"
+        )
 
         monitor.set_training_implement("rypstick-3w-cw", "Rypstick 3 Weights + Counterweight")
         event = monitor.simulate_shot(peak_speed=95.0)
@@ -1726,7 +1747,6 @@ class TestSwingSpeedMode:
         assert server_module.monitor.trigger_threshold_mph == 55.0
         assert server_module.monitor.max_speed_mph == 115.0
         assert emitted[-1] == ("radar_config", {"min_speed": 55, "max_speed": 115})
-
 
     def test_set_radar_config_forwards_zero_max_speed_to_clear_the_filter(self, monkeypatch):
         """max_speed 0 must still reach the radar on the default launch path.

@@ -89,6 +89,7 @@ function MetricCard({
   subtext,
   variant = 'default',
   confidence,
+  confidenceLabel,
 }: {
   value: string | number;
   unit?: string;
@@ -96,6 +97,7 @@ function MetricCard({
   subtext?: string;
   variant?: 'default' | 'primary' | 'secondary' | 'spin';
   confidence?: SpinQuality | null;
+  confidenceLabel?: string;
 }) {
   return (
     <div className={`metric-card metric-card--${variant}`}>
@@ -114,7 +116,7 @@ function MetricCard({
               <span className={`dot ${confidence === 'high' ? 'filled' : ''}`} />
             </span>
           )}
-          <span className="metric-card__confidence-label">{confidence}</span>
+          <span className="metric-card__confidence-label">{confidenceLabel ?? confidence}</span>
         </div>
       )}
     </div>
@@ -229,12 +231,18 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
     shot.club_angle_deg ?? shot.experimental_fused_attack_angle_deg ?? shot.experimental_attack_angle_deg ?? null;
   const attackIsExperimental =
     shot.club_angle_deg === null &&
-    (shot.experimental_attack_angle_deg != null || shot.experimental_attack_angle_status != null);
+    (shot.experimental_fused_attack_angle_deg != null ||
+      shot.experimental_fused_status != null ||
+      shot.experimental_attack_angle_deg != null ||
+      shot.experimental_attack_angle_status != null);
   const clubPath =
     shot.club_path_deg ?? shot.experimental_fused_club_path_deg ?? shot.experimental_club_path_deg ?? null;
   const clubPathIsExperimental =
     shot.club_path_deg === null &&
-    (shot.experimental_club_path_deg != null || shot.experimental_club_path_status != null);
+    (shot.experimental_fused_club_path_deg != null ||
+      shot.experimental_fused_status != null ||
+      shot.experimental_club_path_deg != null ||
+      shot.experimental_club_path_status != null);
 
   return (
     <div className={`shot-display ${animate ? 'shot-display--animate' : ''}`}>
@@ -277,12 +285,21 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
               unit={attackAngle !== null ? '°' : undefined}
               label="Club AoA"
               subtext={
-                attackIsExperimental
-                  ? experimentalStatus(shot.experimental_attack_angle_status)
-                  : 'radar'
+                shot.experimental_fused_attack_angle_deg != null
+                  ? 'camera fused (experimental)'
+                  : attackIsExperimental
+                    ? experimentalStatus(shot.experimental_attack_angle_status)
+                    : 'radar'
               }
               variant="secondary"
-              confidence={attackIsExperimental ? 'experimental' : null}
+              confidence={
+                attackIsExperimental
+                  ? (shot.experimental_fused_attack_angle_confidence ?? 'experimental')
+                  : null
+              }
+              confidenceLabel={
+                shot.experimental_fused_attack_angle_confidence ? 'experimental' : undefined
+              }
             />
           )}
           {(clubPath !== null || clubPathIsExperimental) && (
@@ -291,12 +308,21 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
               unit={clubPath !== null ? '°' : undefined}
               label="Club Path"
               subtext={
-                clubPathIsExperimental
-                  ? experimentalStatus(shot.experimental_club_path_status)
-                  : 'radar'
+                shot.experimental_fused_club_path_deg != null
+                  ? 'camera fused (experimental)'
+                  : clubPathIsExperimental
+                    ? experimentalStatus(shot.experimental_club_path_status)
+                    : 'radar'
               }
               variant="secondary"
-              confidence={clubPathIsExperimental ? 'experimental' : null}
+              confidence={
+                clubPathIsExperimental
+                  ? (shot.experimental_fused_club_path_confidence ?? 'experimental')
+                  : null
+              }
+              confidenceLabel={
+                shot.experimental_fused_club_path_confidence ? 'experimental' : undefined
+              }
             />
           )}
           {shot.spin_axis_deg !== null && (

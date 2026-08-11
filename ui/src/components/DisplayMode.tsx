@@ -133,7 +133,7 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
         shot.club_angle_deg != null
           ? undefined
           : shot.experimental_fused_attack_angle_deg != null
-            ? 'offset calibrated (exp.)'
+            ? 'camera fused (exp.)'
             : shot.experimental_attack_angle_deg != null || shot.experimental_attack_angle_status != null
               ? experimentalStatus(shot.experimental_attack_angle_status)
               : undefined,

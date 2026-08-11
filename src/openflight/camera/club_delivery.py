@@ -82,6 +82,9 @@ APPROACH_AOA_RANGE_DEG = (-12.0, 8.0)
 APPROACH_PATH_WINDOW_MAD_MAX_DEG = 5.0
 APPROACH_MIN_PATH_WINDOWS = 3
 APPROACH_ATTACK_VELOCITY_MAD_MAX_MPH = 12.0
+APPROACH_MEDIUM_AOA_RANGE_DEG = (-18.0, 12.0)
+APPROACH_MEDIUM_SPEED_RATIO_RANGE = (0.6, 1.4)
+APPROACH_MEDIUM_VELOCITY_MAD_MAX_MPH = 18.0
 APPROACH_PATH_OFFSETS = ((-1, 0), (-2, 0), (-3, -1), (-3, 0))
 GOLF_BALL_DIAMETER_M = 0.04267
 REFERENCE_IMAGE_SIZE = (640, 400)
@@ -137,6 +140,8 @@ class ChainedDelivery:
     head_thickness_px: float | None = None
     path_window_count: int = 0
     path_window_mad_deg: float | None = None
+    path_confidence_tier: str = "withheld"
+    attack_confidence_tier: str = "withheld"
 
 
 @dataclass(frozen=True)
@@ -275,15 +280,23 @@ def combine_approach_estimates(
     ]
     path_deg = None
     path_mad = None
+    path_confidence = "withheld"
     if len(path_candidates) >= APPROACH_MIN_PATH_WINDOWS:
         values = np.asarray([estimate.path_deg for estimate in path_candidates])
         median = float(np.median(values))
         path_mad = float(np.median(np.abs(values - median)))
         if path_mad <= APPROACH_PATH_WINDOW_MAD_MAX_DEG:
             path_deg = median
+            path_confidence = "high" if timing_plausible and path_mad <= 2.0 else "medium"
+    if path_deg is None and path_estimates:
+        values = np.asarray([estimate.path_deg for estimate in path_estimates])
+        path_deg = float(np.median(values))
+        path_mad = float(np.median(np.abs(values - path_deg)))
+        path_confidence = "low"
 
-    attack_angle_deg = None
-    if (
+    attack_angle_deg = attack_estimate.attack_angle_deg if attack_estimate else None
+    attack_confidence = "withheld"
+    strict_attack = (
         attack_estimate is not None
         and CHAINED_SPEED_RATIO_RANGE[0]
         <= attack_estimate.speed_ratio_ops
@@ -292,14 +305,31 @@ def combine_approach_estimates(
         and APPROACH_AOA_RANGE_DEG[0]
         <= attack_estimate.attack_angle_deg
         <= APPROACH_AOA_RANGE_DEG[1]
-    ):
-        attack_angle_deg = attack_estimate.attack_angle_deg
+    )
+    medium_attack = (
+        attack_estimate is not None
+        and APPROACH_MEDIUM_SPEED_RATIO_RANGE[0]
+        <= attack_estimate.speed_ratio_ops
+        <= APPROACH_MEDIUM_SPEED_RATIO_RANGE[1]
+        and attack_estimate.velocity_mad_mph <= APPROACH_MEDIUM_VELOCITY_MAD_MAX_MPH
+        and APPROACH_MEDIUM_AOA_RANGE_DEG[0]
+        <= attack_estimate.attack_angle_deg
+        <= APPROACH_MEDIUM_AOA_RANGE_DEG[1]
+    )
+    if strict_attack and timing_plausible:
+        attack_confidence = "high"
+    elif medium_attack and timing_plausible:
+        attack_confidence = "medium"
+    elif attack_estimate is not None:
+        attack_confidence = "low"
 
     common = {
         "attack_angle_deg": (round(attack_angle_deg, 2) if attack_angle_deg is not None else None),
         "club_path_deg": round(path_deg, 2) if path_deg is not None else None,
         "path_window_count": len(path_candidates),
         "path_window_mad_deg": round(path_mad, 2) if path_mad is not None else None,
+        "path_confidence_tier": path_confidence,
+        "attack_confidence_tier": attack_confidence,
         "speed_mph": None,
         "speed_ratio_ops": (round(attack_estimate.speed_ratio_ops, 3) if attack_estimate else None),
         "velocity_mad_mph": (
@@ -308,9 +338,9 @@ def combine_approach_estimates(
         "n_features": attack_estimate.n_features if attack_estimate else 0,
     }
     if path_deg is not None and attack_angle_deg is not None:
-        high = timing_plausible and path_mad is not None and path_mad <= 2.0
+        high = path_confidence == "high" and attack_confidence == "high"
         return ChainedDelivery(
-            status="approach_high" if high else "approach_experimental",
+            status="approach_high" if high else "approach_mixed",
             confidence_tier="high" if high else "experimental",
             **common,
         )

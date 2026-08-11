@@ -416,6 +416,41 @@ def test_per_shot_tilt_uses_a_calibration_copy_without_mutating_runtime():
     assert calibration.tilt_rad == 0.0
 
 
+def test_recovered_ball_impact_anchor_is_used_for_club_range_search():
+    """A rejected vertical angle may still anchor experimental club delivery."""
+    seen = {}
+    runtime = _runtime()
+    runtime.recovery_observations = [
+        (1.0, 0.016, 0.040),
+        (1.01, 0.017, 0.041),
+        (0.99, 0.015, 0.039),
+    ]
+    measurement = LCMFResult(status="rejected_track_quality", impact_t_s=None)
+
+    def fake_club(_raw, _cal, **kwargs):
+        seen.update(kwargs)
+        return ClubPathResult(status="rejected_phase_span")
+
+    candidate = type("Candidate", (), {"impact_s": 0.019})()
+    with (
+        patch("openflight.iwr6843.runtime.estimate_lcmf_v1", return_value=measurement),
+        patch("openflight.iwr6843.runtime.RecoveryPrior.fit"),
+        patch("openflight.iwr6843.runtime.find_recovery_candidates", return_value=[candidate]),
+        patch("openflight.iwr6843.runtime.select_recovery_candidate", return_value=candidate),
+        patch("openflight.iwr6843.runtime.estimate_club_path", side_effect=fake_club),
+    ):
+        result = runtime.process_shot(
+            impact_timestamp=1.0,
+            ball_speed_mph=100.0,
+            club="9i",
+            club_speed_mph=74.0,
+        )
+
+    assert result.club_path is not None
+    assert seen["impact_t_s"] == pytest.approx(0.017)
+    assert "recovered_impact" in result.club_path.status
+
+
 def test_ball_estimate_receives_the_configured_tdm_sign_policy():
     """``tdm_sign_policy`` must cross the runtime -> LCMF boundary.
 

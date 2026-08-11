@@ -920,6 +920,10 @@ def shot_to_dict(shot: Shot) -> dict:
         "experimental_fused_attack_angle_deg": shot.experimental_fused_attack_angle_deg,
         "experimental_fused_club_path_deg": shot.experimental_fused_club_path_deg,
         "experimental_fused_status": shot.experimental_fused_status,
+        "experimental_fused_attack_angle_confidence": (
+            shot.experimental_fused_attack_angle_confidence
+        ),
+        "experimental_fused_club_path_confidence": (shot.experimental_fused_club_path_confidence),
         "experimental_camera_trace_deg": shot.experimental_camera_trace_deg,
         "experimental_aoa_offset_source": shot.experimental_aoa_offset_source,
         "iwr6843_horizontal_deg": shot.iwr6843_horizontal_deg,
@@ -2686,6 +2690,8 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
         shot.experimental_fused_attack_angle_deg = fused.attack_angle_deg
         shot.experimental_fused_club_path_deg = fused.club_path_deg
         shot.experimental_fused_status = fused.status
+        shot.experimental_fused_attack_angle_confidence = fused.attack_confidence_tier
+        shot.experimental_fused_club_path_confidence = fused.path_confidence_tier
         shot.experimental_camera_trace_deg = None
         shot.experimental_aoa_offset_source = "none_chained_3d"
         logger.info(
@@ -3298,6 +3304,12 @@ def on_shot_detected(shot: Shot):
                 experimental_fused_attack_angle_deg=shot.experimental_fused_attack_angle_deg,
                 experimental_fused_club_path_deg=shot.experimental_fused_club_path_deg,
                 experimental_fused_status=shot.experimental_fused_status,
+                experimental_fused_attack_angle_confidence=(
+                    shot.experimental_fused_attack_angle_confidence
+                ),
+                experimental_fused_club_path_confidence=(
+                    shot.experimental_fused_club_path_confidence
+                ),
                 experimental_camera_trace_deg=shot.experimental_camera_trace_deg,
                 experimental_aoa_offset_source=shot.experimental_aoa_offset_source,
                 iwr6843_horizontal_deg=shot.iwr6843_horizontal_deg,
