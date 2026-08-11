@@ -28,6 +28,7 @@ from openflight.iwr6843.shot import (
     geometry_from_header,
     process_dump,
 )
+from openflight.iwr6843.tracking import BallTrack
 
 NAME = "lcmf_v1"
 DISPLAY_NAME = "Late-Flight Complex Multipath Fusion v1"
@@ -711,8 +712,15 @@ def estimate_lcmf_v1(
     tdm_sign_policy: str = "positive",
     grid_step_deg: float = 0.5,
     horizontal_phase_reference_rad: float | None = None,
+    track_override: BallTrack | None = None,
+    track_override_scope: str = "burst",
 ) -> LCMFResult:
-    """Estimate vertical launch from one TI dump and OPS ball speed."""
+    """Estimate vertical launch from one TI dump and OPS ball speed.
+
+    ``track_override`` is an offline-research hook for evaluating an
+    independently selected range walk. Normal production calls leave it
+    unset and retain the frozen LCMF-v1 behavior.
+    """
     if ball_speed_mph <= 0:
         raise ValueError("ball_speed_mph must be positive")
     if cal.tee_range_m is None:
@@ -736,6 +744,17 @@ def estimate_lcmf_v1(
         loop_period_s=loop_period_s,
         tdm_tau_s=tdm_tau_s,
     )
+    recovery_override = track_override is not None
+    if recovery_override:
+        if track_override_scope not in ("burst", "window"):
+            raise ValueError("track_override_scope must be burst or window")
+        if tdm_sign_policy not in ("positive", "negative"):
+            raise ValueError("track_override requires an explicit TDM sign policy")
+        shot.track = track_override
+        shot.ball_found = True
+        shot.quality = "low"
+        shot.notch_recovered = track_override_scope == "window"
+        shot.tdm_sign_used = 1 if tdm_sign_policy == "positive" else -1
     if shot.track is None:
         return _result_from_track(
             "rejected_by_ball_tracker",
@@ -835,10 +854,8 @@ def estimate_lcmf_v1(
             effective_loop_period_s=loop_period_s,
         )
     measured = measured_channels(channel_components, channel_evidence)
-    result = _result_from_track(
-        "accepted_track_quality_warning" if shot.quality == "reject" else "accepted",
-        shot,
-    )
+    status = "accepted_low_confidence_recovery" if recovery_override else "accepted"
+    result = _result_from_track(status, shot)
     result.angle_deg = raw_angle_deg + ANGLE_CORRECTION_DEG
     result.raw_angle_deg = raw_angle_deg
     result.components_deg = components
