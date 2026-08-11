@@ -2674,6 +2674,9 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
                                 ball_height_m=calibration.tee_ball_height_m,
                                 image_width_px=int(camera_capture_config["width"]),
                                 image_height_px=int(camera_capture_config["height"]),
+                                horizontal_pixel_sign=(
+                                    -1.0 if camera_capture_config.get("mirror_horizontal") else 1.0
+                                ),
                             ),
                             ops_club_speed_mph=shot.club_speed_mph,
                             ball_tracker=camera_reference_ball_tracker,
@@ -2688,13 +2691,15 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
         logger.info(
             "[SERVER] Camera/IWR chained club delivery: AoA %s path %s "
             "(status=%s, features=%d, speed_ratio=%s, velocity_mad=%s mph, "
-            "impact_frame=%s)",
+            "path_windows=%d, path_mad=%s deg, impact_frame=%s)",
             fused.attack_angle_deg,
             fused.club_path_deg,
             fused.status,
             fused.n_features,
             fused.speed_ratio_ops,
             fused.velocity_mad_mph,
+            fused.path_window_count,
+            fused.path_window_mad_deg,
             fused.impact_frame,
         )
     except Exception as error:  # pylint: disable=broad-exception-caught

@@ -1,12 +1,13 @@
 """Camera-assisted experimental club delivery (attack angle + club path).
 
-The live estimator tracks the same clubhead image features from the frame
-before impact, through impact, and into the first post-impact frame. Camera
-pixels provide transverse motion, the IWR6843 club range track provides depth,
-and OPS club speed independently gates target identity and solution quality.
-This impact-centered 3D chain was selected without TrackMan truth on the
-2026-08-08 17-shot session; its values remain experimental pending a frozen
-source-of-truth validation.
+The live estimator tracks clubhead image features across several short,
+strictly pre-impact intervals. Camera pixels provide transverse motion, the
+IWR6843 club range track provides depth, and OPS club speed independently gates
+target identity and solution quality. Post-impact pixels are deliberately
+excluded because the launched ball, shaft, and deflected clubhead can otherwise
+replace the incoming clubhead. This final-approach 3D chain was selected without
+TrackMan truth and remains experimental pending a frozen source-of-truth
+validation.
 
 The older radar-AoA/camera-trace functions remain below for replay comparisons,
 but the OpenFlight server no longer uses their per-club correction offsets.
@@ -77,6 +78,11 @@ CHAINED_MIN_IMAGE_MOTION_PX = 1e-6
 CHAINED_FEATURE_SPEED_RANGE_MPH = (25.0, 140.0)
 CHAINED_FEATURE_PATH_RANGE_DEG = (-60.0, 60.0)
 CHAINED_FEATURE_AOA_RANGE_DEG = (-45.0, 30.0)
+APPROACH_AOA_RANGE_DEG = (-12.0, 8.0)
+APPROACH_PATH_WINDOW_MAD_MAX_DEG = 5.0
+APPROACH_MIN_PATH_WINDOWS = 3
+APPROACH_ATTACK_VELOCITY_MAD_MAX_MPH = 12.0
+APPROACH_PATH_OFFSETS = ((-1, 0), (-2, 0), (-3, -1), (-3, 0))
 GOLF_BALL_DIAMETER_M = 0.04267
 REFERENCE_IMAGE_SIZE = (640, 400)
 
@@ -98,6 +104,9 @@ class CameraDeliveryGeometry:
     ball_diameter_m: float = GOLF_BALL_DIAMETER_M
     image_width_px: int = 640
     image_height_px: int = 400
+    # Saved-frame mirroring changes image handedness. Keep public club path
+    # positive in-to-out by restoring physical lateral orientation here.
+    horizontal_pixel_sign: float = 1.0
 
     @property
     def ball_forward_m(self) -> float:
@@ -126,6 +135,19 @@ class ChainedDelivery:
     impact_vs_trigger_ms: float | None = None
     scene_p995: float | None = None
     head_thickness_px: float | None = None
+    path_window_count: int = 0
+    path_window_mad_deg: float | None = None
+
+
+@dataclass(frozen=True)
+class ApproachPairEstimate:
+    """One strictly pre-impact camera/IWR velocity interval."""
+
+    path_deg: float
+    attack_angle_deg: float
+    speed_ratio_ops: float
+    velocity_mad_mph: float
+    n_features: int
 
 
 class ReferenceBallTracker:
@@ -205,7 +227,7 @@ def _pixels_to_world(
     image_z = -(points_px[:, 1] - center_y) / focal_px
     rays = np.column_stack(
         (
-            (points_px[:, 0] - center_x) / focal_px,
+            geometry.horizontal_pixel_sign * (points_px[:, 0] - center_x) / focal_px,
             math.cos(pitch_rad) - image_z * math.sin(pitch_rad),
             math.sin(pitch_rad) + image_z * math.cos(pitch_rad),
         )
@@ -235,6 +257,76 @@ def _bounded_angles(path_deg: float, attack_angle_deg: float) -> bool:
         CHAINED_PATH_RANGE_DEG[0] <= path_deg <= CHAINED_PATH_RANGE_DEG[1]
         and CHAINED_AOA_RANGE_DEG[0] <= attack_angle_deg <= CHAINED_AOA_RANGE_DEG[1]
     )
+
+
+def combine_approach_estimates(
+    path_estimates: list[ApproachPairEstimate],
+    *,
+    attack_estimate: ApproachPairEstimate | None,
+    timing_plausible: bool,
+) -> ChainedDelivery:
+    """Combine independent pre-impact windows without coupling path and AoA."""
+    path_candidates = [
+        estimate
+        for estimate in path_estimates
+        if CHAINED_SPEED_RATIO_RANGE[0] <= estimate.speed_ratio_ops <= CHAINED_SPEED_RATIO_RANGE[1]
+        and estimate.velocity_mad_mph <= CHAINED_VELOCITY_MAD_MAX_MPH
+        and CHAINED_PATH_RANGE_DEG[0] <= estimate.path_deg <= CHAINED_PATH_RANGE_DEG[1]
+    ]
+    path_deg = None
+    path_mad = None
+    if len(path_candidates) >= APPROACH_MIN_PATH_WINDOWS:
+        values = np.asarray([estimate.path_deg for estimate in path_candidates])
+        median = float(np.median(values))
+        path_mad = float(np.median(np.abs(values - median)))
+        if path_mad <= APPROACH_PATH_WINDOW_MAD_MAX_DEG:
+            path_deg = median
+
+    attack_angle_deg = None
+    if (
+        attack_estimate is not None
+        and CHAINED_SPEED_RATIO_RANGE[0]
+        <= attack_estimate.speed_ratio_ops
+        <= CHAINED_SPEED_RATIO_RANGE[1]
+        and attack_estimate.velocity_mad_mph <= APPROACH_ATTACK_VELOCITY_MAD_MAX_MPH
+        and APPROACH_AOA_RANGE_DEG[0]
+        <= attack_estimate.attack_angle_deg
+        <= APPROACH_AOA_RANGE_DEG[1]
+    ):
+        attack_angle_deg = attack_estimate.attack_angle_deg
+
+    common = {
+        "attack_angle_deg": (round(attack_angle_deg, 2) if attack_angle_deg is not None else None),
+        "club_path_deg": round(path_deg, 2) if path_deg is not None else None,
+        "path_window_count": len(path_candidates),
+        "path_window_mad_deg": round(path_mad, 2) if path_mad is not None else None,
+        "speed_mph": None,
+        "speed_ratio_ops": (round(attack_estimate.speed_ratio_ops, 3) if attack_estimate else None),
+        "velocity_mad_mph": (
+            round(attack_estimate.velocity_mad_mph, 2) if attack_estimate else None
+        ),
+        "n_features": attack_estimate.n_features if attack_estimate else 0,
+    }
+    if path_deg is not None and attack_angle_deg is not None:
+        high = timing_plausible and path_mad is not None and path_mad <= 2.0
+        return ChainedDelivery(
+            status="approach_high" if high else "approach_experimental",
+            confidence_tier="high" if high else "experimental",
+            **common,
+        )
+    if path_deg is not None:
+        return ChainedDelivery(
+            status="approach_path_only",
+            confidence_tier="experimental",
+            **common,
+        )
+    if attack_angle_deg is not None:
+        return ChainedDelivery(
+            status="approach_aoa_only",
+            confidence_tier="experimental",
+            **common,
+        )
+    return ChainedDelivery(status="rejected_no_stable_approach", **common)
 
 
 def delivery_from_feature_tracks(
@@ -357,6 +449,145 @@ def delivery_from_feature_tracks(
     )
 
 
+def _delivery_from_feature_pair(
+    feature_pixels: np.ndarray,
+    timestamps_s: np.ndarray,
+    radar_ranges_m: np.ndarray,
+    *,
+    ball,
+    geometry: CameraDeliveryGeometry,
+    ops_club_speed_mph: float,
+) -> ApproachPairEstimate | None:
+    """Reconstruct one short pre-impact interval from matched image features."""
+    pixels = np.asarray(feature_pixels, dtype=float)
+    times = np.asarray(timestamps_s, dtype=float)
+    ranges = np.asarray(radar_ranges_m, dtype=float)
+    if pixels.ndim != 3 or pixels.shape[1:] != (2, 2):
+        return None
+    if len(pixels) < 3 or times.shape != (2,) or ranges.shape != (2,):
+        return None
+    elapsed = float(times[1] - times[0])
+    if elapsed <= 0.0 or not ops_club_speed_mph:
+        return None
+    positions = np.stack(
+        [
+            _pixels_to_world(pixels[:, frame], ranges[frame], ball=ball, geometry=geometry)
+            for frame in range(2)
+        ],
+        axis=1,
+    )
+    velocity = (positions[:, 1] - positions[:, 0]) / elapsed
+    speeds_mph = np.linalg.norm(velocity, axis=1) * 2.23694
+    angles = np.asarray([_velocity_angles(value) for value in velocity])
+    plausible = (
+        (speeds_mph > CHAINED_FEATURE_SPEED_RANGE_MPH[0])
+        & (speeds_mph < CHAINED_FEATURE_SPEED_RANGE_MPH[1])
+        & (angles[:, 0] > CHAINED_FEATURE_PATH_RANGE_DEG[0])
+        & (angles[:, 0] < CHAINED_FEATURE_PATH_RANGE_DEG[1])
+        & (angles[:, 1] > CHAINED_FEATURE_AOA_RANGE_DEG[0])
+        & (angles[:, 1] < CHAINED_FEATURE_AOA_RANGE_DEG[1])
+    )
+    velocity = velocity[plausible]
+    if len(velocity) < 3:
+        return None
+    center = np.median(velocity, axis=0)
+    path_deg, attack_angle_deg = _velocity_angles(center)
+    speed_mph = float(np.median(np.linalg.norm(velocity, axis=1)) * 2.23694)
+    velocity_mad_mph = float(np.median(np.linalg.norm(velocity - center, axis=1)) * 2.23694)
+    return ApproachPairEstimate(
+        path_deg=path_deg,
+        attack_angle_deg=attack_angle_deg,
+        speed_ratio_ops=speed_mph / ops_club_speed_mph,
+        velocity_mad_mph=velocity_mad_mph,
+        n_features=len(velocity),
+    )
+
+
+def _clubhead_pair_tracks(
+    frames: np.ndarray,
+    background: np.ndarray,
+    ball,
+    *,
+    first_idx: int,
+    second_idx: int,
+    bright_now: float,
+    dark_bg: float,
+) -> tuple[np.ndarray | None, float | None]:
+    """Track a consensus of clubhead pixels across one approach interval."""
+    import cv2  # pylint: disable=import-outside-toplevel
+
+    if first_idx < 0 or second_idx >= len(frames) or first_idx >= second_idx:
+        return None, None
+    seed = frames[first_idx]
+    shaft_mask = _club_mask(seed, background, bright_now, dark_bg)
+    head = _head_end(shaft_mask, ball)
+    if head is None:
+        return None, None
+
+    difference = cv2.absdiff(seed, background.astype(np.uint8))
+    moving = (difference > 15).astype(np.uint8)
+    yy, xx = np.mgrid[0 : seed.shape[0], 0 : seed.shape[1]]
+    scale = _image_scale(seed.shape)
+    local_radius = max(24.0, 75.0 * scale)
+    feature_radius = max(14, round(38 * scale))
+    local = (xx - head[0]) ** 2 + (yy - head[1]) ** 2 <= local_radius**2
+    distance = cv2.distanceTransform(moving, cv2.DIST_L2, 5)
+    head_score = np.where(local, distance, 0.0)
+    center_y, center_x = np.unravel_index(np.argmax(head_score), head_score.shape)
+    head_thickness = float(head_score[center_y, center_x])
+    if head_thickness < 2.5:
+        return None, head_thickness
+    feature_mask = np.zeros_like(moving)
+    cv2.circle(feature_mask, (int(center_x), int(center_y)), feature_radius, 255, -1)
+    feature_mask[difference < 8] = 0
+
+    points0 = cv2.goodFeaturesToTrack(
+        seed,
+        maxCorners=200,
+        qualityLevel=0.002,
+        minDistance=1,
+        mask=feature_mask,
+        blockSize=3,
+    )
+    if points0 is None or len(points0) < 3:
+        return None, head_thickness
+    lk = {
+        "winSize": (41, 41),
+        "maxLevel": 3,
+        "criteria": (
+            cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+            50,
+            0.003,
+        ),
+    }
+    first = frames[first_idx]
+    second = frames[second_idx]
+    points1, status01, _error01 = cv2.calcOpticalFlowPyrLK(first, second, points0, None, **lk)
+    if points1 is None:
+        return None, head_thickness
+    back, status10, _error10 = cv2.calcOpticalFlowPyrLK(second, first, points1, None, **lk)
+    if back is None:
+        return None, head_thickness
+
+    flat0 = points0.reshape(-1, 2)
+    flat1 = points1.reshape(-1, 2)
+    valid = status01.reshape(-1).astype(bool) & status10.reshape(-1).astype(bool)
+    valid &= np.linalg.norm(back.reshape(-1, 2) - flat0, axis=1) < 3.0
+    flat0 = flat0[valid]
+    flat1 = flat1[valid]
+    if len(flat0) < 3:
+        return None, head_thickness
+
+    displacement = flat1 - flat0
+    center = np.median(displacement, axis=0)
+    deviation = np.linalg.norm(displacement - center, axis=1)
+    limit = max(2.0, float(np.median(deviation)) * 3.0)
+    consensus = deviation <= limit
+    if int(consensus.sum()) < 3:
+        return None, head_thickness
+    return np.stack((flat0[consensus], flat1[consensus]), axis=1), head_thickness
+
+
 def _clubhead_feature_tracks(
     frames: np.ndarray,
     background: np.ndarray,
@@ -450,7 +681,7 @@ def estimate_chained_delivery(
     ops_club_speed_mph: float | None,
     ball_tracker: ReferenceBallTracker | None = None,
 ) -> ChainedDelivery:
-    """Live impact-centered camera/IWR/OPS club-delivery estimator."""
+    """Estimate final-approach club delivery from camera, IWR, and OPS."""
     if range_evidence is None:
         return ChainedDelivery(status="rejected_no_iwr_range_track")
     if ops_club_speed_mph is None:
@@ -491,14 +722,47 @@ def estimate_chained_delivery(
             trigger_index - IMPACT_PRE_TRIGGER_MAX <= impact_idx <= trigger_index
         )
 
-    feature_tracks, head_thickness = _clubhead_feature_tracks(
-        frames,
-        background,
-        ball,
-        impact_idx=impact_idx,
-        bright_now=bright_now,
-        dark_bg=dark_bg,
-    )
+    contact_camera_s = (int(timestamps_ns[impact_idx]) + int(timestamps_ns[impact_idx + 1])) / 2e9
+    track = range_evidence.track
+    radar_geo = range_evidence.geometry
+    impact_t_s = range_evidence.impact_t_s
+    pair_estimates: dict[tuple[int, int], ApproachPairEstimate] = {}
+    head_thicknesses = []
+    for offsets in APPROACH_PATH_OFFSETS:
+        indexes = np.asarray([impact_idx + offset for offset in offsets])
+        feature_tracks, head_thickness = _clubhead_pair_tracks(
+            frames,
+            background,
+            ball,
+            first_idx=int(indexes[0]),
+            second_idx=int(indexes[1]),
+            bright_now=bright_now,
+            dark_bg=dark_bg,
+        )
+        if head_thickness is not None:
+            head_thicknesses.append(head_thickness)
+        if feature_tracks is None:
+            continue
+        camera_times_s = timestamps_ns[indexes].astype(float) / 1e9
+        relative_s = camera_times_s - contact_camera_s
+        radar_ranges_m = np.asarray(
+            [
+                float(track.range_at(impact_t_s + offset, radar_geo.range_res_m))
+                for offset in relative_s
+            ]
+        )
+        estimate = _delivery_from_feature_pair(
+            feature_tracks,
+            camera_times_s,
+            radar_ranges_m,
+            ball=ball,
+            geometry=geometry,
+            ops_club_speed_mph=ops_club_speed_mph,
+        )
+        if estimate is not None:
+            pair_estimates[offsets] = estimate
+
+    head_thickness = max(head_thicknesses, default=None)
     common = {
         "impact_frame": impact_idx,
         "impact_vs_trigger_ms": (
@@ -507,26 +771,11 @@ def estimate_chained_delivery(
         "scene_p995": round(scene_p995, 1),
         "head_thickness_px": (round(head_thickness, 2) if head_thickness is not None else None),
     }
-    if feature_tracks is None:
+    if not pair_estimates:
         return ChainedDelivery(status="rejected_no_stable_clubhead", **common)
-
-    indexes = np.asarray((impact_idx - 1, impact_idx, impact_idx + 1))
-    camera_times_s = timestamps_ns[indexes].astype(float) / 1e9
-    contact_camera_s = (int(timestamps_ns[impact_idx]) + int(timestamps_ns[impact_idx + 1])) / 2e9
-    relative_s = camera_times_s - contact_camera_s
-    track = range_evidence.track
-    radar_geo = range_evidence.geometry
-    impact_t_s = range_evidence.impact_t_s
-    radar_ranges_m = np.asarray(
-        [float(track.range_at(impact_t_s + offset, radar_geo.range_res_m)) for offset in relative_s]
-    )
-    result = delivery_from_feature_tracks(
-        feature_tracks,
-        camera_times_s,
-        radar_ranges_m,
-        ball=ball,
-        geometry=geometry,
-        ops_club_speed_mph=ops_club_speed_mph,
+    result = combine_approach_estimates(
+        list(pair_estimates.values()),
+        attack_estimate=pair_estimates.get((-1, 0)),
         timing_plausible=timing_plausible,
     )
     return ChainedDelivery(**{**vars(result), **common})

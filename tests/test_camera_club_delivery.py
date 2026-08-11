@@ -1,12 +1,14 @@
 """Tests for the live camera club-delivery estimator and fusion."""
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
 from openflight.camera.club_delivery import (
     SCENE_P995_MIN,
+    ApproachPairEstimate,
     CameraDeliveryGeometry,
     ChainedDelivery,
     FusedDelivery,
@@ -14,6 +16,7 @@ from openflight.camera.club_delivery import (
     TraceResult,
     _detect_impact_index,
     aoa_offset_for_club,
+    combine_approach_estimates,
     delivery_from_feature_tracks,
     estimate_delivery_trace,
     fuse_club_delivery,
@@ -165,6 +168,59 @@ class TestChainedImpactDelivery:
         assert result.club_path_deg == pytest.approx(3.0, abs=0.15)
         assert result.attack_angle_deg == pytest.approx(-4.0, abs=0.15)
         assert result.n_features == 12
+
+    def test_mirrored_capture_preserves_physical_path_sign(self):
+        tracks, times, ranges, ball, geometry = _project_impact_tracks(
+            path_deg=3.0,
+            aoa_deg=-4.0,
+        )
+        mirrored = tracks.copy()
+        mirrored[:, :, 0] = geometry.image_width_px - mirrored[:, :, 0]
+
+        result = delivery_from_feature_tracks(
+            mirrored,
+            times,
+            ranges,
+            ball=ball,
+            geometry=replace(geometry, horizontal_pixel_sign=-1.0),
+            ops_club_speed_mph=35.0 * 2.23694,
+            timing_plausible=True,
+        )
+
+        assert result.club_path_deg == pytest.approx(3.0, abs=0.15)
+        assert result.attack_angle_deg == pytest.approx(-4.0, abs=0.15)
+
+    def test_approach_consensus_gates_path_and_aoa_independently(self):
+        path_windows = [
+            ApproachPairEstimate(path, -4.0, 1.0, 1.0, 12) for path in (2.5, 3.0, 3.5, 4.0)
+        ]
+        implausible_aoa = ApproachPairEstimate(3.0, -18.0, 1.0, 1.0, 12)
+
+        result = combine_approach_estimates(
+            path_windows,
+            attack_estimate=implausible_aoa,
+            timing_plausible=True,
+        )
+
+        assert result.club_path_deg == pytest.approx(3.25)
+        assert result.attack_angle_deg is None
+        assert result.status == "approach_path_only"
+
+    def test_approach_consensus_withholds_unstable_path_but_keeps_aoa(self):
+        path_windows = [
+            ApproachPairEstimate(path, -4.0, 1.0, 1.0, 12) for path in (-13.0, 2.5, 5.0, 14.0)
+        ]
+        attack = ApproachPairEstimate(3.0, -4.2, 1.0, 1.0, 12)
+
+        result = combine_approach_estimates(
+            path_windows,
+            attack_estimate=attack,
+            timing_plausible=True,
+        )
+
+        assert result.club_path_deg is None
+        assert result.attack_angle_deg == pytest.approx(-4.2)
+        assert result.status == "approach_aoa_only"
 
     def test_ops_speed_mismatch_withholds_both_angles(self):
         tracks, times, ranges, ball, geometry = _project_impact_tracks(
