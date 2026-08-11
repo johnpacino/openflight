@@ -132,7 +132,13 @@ class TriggeredFrameBuffer:
             return capture
 
 
-def unpack_r8_frame(raw: np.ndarray, width: int, height: int, rotate_180: bool) -> np.ndarray:
+def unpack_r8_frame(
+    raw: np.ndarray,
+    width: int,
+    height: int,
+    rotate_180: bool,
+    mirror_horizontal: bool = False,
+) -> np.ndarray:
     """Convert the Pi's unpacked OV9281 R8 buffer into a compact image."""
     if raw.ndim != 2 or raw.shape[0] < height:
         raise ValueError(f"unexpected raw frame shape {raw.shape}")
@@ -150,11 +156,17 @@ def unpack_r8_frame(raw: np.ndarray, width: int, height: int, rotate_180: bool) 
 
     if rotate_180:
         image = np.ascontiguousarray(image[::-1, ::-1])
+    if mirror_horizontal:
+        image = np.ascontiguousarray(image[:, ::-1])
     return image
 
 
 def unpack_yuv420_y_plane(
-    main: np.ndarray, width: int, height: int, rotate_180: bool
+    main: np.ndarray,
+    width: int,
+    height: int,
+    rotate_180: bool,
+    mirror_horizontal: bool = False,
 ) -> np.ndarray:
     """Extract the luma plane from Picamera2's YUV420 main stream."""
     if main.ndim == 2:
@@ -170,6 +182,8 @@ def unpack_yuv420_y_plane(
 
     if rotate_180:
         image = np.ascontiguousarray(image[::-1, ::-1])
+    if mirror_horizontal:
+        image = np.ascontiguousarray(image[:, ::-1])
     return image
 
 

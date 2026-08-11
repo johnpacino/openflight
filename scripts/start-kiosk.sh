@@ -30,6 +30,7 @@ CAMERA_CAPTURE_HORIZONTAL_OFFSET_DEG=""
 CAMERA_CAPTURE_STREAM=""
 CAMERA_CAPTURE_SCALER_CROP=""
 CAMERA_CAPTURE_ROTATE_180=false
+CAMERA_CAPTURE_MIRROR_HORIZONTAL=false
 TRACKMAN_TEST=false
 SESSION_LOCATION=""
 DRY_RUN=false
@@ -194,6 +195,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --camera-capture-rotate-180)
             CAMERA_CAPTURE_ROTATE_180=true
+            shift
+            ;;
+        --camera-capture-mirror-horizontal)
+            CAMERA_CAPTURE_MIRROR_HORIZONTAL=true
             shift
             ;;
         --mode)
@@ -631,6 +636,7 @@ if [ "$CAMERA_CAPTURE" = true ]; then
     [ -n "$CAMERA_CAPTURE_STREAM" ] && SERVER_CMD="$SERVER_CMD --camera-capture-stream $CAMERA_CAPTURE_STREAM"
     [ -n "$CAMERA_CAPTURE_SCALER_CROP" ] && SERVER_CMD="$SERVER_CMD --camera-capture-scaler-crop $CAMERA_CAPTURE_SCALER_CROP"
     [ "$CAMERA_CAPTURE_ROTATE_180" = true ] && SERVER_CMD="$SERVER_CMD --camera-capture-rotate-180"
+    [ "$CAMERA_CAPTURE_MIRROR_HORIZONTAL" = true ] && SERVER_CMD="$SERVER_CMD --camera-capture-mirror-horizontal"
 fi
 
 # Simulator connectors: off unless --sim; targets come from config/sim.json

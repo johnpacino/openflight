@@ -1088,6 +1088,7 @@ def init_camera_capture(
     gain: float,
     stream: str,
     rotate_180: bool,
+    mirror_horizontal: bool,
     scaler_crop: tuple[int, int, int, int] | None,
     mount_height_m: float,
     horizontal_offset_deg: float,
@@ -1110,6 +1111,7 @@ def init_camera_capture(
             gain=gain,
             stream=stream,
             rotate_180=rotate_180,
+            mirror_horizontal=mirror_horizontal,
             scaler_crop=scaler_crop,
             gpio_pin=gpio_pin,
         )
@@ -1141,6 +1143,7 @@ def init_camera_capture(
             "gain": settings.gain,
             "stream": settings.stream,
             "rotate_180": settings.rotate_180,
+            "mirror_horizontal": settings.mirror_horizontal,
             "scaler_crop": settings.scaler_crop,
             "mount_height_m": mount_height_m,
             "horizontal_offset_deg": horizontal_offset_deg,
@@ -4170,6 +4173,11 @@ def main():
         help="Rotate saved camera frames 180 degrees.",
     )
     parser.add_argument(
+        "--camera-capture-mirror-horizontal",
+        action="store_true",
+        help="Mirror saved frames left-to-right after mount rotation.",
+    )
+    parser.add_argument(
         "--camera-model",
         default=None,
         help="Path to YOLO model for ball detection (uses Hough by default)",
@@ -4738,6 +4746,7 @@ def main():
             horizontal_offset_deg=args.camera_capture_horizontal_offset_deg,
             stream=args.camera_capture_stream,
             rotate_180=args.camera_capture_rotate_180,
+            mirror_horizontal=args.camera_capture_mirror_horizontal,
             scaler_crop=camera_capture_scaler_crop,
             use_gpio_trigger=not args.iwr6843,
         ):

@@ -55,6 +55,7 @@ class CameraCaptureSettings:
     gain: float = 4.0
     stream: CameraCaptureStream = "raw"
     rotate_180: bool = False
+    mirror_horizontal: bool = False
     scaler_crop: tuple[int, int, int, int] | None = None
     gpio_pin: int = 17
     match_tolerance_s: float = 0.75
@@ -453,6 +454,7 @@ class CameraCaptureRuntime:
                     self.settings.width,
                     self.settings.height,
                     self.settings.rotate_180,
+                    self.settings.mirror_horizontal,
                 )
             else:
                 image = unpack_r8_frame(
@@ -460,6 +462,7 @@ class CameraCaptureRuntime:
                     self.settings.width,
                     self.settings.height,
                     self.settings.rotate_180,
+                    self.settings.mirror_horizontal,
                 )
             self._ring.add_frame(
                 CameraFrame(
@@ -568,6 +571,7 @@ class CameraCaptureRuntime:
                     "gain": self.settings.gain,
                     "stream": self.settings.stream,
                     "rotate_180": self.settings.rotate_180,
+                    "mirror_horizontal": self.settings.mirror_horizontal,
                     "scaler_crop": self.settings.scaler_crop,
                 },
             }

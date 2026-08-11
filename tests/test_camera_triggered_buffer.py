@@ -115,6 +115,17 @@ def test_unpack_r8_from_pisp_high_bytes():
     assert np.array_equal(unpack_r8_frame(raw, 3, 2, True), pixels[::-1, ::-1])
 
 
+def test_unpack_r8_can_correct_horizontal_mirror_after_mount_rotation():
+    pixels = np.array([[10, 20, 30], [40, 50, 60]], dtype=np.uint8)
+    raw = np.zeros((2, 6), dtype=np.uint8)
+    raw[:, 1::2] = pixels
+
+    assert np.array_equal(
+        unpack_r8_frame(raw, 3, 2, rotate_180=True, mirror_horizontal=True),
+        pixels[::-1, :],
+    )
+
+
 def test_unpack_r8_rejects_short_frame():
     with pytest.raises(ValueError, match="unexpected raw frame"):
         unpack_r8_frame(np.zeros((1, 2), dtype=np.uint8), 3, 2, False)
