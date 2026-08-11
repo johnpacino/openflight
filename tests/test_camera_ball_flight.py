@@ -148,6 +148,28 @@ def test_path_estimate_recovers_known_horizontal_without_iwr_horizontal():
     assert estimate.vertical_deg == pytest.approx(20.0, abs=0.25)
 
 
+def test_path_estimate_recovers_horizontal_from_apparent_ball_size_without_iwr_range():
+    geometry, _anchor, model, candidates, timestamps, _evidence, speed_ms = _synthetic_path()
+
+    result = _path_estimate(
+        path=list(enumerate(candidates)),
+        frame_indices=list(range(len(candidates))),
+        timestamps_ns=timestamps,
+        trigger_ns=0,
+        range_evidence=None,
+        ops_ball_speed_mph=speed_ms * 2.23694,
+        iwr_vertical_deg=20.0,
+        model=model,
+        geometry=geometry,
+        thresholds=(100, 12, 5),
+    )
+
+    assert result is not None
+    _score, estimate = result
+    assert estimate.horizontal_deg == pytest.approx(4.0, abs=0.75)
+    assert estimate.vertical_deg == pytest.approx(20.0, abs=1.5)
+
+
 def test_path_estimate_does_not_treat_lateral_ball_position_as_target_yaw():
     geometry, _anchor, model, candidates, timestamps, evidence, speed_ms = _synthetic_path(
         horizontal_deg=0.0,
@@ -262,6 +284,26 @@ def test_experimental_camera_is_retained_when_iwr_is_unavailable():
     assert decision.source == "camera_assisted_experimental"
     assert decision.confidence == pytest.approx(0.3)
     assert decision.status == "camera_experimental_no_iwr"
+
+
+def test_camera_size_depth_is_labeled_as_camera_only_fallback():
+    estimate = CameraBallEstimate(
+        status="accepted_camera_only",
+        confidence_tier="experimental",
+        horizontal_deg=3.0,
+        depth_source="camera_size",
+    )
+
+    decision = select_camera_assisted_horizontal(
+        estimate,
+        iwr_horizontal_deg=None,
+        iwr_confidence=None,
+    )
+
+    assert decision.selected_deg == pytest.approx(3.0)
+    assert decision.source == "camera_only_experimental"
+    assert decision.confidence == pytest.approx(0.3)
+    assert decision.status == "camera_only_experimental"
 
 
 def test_withheld_camera_falls_back_to_unchanged_iwr():

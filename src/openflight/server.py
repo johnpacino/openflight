@@ -2760,7 +2760,7 @@ def _fuse_camera_ball_flight(shot: Shot, camera_capture) -> None:
         shot.experimental_camera_horizontal_deg = decision.camera_horizontal_deg
         shot.experimental_camera_horizontal_confidence = (
             decision.confidence
-            if decision.source == "camera_assisted_experimental"
+            if decision.source in ("camera_assisted_experimental", "camera_only_experimental")
             else None
         )
         shot.experimental_camera_horizontal_status = (
