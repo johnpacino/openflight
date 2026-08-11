@@ -11,6 +11,27 @@
   max-height: 100vh;
   overflow: hidden;
   background: var(--color-bg-deep);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The kiosk should pan rather than select labels, while editable fields retain
+   normal cursor and selection behavior. */
+.app :is(input:not([type='range']), textarea, select, [contenteditable='true']) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.app :is(
+    .shot-list__rows,
+    .debug-panel__tab-content,
+    .trigger-history,
+    .club-select__panel,
+    .display-mode
+  ) {
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Header */
