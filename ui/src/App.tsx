@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useSocket } from './hooks/useSocket';
+import { usePointerDragScroll } from './hooks/usePointerDragScroll';
 import { useSystemStore } from './stores/useSystemStore';
 import { useShotStore } from './stores/useShotStore';
 import { useCameraStore } from './stores/useCameraStore';
@@ -73,6 +74,7 @@ const Icons = {
 
 function AppContent() {
   const { shutdown } = useSocket();
+  usePointerDragScroll();
   const { connected, mockMode, debugMode, simStatuses, latestSimShots, serverClub } = useSystemStore(
     useShallow((state) => ({
       connected: state.connected,
