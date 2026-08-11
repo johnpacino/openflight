@@ -26,6 +26,7 @@ export interface CameraCaptureSettings {
   max_exposure_us?: number;
   gain?: number;
   stream?: string;
+  rotate_180?: boolean;
   alignment_x_pct?: number;
   alignment_y_pct?: number;
   raw_crop_adjustable?: boolean;

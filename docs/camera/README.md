@@ -43,7 +43,7 @@ contain:
 
 TrackMan-aligned 7-iron and 9-iron captures showed that a `200`-row view was
 needed to retain both the final clubhead approach and early ball flight. The
-tested high-speed `320x200` mode defaults to the sensor's `(480,300)` crop.
+tested high-speed `320x200` mode defaults to a vertically centered `(480,150)` crop.
 A `150`-row crop was too tight for robust combined clubhead and ball-path
 tracking. A raised `200`-row crop remains a future experiment, not part of the
 checked-in driver.
@@ -162,9 +162,10 @@ and vertical alignment controls move the preview guide only.
 With the OpenFlight driver and the fixed `320x200` capture mode, **View up** and
 **View down** move the real sensor window in safe 10-pixel steps. Each move
 briefly restarts the camera and refills the pre-trigger ring. Wait for the tab
-to report **Armed** before hitting. The tested sensor window starts at its
-lowest position, so it can move up by as much as 150 output pixels and then
-back down toward zero.
+to report **Armed** before hitting. The centered starting position provides
+70 output pixels of safe UI travel in either direction. The controls account
+for the tested 180-degree camera mount, so the visible scene moves in the
+direction printed on the button.
 
 Resolution, requested frame rate, and pre/post-trigger timing are shown as
 read-only capture provenance. Changing those values requires a controlled

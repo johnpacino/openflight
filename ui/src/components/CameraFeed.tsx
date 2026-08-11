@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import type { CameraCaptureSettings, CameraStatus } from '../stores/useCameraStore';
+import { verticalViewTargets } from '../utils/cameraView';
 import { getServerOrigin } from '../utils/serverOrigin';
 import './CameraFeed.css';
 
@@ -39,6 +40,9 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
   const verticalMin = settings.vertical_offset_min_px ?? verticalOffset;
   const verticalMax = settings.vertical_offset_max_px ?? verticalOffset;
   const verticalStep = settings.vertical_offset_step_px ?? 10;
+  const viewTargets = verticalViewTargets(verticalOffset, verticalStep, settings.rotate_180 ?? false);
+  const viewUpOffset = viewTargets.up;
+  const viewDownOffset = viewTargets.down;
 
   const isDirty =
     alignmentX !== (settings.alignment_x_pct ?? 50) ||
@@ -73,16 +77,24 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
           <div className="camera-settings__view-controls">
             <button
               type="button"
-              disabled={!settings.raw_crop_adjustable || verticalOffset <= verticalMin}
-              onClick={() => onUpdate({ vertical_offset_px: verticalOffset - verticalStep })}
+              disabled={
+                !settings.raw_crop_adjustable ||
+                viewUpOffset < verticalMin ||
+                viewUpOffset > verticalMax
+              }
+              onClick={() => onUpdate({ vertical_offset_px: viewUpOffset })}
             >
               View up
             </button>
             <output>{`${verticalOffset > 0 ? '+' : ''}${verticalOffset} px`}</output>
             <button
               type="button"
-              disabled={!settings.raw_crop_adjustable || verticalOffset >= verticalMax}
-              onClick={() => onUpdate({ vertical_offset_px: verticalOffset + verticalStep })}
+              disabled={
+                !settings.raw_crop_adjustable ||
+                viewDownOffset < verticalMin ||
+                viewDownOffset > verticalMax
+              }
+              onClick={() => onUpdate({ vertical_offset_px: viewDownOffset })}
             >
               View down
             </button>

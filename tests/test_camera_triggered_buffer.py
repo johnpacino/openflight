@@ -216,8 +216,8 @@ def test_live_image_controls_reject_invalid_values(tmp_path, exposure_us, gain, 
 
 def test_vertical_crop_limits_fix_320x200_to_safe_ten_pixel_steps():
     assert vertical_crop_limits(320, 200) == {
-        "min_px": -150,
-        "max_px": 0,
+        "min_px": -70,
+        "max_px": 70,
         "step_px": 10,
     }
     assert vertical_crop_limits(640, 400) is None
@@ -236,14 +236,14 @@ def test_vertical_crop_update_restarts_camera_and_writes_driver_parameter(tmp_pa
     monkeypatch.setattr(runtime, "stop", lambda: calls.append("stop"))
     monkeypatch.setattr(runtime, "start", lambda: calls.append("start"))
 
-    result = runtime.update_vertical_crop(-10)
+    result = runtime.update_vertical_crop(10)
 
     assert calls == ["stop", "start"]
-    assert parameter.read_text(encoding="ascii") == "-10\n"
-    assert result["vertical_offset_px"] == -10
+    assert parameter.read_text(encoding="ascii") == "10\n"
+    assert result["vertical_offset_px"] == 10
 
 
-@pytest.mark.parametrize("offset", [-151, -5, 10])
+@pytest.mark.parametrize("offset", [-80, -5, 80])
 def test_vertical_crop_update_rejects_unsafe_or_unaligned_offsets(tmp_path, offset):
     parameter = tmp_path / "strip_y_offset"
     parameter.write_text("0\n", encoding="ascii")

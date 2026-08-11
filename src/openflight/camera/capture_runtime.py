@@ -37,8 +37,8 @@ OV9281_VERTICAL_OFFSET_PATH = Path("/sys/module/ov9282/parameters/strip_y_offset
 def vertical_crop_limits(width: int, height: int) -> dict[str, int] | None:
     """Return safe output-pixel crop limits for a supported sensor mode."""
     if (width, height) == (320, 200):
-        # This mode starts at the sensor's lower edge, so it can only move up.
-        return {"min_px": -150, "max_px": 0, "step_px": 10}
+        # Keep five pixels of margin around the driver's centered +/-75 limit.
+        return {"min_px": -70, "max_px": 70, "step_px": 10}
     return None
 
 

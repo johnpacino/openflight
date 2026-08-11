@@ -57,8 +57,8 @@ class TestCameraCaptureSettings:
                 return {
                     "raw_crop_adjustable": True,
                     "vertical_offset_px": -10,
-                    "vertical_offset_min_px": -150,
-                    "vertical_offset_max_px": 0,
+                    "vertical_offset_min_px": -70,
+                    "vertical_offset_max_px": 70,
                     "vertical_offset_step_px": 10,
                 }
 
@@ -120,8 +120,8 @@ class TestCameraCaptureSettings:
                 return {
                     "raw_crop_adjustable": True,
                     "vertical_offset_px": -20,
-                    "vertical_offset_min_px": -150,
-                    "vertical_offset_max_px": 0,
+                    "vertical_offset_min_px": -70,
+                    "vertical_offset_max_px": 70,
                     "vertical_offset_step_px": 10,
                 }
 

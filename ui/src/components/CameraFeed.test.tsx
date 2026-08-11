@@ -1,6 +1,7 @@
 import { renderToString } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { CameraCaptureSettings, CameraStatus } from '../stores/useCameraStore';
+import { verticalViewTargets } from '../utils/cameraView';
 import { CameraFeed } from './CameraFeed';
 
 const cameraStatus: CameraStatus = {
@@ -26,16 +27,22 @@ const captureSettings: CameraCaptureSettings = {
   exposure_us: 500,
   max_exposure_us: 1666,
   gain: 2,
+  rotate_180: true,
   alignment_x_pct: 48,
   alignment_y_pct: 55,
   raw_crop_adjustable: true,
   vertical_offset_px: -20,
-  vertical_offset_min_px: -150,
-  vertical_offset_max_px: 0,
+  vertical_offset_min_px: -70,
+  vertical_offset_max_px: 70,
   vertical_offset_step_px: 10,
 };
 
 describe('CameraFeed', () => {
+  it('maps view direction through the 180-degree mount rotation', () => {
+    expect(verticalViewTargets(0, 10, true)).toEqual({ up: 10, down: -10 });
+    expect(verticalViewTargets(0, 10, false)).toEqual({ up: -10, down: 10 });
+  });
+
   it('renders the dominant preview workspace and operator settings', () => {
     const html = renderToString(
       <CameraFeed
