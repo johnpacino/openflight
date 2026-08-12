@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from openflight.camera.club_motion import ReferenceBall, detect_reference_ball
+from openflight.camera.geometry import deroll_normalized_offsets
 from openflight.launch_monitor import ClubType
 
 # --- scene / mask constants -------------------------------------------------
@@ -110,6 +111,7 @@ class CameraDeliveryGeometry:
     # Saved-frame mirroring changes image handedness. Keep public club path
     # positive in-to-out by restoring physical lateral orientation here.
     horizontal_pixel_sign: float = 1.0
+    roll_correction_deg: float = 0.0
 
     @property
     def ball_forward_m(self) -> float:
@@ -225,14 +227,27 @@ def _pixels_to_world(
         raise ValueError("invalid camera focal scale from reference ball")
     center_x = geometry.image_width_px / 2.0
     center_y = geometry.image_height_px / 2.0
+    ball_x = geometry.horizontal_pixel_sign * (ball.x - center_x) / focal_px
+    ball_z = -(ball.y - center_y) / focal_px
+    _ball_x, ball_z = deroll_normalized_offsets(
+        ball_x,
+        ball_z,
+        geometry.roll_correction_deg,
+    )
     pitch_rad = math.atan2(
         geometry.ball_height_m - geometry.camera_height_m,
         geometry.tee_range_m,
-    ) - math.atan2(-(ball.y - center_y) / focal_px, 1.0)
+    ) - math.atan2(ball_z, 1.0)
+    image_x = geometry.horizontal_pixel_sign * (points_px[:, 0] - center_x) / focal_px
     image_z = -(points_px[:, 1] - center_y) / focal_px
+    image_x, image_z = deroll_normalized_offsets(
+        image_x,
+        image_z,
+        geometry.roll_correction_deg,
+    )
     rays = np.column_stack(
         (
-            geometry.horizontal_pixel_sign * (points_px[:, 0] - center_x) / focal_px,
+            image_x,
             math.cos(pitch_rad) - image_z * math.sin(pitch_rad),
             math.sin(pitch_rad) + image_z * math.cos(pitch_rad),
         )

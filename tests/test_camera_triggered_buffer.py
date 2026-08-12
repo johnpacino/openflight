@@ -205,6 +205,34 @@ def test_live_image_controls_update_camera_without_restarting(tmp_path):
     assert runtime.settings.gain == 3.5
 
 
+def test_preview_roll_correction_does_not_modify_buffered_raw_frame(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    runtime = CameraCaptureRuntime(
+        output_dir=tmp_path,
+        settings=CameraCaptureSettings(roll_correction_deg=90.0),
+    )
+    image = np.zeros((9, 9), dtype=np.uint8)
+    image[2, 4] = 255
+    frame = CameraFrame(
+        image=image,
+        sensor_timestamp_ns=1,
+        host_timestamp_ns=2,
+        exposure_us=500,
+        analogue_gain=2.0,
+    )
+    runtime._ring.add_frame(frame)
+    runtime._camera = object()
+    runtime._running = True
+
+    encoded = runtime.capture_preview_jpeg(quality=100)
+
+    assert encoded is not None
+    preview = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert preview.shape == image.shape
+    assert not np.array_equal(preview, image)
+    assert np.array_equal(runtime._ring.latest_frame.image, image)
+
+
 @pytest.mark.parametrize(
     ("exposure_us", "gain", "message"),
     [

@@ -56,6 +56,7 @@ class CameraCaptureSettings:
     stream: CameraCaptureStream = "raw"
     rotate_180: bool = False
     mirror_horizontal: bool = False
+    roll_correction_deg: float = 0.0
     scaler_crop: tuple[int, int, int, int] | None = None
     gpio_pin: int = 17
     match_tolerance_s: float = 0.75
@@ -240,6 +241,21 @@ class CameraCaptureRuntime:
             if frame is None:
                 return None
             image = np.ascontiguousarray(frame.image)
+            if abs(self.settings.roll_correction_deg) > 1e-6:
+                height, width = image.shape
+                transform = cv2.getRotationMatrix2D(
+                    (width / 2.0, height / 2.0),
+                    -self.settings.roll_correction_deg,
+                    1.0,
+                )
+                image = cv2.warpAffine(
+                    image,
+                    transform,
+                    (width, height),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
             ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
             return encoded.tobytes() if ok else None
         except Exception:  # pylint: disable=broad-exception-caught
@@ -572,6 +588,7 @@ class CameraCaptureRuntime:
                     "stream": self.settings.stream,
                     "rotate_180": self.settings.rotate_180,
                     "mirror_horizontal": self.settings.mirror_horizontal,
+                    "roll_correction_deg": self.settings.roll_correction_deg,
                     "scaler_crop": self.settings.scaler_crop,
                 },
             }

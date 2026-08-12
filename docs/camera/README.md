@@ -152,6 +152,22 @@ Use the preview to place the ball near the horizontal center and ensure the
 clubhead and expected launch corridor remain within the vertical window. The
 preview is rotated for the tested inverted camera mount.
 
+Small residual camera roll can be corrected without resampling the high-speed
+capture. Pass a clockwise-positive correction measured from a stationary
+full-field preview:
+
+```bash
+scripts/start-kiosk.sh \
+  --camera-capture \
+  --camera-capture-roll-deg 2.8
+```
+
+OpenFlight applies this value to the Camera-tab preview and to the pixel-ray
+geometry used by horizontal launch, Club Path, and Attack Angle. Saved raw
+frames remain unchanged so calibration can be revised during offline replay.
+Physical leveling is still preferred when practical because it preserves the
+entire usable area of a compact sensor crop.
+
 ## Camera Tab Controls
 
 When `--camera-capture` is enabled, the Camera tab keeps the preview visible

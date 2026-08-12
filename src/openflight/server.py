@@ -1093,6 +1093,7 @@ def init_camera_capture(
     stream: str,
     rotate_180: bool,
     mirror_horizontal: bool,
+    roll_correction_deg: float,
     scaler_crop: tuple[int, int, int, int] | None,
     mount_height_m: float,
     horizontal_offset_deg: float,
@@ -1116,6 +1117,7 @@ def init_camera_capture(
             stream=stream,
             rotate_180=rotate_180,
             mirror_horizontal=mirror_horizontal,
+            roll_correction_deg=roll_correction_deg,
             scaler_crop=scaler_crop,
             gpio_pin=gpio_pin,
         )
@@ -1148,6 +1150,7 @@ def init_camera_capture(
             "stream": settings.stream,
             "rotate_180": settings.rotate_180,
             "mirror_horizontal": settings.mirror_horizontal,
+            "roll_correction_deg": settings.roll_correction_deg,
             "scaler_crop": settings.scaler_crop,
             "mount_height_m": mount_height_m,
             "horizontal_offset_deg": horizontal_offset_deg,
@@ -2681,6 +2684,9 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
                                 horizontal_pixel_sign=(
                                     -1.0 if camera_capture_config.get("mirror_horizontal") else 1.0
                                 ),
+                                roll_correction_deg=float(
+                                    camera_capture_config.get("roll_correction_deg", 0.0)
+                                ),
                             ),
                             ops_club_speed_mph=shot.club_speed_mph,
                             ball_tracker=camera_reference_ball_tracker,
@@ -2757,6 +2763,9 @@ def _fuse_camera_ball_flight(shot: Shot, camera_capture) -> None:
                                 ball_height_m=calibration.tee_ball_height_m,
                                 horizontal_offset_deg=float(
                                     camera_capture_config.get("horizontal_offset_deg", 0.0)
+                                ),
+                                roll_correction_deg=float(
+                                    camera_capture_config.get("roll_correction_deg", 0.0)
                                 ),
                                 image_width_px=int(camera_capture_config["width"]),
                                 image_height_px=int(camera_capture_config["height"]),
@@ -4174,6 +4183,15 @@ def main():
         help="Measured camera target-line correction added to horizontal launch angles.",
     )
     parser.add_argument(
+        "--camera-capture-roll-deg",
+        type=float,
+        default=0.0,
+        help=(
+            "Clockwise image-roll correction applied to camera preview and geometry "
+            "without modifying saved raw frames."
+        ),
+    )
+    parser.add_argument(
         "--camera-capture-stream",
         choices=("raw", "main-y"),
         default="raw",
@@ -4761,6 +4779,7 @@ def main():
             gain=args.camera_capture_gain,
             mount_height_m=args.camera_capture_mount_height_m,
             horizontal_offset_deg=args.camera_capture_horizontal_offset_deg,
+            roll_correction_deg=args.camera_capture_roll_deg,
             stream=args.camera_capture_stream,
             rotate_180=args.camera_capture_rotate_180,
             mirror_horizontal=args.camera_capture_mirror_horizontal,

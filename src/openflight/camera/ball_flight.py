@@ -18,6 +18,7 @@ from openflight.camera.club_motion import (
     ReferenceBall,
     detect_reference_ball,
 )
+from openflight.camera.geometry import deroll_normalized_offsets
 
 MPH_PER_MS = 2.23694
 PARAMETER_SWEEP_SIZE = 27
@@ -46,6 +47,7 @@ class CameraBallGeometry:
     tee_range_m: float
     ball_height_m: float
     horizontal_offset_deg: float = 0.0
+    roll_correction_deg: float = 0.0
     ball_diameter_m: float = BALL_DIAMETER_MM / 1000.0
     image_width_px: int = 640
     image_height_px: int = 400
@@ -103,16 +105,24 @@ def _camera_model(
     geometry: CameraBallGeometry,
 ) -> tuple[float, float, np.ndarray]:
     """Infer focal scale and pose from the stationary regulation-size ball."""
+    center_x = geometry.image_width_px / 2.0
     center_y = geometry.image_height_px / 2.0
     camera_ball_range = math.hypot(
         geometry.tee_range_m,
         geometry.ball_height_m - geometry.camera_height_m,
     )
     focal_px = anchor.diameter_px * camera_ball_range / geometry.ball_diameter_m
+    ball_x = (anchor.x - center_x) / focal_px
+    ball_z = -(anchor.y - center_y) / focal_px
+    _ball_x, ball_z = deroll_normalized_offsets(
+        ball_x,
+        ball_z,
+        geometry.roll_correction_deg,
+    )
     pitch = math.atan2(
         geometry.ball_height_m - geometry.camera_height_m,
         geometry.tee_range_m,
-    ) - math.atan2(-(anchor.y - center_y) / focal_px, 1.0)
+    ) - math.atan2(ball_z, 1.0)
     radar_from_camera = np.array([0.0, 0.0, geometry.camera_height_m - geometry.radar_height_m])
     return focal_px, pitch, radar_from_camera
 
@@ -144,10 +154,16 @@ def _camera_ray(
 ) -> np.ndarray:
     """Return the unit camera ray through a detected ball centroid."""
     focal_px, pitch, _radar_from_camera = model
+    image_x = (candidate.x - geometry.image_width_px / 2.0) / focal_px
     image_z = -(candidate.y - geometry.image_height_px / 2.0) / focal_px
+    image_x, image_z = deroll_normalized_offsets(
+        image_x,
+        image_z,
+        geometry.roll_correction_deg,
+    )
     ray = np.array(
         [
-            (candidate.x - geometry.image_width_px / 2.0) / focal_px,
+            image_x,
             math.cos(pitch) - image_z * math.sin(pitch),
             math.sin(pitch) + image_z * math.cos(pitch),
         ]

@@ -28,6 +28,7 @@ export interface CameraCaptureSettings {
   stream?: string;
   rotate_180?: boolean;
   mirror_horizontal?: boolean;
+  roll_correction_deg?: number;
   alignment_x_pct?: number;
   alignment_y_pct?: number;
   raw_crop_adjustable?: boolean;
