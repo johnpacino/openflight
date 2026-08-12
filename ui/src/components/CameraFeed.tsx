@@ -410,7 +410,6 @@ export function CameraFeed({
             )}
           </div>
           <CaptureSettingsPanel
-            key={`${captureSettings.exposure_us}-${captureSettings.gain}-${captureSettings.alignment_x_pct}-${captureSettings.alignment_y_pct}`}
             settings={captureSettings}
             exposureQuality={exposureQuality}
             error={captureSettingsError}
