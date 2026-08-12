@@ -15,7 +15,6 @@ interface CameraFeedProps {
 
 interface CaptureSettingsPanelProps {
   settings: CameraCaptureSettings;
-  exposureQuality: ExposureQuality | null;
   error: string | null;
   onUpdate: (settings: Partial<CameraCaptureSettings>) => void;
 }
@@ -78,7 +77,7 @@ function brightnessStepLabel(index: number): string {
   return `${named.label}${delta === 0 ? '' : ` ${delta > 0 ? '+' : ''}${delta}`}`;
 }
 
-function CaptureSettingsPanel({ settings, exposureQuality, error, onUpdate }: CaptureSettingsPanelProps) {
+function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPanelProps) {
   const [alignmentX, setAlignmentX] = useState(settings.alignment_x_pct ?? 50);
   const [alignmentY, setAlignmentY] = useState(settings.alignment_y_pct ?? 50);
   const verticalOffset = settings.vertical_offset_px ?? 0;
@@ -197,16 +196,6 @@ function CaptureSettingsPanel({ settings, exposureQuality, error, onUpdate }: Ca
             >
               + Brighter
             </button>
-          </div>
-          <div className={`camera-settings__exposure-quality camera-settings__exposure-quality--${exposureQuality?.status ?? 'checking'}`}>
-            <div>
-              <span>Exposure check</span>
-              <strong>{exposureQuality ? exposureQuality.status.replace('_', ' ') : 'Checking preview'}</strong>
-            </div>
-            <p>{exposureQuality?.message ?? 'Analyzing the impact area…'}</p>
-            {exposureQuality?.sample_available && (
-              <small>{exposureQuality.clipped_pct?.toFixed(1)}% clipped · contrast {exposureQuality.contrast?.toFixed(0)}</small>
-            )}
           </div>
           <p className="camera-settings__note">
             Brighter profiles keep the club sharper. Night prioritizes flashlight visibility and may add motion blur.
@@ -367,7 +356,15 @@ export function CameraFeed({
             <span className="camera-feed__eyebrow">High-speed capture</span>
             <h2 className="camera-feed__title">Camera alignment</h2>
           </div>
-          {lastUpdated && <span className="camera-feed__timestamp">preview {lastUpdated.toLocaleTimeString()}</span>}
+          <div className="camera-feed__header-status">
+            <span
+              className={`camera-feed__exposure-quality camera-feed__exposure-quality--${exposureQuality?.status ?? 'checking'}`}
+              title={exposureQuality?.message ?? 'Analyzing the impact area'}
+            >
+              Exposure check: {exposureQuality ? exposureQuality.status.replace('_', ' ') : 'checking'}
+            </span>
+            {lastUpdated && <span className="camera-feed__timestamp">preview {lastUpdated.toLocaleTimeString()}</span>}
+          </div>
         </div>
         <div className="camera-feed__workspace">
           <div className="camera-feed__preview-column">
@@ -411,7 +408,6 @@ export function CameraFeed({
           </div>
           <CaptureSettingsPanel
             settings={captureSettings}
-            exposureQuality={exposureQuality}
             error={captureSettingsError}
             onUpdate={onUpdateCaptureSettings}
           />

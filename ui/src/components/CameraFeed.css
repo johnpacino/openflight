@@ -415,69 +415,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.camera-settings__exposure-quality {
-  padding: 9px 10px;
-  border: 1px solid rgba(251, 191, 36, 0.3);
-  border-radius: var(--radius-sm);
-  background: rgba(251, 191, 36, 0.07);
-}
-
-.camera-settings__exposure-quality > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-xs);
-}
-
-.camera-settings__exposure-quality span,
-.camera-settings__exposure-quality strong {
-  font-size: 0.65rem;
-  font-weight: 700;
-}
-
-.camera-settings__exposure-quality span {
-  color: var(--text-secondary);
-}
-
-.camera-settings__exposure-quality strong {
-  color: var(--color-warning);
-  text-transform: capitalize;
-}
-
-.camera-settings__exposure-quality p {
-  margin: 5px 0 0;
-  color: var(--color-cream);
-  font-size: 0.62rem;
-  line-height: 1.35;
-}
-
-.camera-settings__exposure-quality small {
-  display: block;
-  margin-top: 4px;
-  color: var(--text-muted);
-  font-size: 0.55rem;
-}
-
-.camera-settings__exposure-quality--good {
-  border-color: rgba(74, 222, 128, 0.38);
-  background: rgba(74, 222, 128, 0.08);
-}
-
-.camera-settings__exposure-quality--good strong {
-  color: var(--color-success);
-}
-
-.camera-settings__exposure-quality--too_dark,
-.camera-settings__exposure-quality--too_bright {
-  border-color: rgba(248, 113, 113, 0.4);
-  background: rgba(248, 113, 113, 0.08);
-}
-
-.camera-settings__exposure-quality--too_dark strong,
-.camera-settings__exposure-quality--too_bright strong {
-  color: var(--color-danger);
-}
-
 .camera-settings__view-controls {
   display: grid;
   grid-template-columns: 1fr 58px 1fr;
@@ -635,7 +572,38 @@
 .camera-feed__timestamp {
   font-size: 0.8rem;
   color: var(--text-secondary, #9aa4b2);
+}
+
+.camera-feed__header-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
   margin-left: auto;
+}
+
+.camera-feed__exposure-quality {
+  padding: 5px 9px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: var(--radius-xl);
+  background: rgba(251, 191, 36, 0.09);
+  color: var(--color-warning);
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.camera-feed__exposure-quality--good {
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(74, 222, 128, 0.09);
+  color: var(--color-success);
+}
+
+.camera-feed__exposure-quality--too_dark,
+.camera-feed__exposure-quality--too_bright {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(248, 113, 113, 0.09);
+  color: var(--color-danger);
 }
 
 /* Alignment crosshair over the capture preview */

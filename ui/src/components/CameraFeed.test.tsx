@@ -59,6 +59,7 @@ describe('CameraFeed', () => {
     expect(html).toContain('Camera setup');
     expect(html).toContain('Environment profile');
     expect(html).toContain('Exposure check');
+    expect(html).toContain('camera-feed__exposure-quality');
     expect(html).toContain('Darker');
     expect(html).toContain('Brighter');
     expect(html).toContain('Outdoor sun');
