@@ -41,6 +41,21 @@ def test_detect_reference_ball_finds_dark_ball_in_bright_spotlight():
     assert 9.0 <= ball.diameter_px <= 15.0
 
 
+def test_compact_capture_ignores_saturated_clutter_above_hitting_zone():
+    frames = np.full((12, 200, 320), 175, dtype=np.uint8)
+    yy, xx = np.indices(frames.shape[1:])
+    # The compact outdoor capture can contain round, saturated background
+    # highlights much closer to image center than the teed ball.
+    frames[:, (xx - 160) ** 2 + (yy - 42) ** 2 <= 5**2] = 255
+    frames[:, (xx - 148) ** 2 + (yy - 130) ** 2 <= 7**2] = 65
+
+    ball = detect_reference_ball(frames)
+
+    assert ball.x == pytest.approx(148.0, abs=1.0)
+    assert ball.y == pytest.approx(130.0, abs=1.0)
+    assert 10.0 <= ball.diameter_px <= 18.0
+
+
 def test_image_plane_motion_uses_terminal_interval_and_ball_scale():
     points = [
         ImagePoint(frame_index=4, x=10.0, y=20.0),

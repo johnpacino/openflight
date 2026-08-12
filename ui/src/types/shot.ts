@@ -1,4 +1,4 @@
-export type SpinQuality = 'high' | 'medium' | 'low' | 'experimental';
+export type SpinQuality = 'high' | 'medium' | 'low' | 'experimental' | 'withheld';
 
 export interface Shot {
   mode?: 'rolling-buffer' | 'mock' | 'swing-speed';
@@ -29,8 +29,8 @@ export interface Shot {
   experimental_fused_attack_angle_deg?: number | null;
   experimental_fused_club_path_deg?: number | null;
   experimental_fused_status?: string | null;
-  experimental_fused_attack_angle_confidence?: 'high' | 'medium' | 'low' | null;
-  experimental_fused_club_path_confidence?: 'high' | 'medium' | 'low' | null;
+  experimental_fused_attack_angle_confidence?: 'high' | 'medium' | 'low' | 'withheld' | null;
+  experimental_fused_club_path_confidence?: 'high' | 'medium' | 'low' | 'withheld' | null;
   experimental_camera_trace_deg?: number | null;
   experimental_aoa_offset_source?: string | null;
   iwr6843_horizontal_deg?: number | null;

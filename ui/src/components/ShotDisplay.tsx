@@ -227,8 +227,12 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
 
   const hasSpin = shot.spin_rpm !== null;
   const hasLaunchAngle = shot.launch_angle_vertical !== null;
+  const fusedDeliveryAttempted = shot.experimental_fused_status != null;
   const attackAngle =
-    shot.club_angle_deg ?? shot.experimental_fused_attack_angle_deg ?? shot.experimental_attack_angle_deg ?? null;
+    shot.club_angle_deg ??
+    shot.experimental_fused_attack_angle_deg ??
+    (!fusedDeliveryAttempted ? shot.experimental_attack_angle_deg : null) ??
+    null;
   const attackIsExperimental =
     shot.club_angle_deg === null &&
     (shot.experimental_fused_attack_angle_deg != null ||
@@ -236,7 +240,10 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
       shot.experimental_attack_angle_deg != null ||
       shot.experimental_attack_angle_status != null);
   const clubPath =
-    shot.club_path_deg ?? shot.experimental_fused_club_path_deg ?? shot.experimental_club_path_deg ?? null;
+    shot.club_path_deg ??
+    shot.experimental_fused_club_path_deg ??
+    (!fusedDeliveryAttempted ? shot.experimental_club_path_deg : null) ??
+    null;
   const clubPathIsExperimental =
     shot.club_path_deg === null &&
     (shot.experimental_fused_club_path_deg != null ||
@@ -285,8 +292,10 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
               unit={attackAngle !== null ? '°' : undefined}
               label="Club AoA"
               subtext={
-                shot.experimental_fused_attack_angle_deg != null
-                  ? 'camera fused (experimental)'
+                fusedDeliveryAttempted
+                  ? shot.experimental_fused_attack_angle_deg != null
+                    ? 'camera fused (experimental)'
+                    : experimentalStatus(shot.experimental_fused_status)
                   : attackIsExperimental
                     ? experimentalStatus(shot.experimental_attack_angle_status)
                     : 'radar'
@@ -308,8 +317,10 @@ export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
               unit={clubPath !== null ? '°' : undefined}
               label="Club Path"
               subtext={
-                shot.experimental_fused_club_path_deg != null
-                  ? 'camera fused (experimental)'
+                fusedDeliveryAttempted
+                  ? shot.experimental_fused_club_path_deg != null
+                    ? 'camera fused (experimental)'
+                    : experimentalStatus(shot.experimental_fused_status)
                   : clubPathIsExperimental
                     ? experimentalStatus(shot.experimental_club_path_status)
                     : 'radar'

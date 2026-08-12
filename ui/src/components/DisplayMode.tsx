@@ -62,6 +62,7 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
   }
 
   const carryYards = shot.carry_spin_adjusted ?? shot.estimated_carry_yards;
+  const fusedDeliveryAttempted = shot.experimental_fused_status != null;
 
   return [
     {
@@ -99,21 +100,26 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
     {
       label: 'Club Path',
       value: formatOptionalNumber(
-        shot.club_path_deg ?? shot.experimental_fused_club_path_deg ?? shot.experimental_club_path_deg ?? null,
+        shot.club_path_deg ??
+          shot.experimental_fused_club_path_deg ??
+          (!fusedDeliveryAttempted ? shot.experimental_club_path_deg : null) ??
+          null,
         1,
         true,
       ),
       unit:
         shot.club_path_deg == null &&
         shot.experimental_fused_club_path_deg == null &&
-        shot.experimental_club_path_deg == null
+        (fusedDeliveryAttempted || shot.experimental_club_path_deg == null)
           ? undefined
           : 'deg',
       detail:
         shot.club_path_deg != null
           ? undefined
-          : shot.experimental_fused_club_path_deg != null
-            ? 'camera fused (exp.)'
+          : fusedDeliveryAttempted
+            ? shot.experimental_fused_club_path_deg != null
+              ? 'camera fused (exp.)'
+              : experimentalStatus(shot.experimental_fused_status)
             : shot.experimental_club_path_deg != null || shot.experimental_club_path_status != null
               ? experimentalStatus(shot.experimental_club_path_status)
               : undefined,
@@ -121,19 +127,24 @@ function buildMetrics(shot: Shot | null, unitSystem: 'imperial' | 'metric'): Dis
     {
       label: 'Club AoA',
       value: formatOptionalNumber(
-        shot.club_angle_deg ?? shot.experimental_fused_attack_angle_deg ?? shot.experimental_attack_angle_deg ?? null,
+        shot.club_angle_deg ??
+          shot.experimental_fused_attack_angle_deg ??
+          (!fusedDeliveryAttempted ? shot.experimental_attack_angle_deg : null) ??
+          null,
       ),
       unit:
         shot.club_angle_deg == null &&
         shot.experimental_fused_attack_angle_deg == null &&
-        shot.experimental_attack_angle_deg == null
+        (fusedDeliveryAttempted || shot.experimental_attack_angle_deg == null)
           ? undefined
           : 'deg',
       detail:
         shot.club_angle_deg != null
           ? undefined
-          : shot.experimental_fused_attack_angle_deg != null
-            ? 'camera fused (exp.)'
+          : fusedDeliveryAttempted
+            ? shot.experimental_fused_attack_angle_deg != null
+              ? 'camera fused (exp.)'
+              : experimentalStatus(shot.experimental_fused_status)
             : shot.experimental_attack_angle_deg != null || shot.experimental_attack_angle_status != null
               ? experimentalStatus(shot.experimental_attack_angle_status)
               : undefined,

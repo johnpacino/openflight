@@ -608,7 +608,7 @@ def _select_horizontal_radar_launch(kld7_angle, horizontal_limit: float) -> tupl
 
 
 def _ensure_user_facing_launch_angles(shot: Shot) -> None:
-    """Guarantee emitted shots have launch angles without overwriting measurements."""
+    """Provide a vertical estimate without inventing a horizontal measurement."""
     estimated: tuple[float, float] | None = None
 
     if shot.launch_angle_vertical is None:
@@ -630,6 +630,12 @@ def _ensure_user_facing_launch_angles(shot: Shot) -> None:
         )
 
     if shot.launch_angle_horizontal is None:
+        camera_capture_enabled = bool(camera_capture_config.get("enabled"))
+        if iwr6843_runtime is not None or camera_capture_enabled:
+            logger.info("[SERVER] Horizontal angle unavailable; no measured trajectory")
+            return
+        # Preserve the legacy neutral estimate for installations that have no
+        # horizontal-capable TI/camera pipeline at all.
         shot.launch_angle_horizontal = 0.0
         if shot.launch_angle_horizontal_confidence is None:
             if estimated is None:

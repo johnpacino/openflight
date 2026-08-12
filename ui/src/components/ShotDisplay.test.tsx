@@ -147,6 +147,29 @@ describe('ShotDisplay', () => {
       expect(html.match(/metric-card__confidence-label">experimental/g)).toHaveLength(3);
     });
 
+    it('does not expose rejected radar candidates after camera fusion was attempted', () => {
+      const html = renderToString(
+        <ShotDisplay
+          shot={{
+            ...withAngles,
+            club_angle_deg: null,
+            club_path_deg: null,
+            experimental_attack_angle_deg: -32.2,
+            experimental_attack_angle_status: 'candidate_out_of_bounds',
+            experimental_club_path_deg: 130.9,
+            experimental_club_path_status: 'candidate_out_of_bounds',
+            experimental_fused_status: 'rejected_no_impact',
+            experimental_fused_attack_angle_confidence: 'withheld',
+            experimental_fused_club_path_confidence: 'withheld',
+          }}
+        />,
+      );
+
+      expect(html).not.toContain('-32.2');
+      expect(html).not.toContain('+130.9');
+      expect(html).toContain('rejected: no impact');
+    });
+
     it('omits each card when the radar produced no measurement', () => {
       const html = renderToString(
         <ShotDisplay

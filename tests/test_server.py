@@ -736,7 +736,8 @@ class TestIWR6843ShotIntegration:
         assert shot.experimental_attack_angle_deg is None
         assert shot.experimental_attack_angle_status == "rejected_no_club_track"
 
-    def test_horizontal_fallback_does_not_invent_confidence_for_lcmf_angle(self):
+    def test_horizontal_fallback_does_not_invent_measurement_for_lcmf_angle(self, monkeypatch):
+        monkeypatch.setattr(server_module, "iwr6843_runtime", SimpleNamespace())
         shot = Shot(
             ball_speed_mph=100.0,
             club_speed_mph=80.0,
@@ -753,9 +754,9 @@ class TestIWR6843ShotIntegration:
         assert shot.launch_angle_vertical_source == "radar"
         assert shot.launch_angle_confidence is None
         assert shot.launch_angle_vertical_confidence is None
-        assert shot.launch_angle_horizontal == 0.0
-        assert shot.launch_angle_horizontal_source == "estimated"
-        assert shot.launch_angle_horizontal_confidence == pytest.approx(0.35)
+        assert shot.launch_angle_horizontal is None
+        assert shot.launch_angle_horizontal_source is None
+        assert shot.launch_angle_horizontal_confidence is None
 
     def test_missing_ti_capture_preserves_ops_shot(self, monkeypatch):
         emitted = []

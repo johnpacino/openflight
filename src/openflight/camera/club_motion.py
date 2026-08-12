@@ -135,7 +135,18 @@ def detect_reference_ball(
     )
     compact_capture = background.shape[0] <= 200 and background.shape[1] <= 320
     if compact_capture and bright_candidates:
-        return min(bright_candidates, key=lambda item: item[0])[1]
+        # Compact outdoor crops contain many saturated, round highlights in
+        # the net and foliage. A regulation ball belongs in the central-lower
+        # hitting zone and has a stable apparent diameter at tee distance.
+        plausible = [
+            item
+            for item in bright_candidates
+            if 9.0 <= item[1].diameter_px <= 30.0
+            and width * 0.2 <= item[1].x <= width * 0.8
+            and height * 0.45 <= item[1].y <= height * 0.9
+        ]
+        if plausible:
+            return min(plausible, key=lambda item: item[0])[1]
 
     # A spotlight can wash the white face of the ball into the turf while its
     # lower silhouette remains dark. Local contrast is more stable than an
