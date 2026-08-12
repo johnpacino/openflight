@@ -283,7 +283,7 @@
   color: var(--color-success);
 }
 
-.camera-settings form {
+.camera-settings__controls {
   display: flex;
   flex-direction: column;
 }
@@ -453,18 +453,15 @@
   accent-color: var(--color-success);
 }
 
-.camera-settings__compact-field {
-  display: grid;
-  grid-template-columns: 70px 1fr 34px;
-  align-items: center;
-  gap: var(--space-xs);
-  color: var(--text-secondary);
+.camera-settings__ball-guide-position {
+  padding: 9px 10px;
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.07);
+  color: var(--color-success);
   font-size: 0.7rem;
-}
-
-.camera-settings__compact-field output {
-  color: var(--color-cream);
-  text-align: right;
+  font-weight: 700;
+  text-align: center;
 }
 
 .camera-settings__note {
@@ -504,25 +501,6 @@
   margin: var(--space-sm) var(--space-md) 0;
   color: var(--color-danger);
   font-size: 0.68rem;
-}
-
-.camera-settings__apply {
-  min-height: 40px;
-  margin: var(--space-md);
-  border: 1px solid rgba(74, 222, 128, 0.42);
-  border-radius: var(--radius-sm);
-  background: rgba(74, 222, 128, 0.12);
-  color: var(--color-success);
-  font-size: 0.72rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.camera-settings__apply:disabled {
-  border-color: rgba(245, 240, 230, 0.09);
-  background: rgba(245, 240, 230, 0.03);
-  color: var(--text-muted);
-  cursor: default;
 }
 
 /* Small screens */

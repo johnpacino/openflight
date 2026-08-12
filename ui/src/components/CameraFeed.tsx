@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import type { CameraCaptureSettings, CameraStatus } from '../stores/useCameraStore';
 import { verticalViewTargets } from '../utils/cameraView';
 import { getServerOrigin } from '../utils/serverOrigin';
@@ -23,6 +23,8 @@ const STREAM_URL = `${getServerOrigin()}/camera/stream`;
 const PREVIEW_URL = `${getServerOrigin()}/api/camera/preview.jpg`;
 const EXPOSURE_QUALITY_URL = `${getServerOrigin()}/api/camera/exposure-quality`;
 const PREVIEW_REFRESH_MS = 5000;
+const BALL_GUIDE_X_PCT = 50;
+const BALL_GUIDE_Y_PCT = 78;
 
 type PreviewState = 'checking' | 'available' | 'unavailable';
 
@@ -78,8 +80,6 @@ function brightnessStepLabel(index: number): string {
 }
 
 function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPanelProps) {
-  const [alignmentX, setAlignmentX] = useState(settings.alignment_x_pct ?? 50);
-  const [alignmentY, setAlignmentY] = useState(settings.alignment_y_pct ?? 50);
   const verticalOffset = settings.vertical_offset_px ?? 0;
   const verticalMin = settings.vertical_offset_min_px ?? verticalOffset;
   const verticalMax = settings.vertical_offset_max_px ?? verticalOffset;
@@ -91,18 +91,6 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
   const setBrightnessStep = (index: number) => {
     const step = BRIGHTNESS_STEPS[index];
     onUpdate({ exposure_us: step.exposureUs, gain: step.gain });
-  };
-
-  const isDirty =
-    alignmentX !== (settings.alignment_x_pct ?? 50) ||
-    alignmentY !== (settings.alignment_y_pct ?? 50);
-
-  const apply = (event: FormEvent) => {
-    event.preventDefault();
-    onUpdate({
-      alignment_x_pct: alignmentX,
-      alignment_y_pct: alignmentY,
-    });
   };
 
   return (
@@ -117,7 +105,7 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
         </span>
       </div>
 
-      <form onSubmit={apply}>
+      <div className="camera-settings__controls">
         <section className="camera-settings__section">
           <div className="camera-settings__section-title">
             <span>Sensor view</span>
@@ -204,35 +192,12 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
 
         <section className="camera-settings__section">
           <div className="camera-settings__section-title">
-            <span>Alignment guide</span>
-            <small>preview overlay</small>
+            <span>Ball placement guide</span>
+            <small>fixed recommendation</small>
           </div>
-          <label className="camera-settings__compact-field">
-            <span>Horizontal</span>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={alignmentX}
-              onChange={(event) => setAlignmentX(Number(event.target.value))}
-            />
-            <output>{alignmentX.toFixed(0)}%</output>
-          </label>
-          <label className="camera-settings__compact-field">
-            <span>Vertical</span>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={alignmentY}
-              onChange={(event) => setAlignmentY(Number(event.target.value))}
-            />
-            <output>{alignmentY.toFixed(0)}%</output>
-          </label>
+          <div className="camera-settings__ball-guide-position">50% across · 78% down</div>
           <p className="camera-settings__note">
-            This moves only the alignment crosshair and does not move the sensor view.
+            Adjust the physical setup or sensor view until the center of the ball sits on the +. This leaves room above the ball for club and launch tracking.
           </p>
         </section>
 
@@ -270,10 +235,7 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
         </section>
 
         {error && <p className="camera-settings__error">{error}</p>}
-        <button type="submit" className="camera-settings__apply" disabled={!settings.available || !isDirty}>
-          {isDirty ? 'Apply alignment guide' : 'Alignment applied'}
-        </button>
-      </form>
+      </div>
     </aside>
   );
 }
@@ -300,11 +262,9 @@ export function CameraFeed({
   const [streamError, setStreamError] = useState(false);
   const [prevStreaming, setPrevStreaming] = useState(false);
   const { available, enabled, streaming, ball_detected, ball_confidence } = cameraStatus;
-  const alignmentX = captureSettings.alignment_x_pct ?? 50;
-  const alignmentY = captureSettings.alignment_y_pct ?? 50;
   const crosshairStyle = {
-    '--camera-crosshair-x': `${alignmentX}%`,
-    '--camera-crosshair-y': `${alignmentY}%`,
+    '--camera-crosshair-x': `${BALL_GUIDE_X_PCT}%`,
+    '--camera-crosshair-y': `${BALL_GUIDE_Y_PCT}%`,
   } as CSSProperties;
 
   useEffect(() => {
@@ -378,18 +338,18 @@ export function CameraFeed({
                   aria-hidden="true"
                 >
                   <line
-                    x1={alignmentX}
+                    x1={BALL_GUIDE_X_PCT}
                     y1="0"
-                    x2={alignmentX}
+                    x2={BALL_GUIDE_X_PCT}
                     y2="100"
                     vectorEffect="non-scaling-stroke"
                     className="camera-feed__hairline"
                   />
                   <line
                     x1="0"
-                    y1={alignmentY}
+                    y1={BALL_GUIDE_Y_PCT}
                     x2="100"
-                    y2={alignmentY}
+                    y2={BALL_GUIDE_Y_PCT}
                     vectorEffect="non-scaling-stroke"
                     className="camera-feed__hairline"
                   />

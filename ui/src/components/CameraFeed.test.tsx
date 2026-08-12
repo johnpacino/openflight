@@ -70,7 +70,10 @@ describe('CameraFeed', () => {
     expect(html).toContain('Indoor dark');
     expect(html).toContain('Night');
     expect(html).toContain('1000<!-- --> µs · <!-- -->20<!-- -->×');
-    expect(html).toContain('Alignment guide');
+    expect(html).toContain('Ball placement guide');
+    expect(html).toContain('50% across · 78% down');
+    expect(html).not.toContain('type="range"');
+    expect(html).not.toContain('Apply alignment guide');
     expect(html).toContain('Sensor view');
     expect(html).toContain('View up');
     expect(html).toContain('View down');
