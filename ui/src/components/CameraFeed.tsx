@@ -26,7 +26,7 @@ const PREVIEW_REFRESH_MS = 5000;
 type PreviewState = 'checking' | 'available' | 'unavailable';
 
 const CAMERA_PROFILES = [
-  { id: 'outdoor-sun', label: 'Outdoor sun', exposureUs: 100, gain: 2 },
+  { id: 'outdoor-sun', label: 'Outdoor sun', exposureUs: 250, gain: 4 },
   { id: 'outdoor-shade', label: 'Outdoor shade', exposureUs: 200, gain: 4 },
   { id: 'evening', label: 'Evening', exposureUs: 300, gain: 10 },
   { id: 'indoor-bright', label: 'Indoor bright', exposureUs: 250, gain: 10 },
