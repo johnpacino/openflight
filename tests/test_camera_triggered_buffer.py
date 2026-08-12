@@ -238,6 +238,36 @@ def test_preview_roll_correction_levels_sloped_line_without_modifying_raw_frame(
 
 
 @pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (18, "too_dark"),
+        (110, "good"),
+        (252, "too_bright"),
+    ],
+)
+def test_exposure_quality_rates_impact_zone(tmp_path, value, expected):
+    runtime = CameraCaptureRuntime(output_dir=tmp_path)
+    image = np.full((200, 320), value, dtype=np.uint8)
+    if expected == "good":
+        image[100:175, 90:230] = np.tile(np.linspace(45, 185, 140, dtype=np.uint8), (75, 1))
+    runtime._ring.add_frame(
+        CameraFrame(
+            image=image,
+            sensor_timestamp_ns=1,
+            host_timestamp_ns=2,
+            exposure_us=500,
+            analogue_gain=2.0,
+        )
+    )
+
+    quality = runtime.exposure_quality()
+
+    assert quality["status"] == expected
+    assert quality["sample_available"] is True
+    assert quality["recommendation"] in {"brighter", "darker", "hold"}
+
+
+@pytest.mark.parametrize(
     ("exposure_us", "gain", "message"),
     [
         (0, 2.0, "exposure"),

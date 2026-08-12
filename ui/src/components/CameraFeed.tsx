@@ -15,26 +15,70 @@ interface CameraFeedProps {
 
 interface CaptureSettingsPanelProps {
   settings: CameraCaptureSettings;
+  exposureQuality: ExposureQuality | null;
   error: string | null;
   onUpdate: (settings: Partial<CameraCaptureSettings>) => void;
 }
 
 const STREAM_URL = `${getServerOrigin()}/camera/stream`;
 const PREVIEW_URL = `${getServerOrigin()}/api/camera/preview.jpg`;
+const EXPOSURE_QUALITY_URL = `${getServerOrigin()}/api/camera/exposure-quality`;
 const PREVIEW_REFRESH_MS = 5000;
 
 type PreviewState = 'checking' | 'available' | 'unavailable';
 
-const CAMERA_PROFILES = [
+interface ExposureQuality {
+  sample_available: boolean;
+  status: 'good' | 'too_dark' | 'too_bright' | 'marginal' | 'unavailable';
+  recommendation?: 'brighter' | 'darker' | 'hold';
+  message?: string;
+  clipped_pct?: number;
+  contrast?: number;
+}
+
+const BRIGHTNESS_STEPS = [
+  { exposureUs: 100, gain: 2 },
+  { exposureUs: 150, gain: 3 },
+  { exposureUs: 200, gain: 3 },
   { id: 'outdoor-sun', label: 'Outdoor sun', exposureUs: 250, gain: 4 },
-  { id: 'outdoor-shade', label: 'Outdoor shade', exposureUs: 200, gain: 4 },
-  { id: 'evening', label: 'Evening', exposureUs: 300, gain: 10 },
-  { id: 'indoor-bright', label: 'Indoor bright', exposureUs: 250, gain: 10 },
-  { id: 'indoor-dark', label: 'Indoor dark', exposureUs: 500, gain: 15 },
+  { exposureUs: 300, gain: 5 },
+  { id: 'outdoor-shade', label: 'Outdoor shade', exposureUs: 350, gain: 6 },
+  { exposureUs: 400, gain: 8 },
+  { id: 'evening', label: 'Evening', exposureUs: 450, gain: 10 },
+  { id: 'indoor-bright', label: 'Indoor bright', exposureUs: 500, gain: 12 },
+  { exposureUs: 500, gain: 15 },
+  { id: 'indoor-dark', label: 'Indoor dark', exposureUs: 650, gain: 15 },
+  { exposureUs: 800, gain: 18 },
   { id: 'night', label: 'Night', exposureUs: 1000, gain: 20 },
 ] as const;
 
-function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPanelProps) {
+const CAMERA_PROFILES = BRIGHTNESS_STEPS.filter((step) => 'id' in step);
+
+function brightnessStepIndex(settings: CameraCaptureSettings): number {
+  const exact = BRIGHTNESS_STEPS.findIndex(
+    (step) => step.exposureUs === settings.exposure_us && step.gain === settings.gain,
+  );
+  if (exact >= 0) return exact;
+  const currentSignal = Math.max(1, (settings.exposure_us ?? 250) * (settings.gain ?? 4));
+  return BRIGHTNESS_STEPS.reduce((best, step, index) => {
+    const distance = Math.abs(Math.log(step.exposureUs * step.gain) - Math.log(currentSignal));
+    const bestStep = BRIGHTNESS_STEPS[best];
+    const bestDistance = Math.abs(Math.log(bestStep.exposureUs * bestStep.gain) - Math.log(currentSignal));
+    return distance < bestDistance ? index : best;
+  }, 0);
+}
+
+function brightnessStepLabel(index: number): string {
+  const named = BRIGHTNESS_STEPS.map((step, stepIndex) => ('label' in step ? { ...step, stepIndex } : null))
+    .filter((step): step is NonNullable<typeof step> => step !== null)
+    .reduce((best, step) =>
+      Math.abs(step.stepIndex - index) < Math.abs(best.stepIndex - index) ? step : best,
+    );
+  const delta = index - named.stepIndex;
+  return `${named.label}${delta === 0 ? '' : ` ${delta > 0 ? '+' : ''}${delta}`}`;
+}
+
+function CaptureSettingsPanel({ settings, exposureQuality, error, onUpdate }: CaptureSettingsPanelProps) {
   const [alignmentX, setAlignmentX] = useState(settings.alignment_x_pct ?? 50);
   const [alignmentY, setAlignmentY] = useState(settings.alignment_y_pct ?? 50);
   const verticalOffset = settings.vertical_offset_px ?? 0;
@@ -44,6 +88,11 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
   const viewTargets = verticalViewTargets(verticalOffset, verticalStep, settings.rotate_180 ?? false);
   const viewUpOffset = viewTargets.up;
   const viewDownOffset = viewTargets.down;
+  const brightnessIndex = brightnessStepIndex(settings);
+  const setBrightnessStep = (index: number) => {
+    const step = BRIGHTNESS_STEPS[index];
+    onUpdate({ exposure_us: step.exposureUs, gain: step.gain });
+  };
 
   const isDirty =
     alignmentX !== (settings.alignment_x_pct ?? 50) ||
@@ -128,6 +177,36 @@ function CaptureSettingsPanel({ settings, error, onUpdate }: CaptureSettingsPane
                 </button>
               );
             })}
+          </div>
+          <div className="camera-settings__brightness-stepper">
+            <button
+              type="button"
+              disabled={!settings.available || brightnessIndex === 0}
+              onClick={() => setBrightnessStep(brightnessIndex - 1)}
+            >
+              Darker −
+            </button>
+            <output>
+              <strong>{brightnessStepLabel(brightnessIndex)}</strong>
+              <span>{BRIGHTNESS_STEPS[brightnessIndex].exposureUs} µs · {BRIGHTNESS_STEPS[brightnessIndex].gain}×</span>
+            </output>
+            <button
+              type="button"
+              disabled={!settings.available || brightnessIndex === BRIGHTNESS_STEPS.length - 1}
+              onClick={() => setBrightnessStep(brightnessIndex + 1)}
+            >
+              + Brighter
+            </button>
+          </div>
+          <div className={`camera-settings__exposure-quality camera-settings__exposure-quality--${exposureQuality?.status ?? 'checking'}`}>
+            <div>
+              <span>Exposure check</span>
+              <strong>{exposureQuality ? exposureQuality.status.replace('_', ' ') : 'Checking preview'}</strong>
+            </div>
+            <p>{exposureQuality?.message ?? 'Analyzing the impact area…'}</p>
+            {exposureQuality?.sample_available && (
+              <small>{exposureQuality.clipped_pct?.toFixed(1)}% clipped · contrast {exposureQuality.contrast?.toFixed(0)}</small>
+            )}
           </div>
           <p className="camera-settings__note">
             Brighter profiles keep the club sharper. Night prioritizes flashlight visibility and may add motion blur.
@@ -228,6 +307,7 @@ export function CameraFeed({
   const [previewState, setPreviewState] = useState<PreviewState>('checking');
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [exposureQuality, setExposureQuality] = useState<ExposureQuality | null>(null);
   const [streamError, setStreamError] = useState(false);
   const [prevStreaming, setPrevStreaming] = useState(false);
   const { available, enabled, streaming, ball_detected, ball_confidence } = cameraStatus;
@@ -261,6 +341,10 @@ export function CameraFeed({
         setPreviewSrc(nextUrl);
         setLastUpdated(new Date());
         setPreviewState('available');
+        const qualityResponse = await fetch(`${EXPOSURE_QUALITY_URL}?t=${Date.now()}`, { cache: 'no-store' });
+        if (qualityResponse.ok && !cancelled) {
+          setExposureQuality(await qualityResponse.json());
+        }
       } catch {
         // Keep the last frame and retry after a transient network failure.
       }
@@ -328,6 +412,7 @@ export function CameraFeed({
           <CaptureSettingsPanel
             key={`${captureSettings.exposure_us}-${captureSettings.gain}-${captureSettings.alignment_x_pct}-${captureSettings.alignment_y_pct}`}
             settings={captureSettings}
+            exposureQuality={exposureQuality}
             error={captureSettingsError}
             onUpdate={onUpdateCaptureSettings}
           />

@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from flask import Flask, Response, send_from_directory
+from flask import Flask, Response, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
@@ -1562,6 +1562,14 @@ def camera_capture_preview():
     if jpeg is None:
         return "Camera not running", 503
     return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.route("/api/camera/exposure-quality")
+def camera_capture_exposure_quality():
+    """Exposure guidance derived from the latest raw impact-zone pixels."""
+    if camera_capture_runtime is None:
+        return jsonify({"sample_available": False, "status": "unavailable"}), 404
+    return jsonify(camera_capture_runtime.exposure_quality())
 
 
 def _camera_capture_settings_payload() -> dict:

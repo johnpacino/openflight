@@ -363,6 +363,121 @@
   opacity: 0.5;
 }
 
+.camera-settings__brightness-stepper {
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) minmax(105px, 1.25fr) minmax(72px, 1fr);
+  align-items: stretch;
+  gap: 7px;
+}
+
+.camera-settings__brightness-stepper button {
+  min-height: 46px;
+  padding: 7px;
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.09);
+  color: var(--color-success);
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.camera-settings__brightness-stepper button:disabled {
+  border-color: rgba(245, 240, 230, 0.08);
+  background: rgba(245, 240, 230, 0.025);
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.camera-settings__brightness-stepper output {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(245, 240, 230, 0.045);
+  text-align: center;
+}
+
+.camera-settings__brightness-stepper strong {
+  color: var(--color-cream);
+  font-size: 0.64rem;
+}
+
+.camera-settings__brightness-stepper span {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 0.55rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.camera-settings__exposure-quality {
+  padding: 9px 10px;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: var(--radius-sm);
+  background: rgba(251, 191, 36, 0.07);
+}
+
+.camera-settings__exposure-quality > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.camera-settings__exposure-quality span,
+.camera-settings__exposure-quality strong {
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.camera-settings__exposure-quality span {
+  color: var(--text-secondary);
+}
+
+.camera-settings__exposure-quality strong {
+  color: var(--color-warning);
+  text-transform: capitalize;
+}
+
+.camera-settings__exposure-quality p {
+  margin: 5px 0 0;
+  color: var(--color-cream);
+  font-size: 0.62rem;
+  line-height: 1.35;
+}
+
+.camera-settings__exposure-quality small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.55rem;
+}
+
+.camera-settings__exposure-quality--good {
+  border-color: rgba(74, 222, 128, 0.38);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.camera-settings__exposure-quality--good strong {
+  color: var(--color-success);
+}
+
+.camera-settings__exposure-quality--too_dark,
+.camera-settings__exposure-quality--too_bright {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.camera-settings__exposure-quality--too_dark strong,
+.camera-settings__exposure-quality--too_bright strong {
+  color: var(--color-danger);
+}
+
 .camera-settings__view-controls {
   display: grid;
   grid-template-columns: 1fr 58px 1fr;

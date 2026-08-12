@@ -262,6 +262,57 @@ class CameraCaptureRuntime:
             logger.warning("[CAMERA] Preview capture failed", exc_info=True)
             return None
 
+    def exposure_quality(self) -> dict:
+        """Rate exposure in the center-lower hitting zone of the latest frame."""
+        frame = self._ring.latest_frame
+        if frame is None:
+            return {
+                "sample_available": False,
+                "status": "unavailable",
+                "recommendation": "hold",
+                "message": "Waiting for a camera frame",
+            }
+
+        image = np.asarray(frame.image)
+        height, width = image.shape
+        region = image[
+            round(height * 0.45) : round(height * 0.9),
+            round(width * 0.2) : round(width * 0.8),
+        ]
+        p10, median, p90 = (float(np.percentile(region, value)) for value in (10, 50, 90))
+        clipped_pct = float(np.mean(region >= 250) * 100.0)
+        dark_pct = float(np.mean(region <= 12) * 100.0)
+        contrast = p90 - p10
+
+        if clipped_pct >= 8.0 or median >= 205.0:
+            status = "too_bright"
+            recommendation = "darker"
+            message = "Impact area is clipping; move one step darker"
+        elif p90 < 75.0 or median < 28.0 or contrast < 30.0:
+            status = "too_dark"
+            recommendation = "brighter"
+            message = "Club contrast is low; move one step brighter"
+        elif clipped_pct <= 2.0 and 45.0 <= median <= 180.0 and p90 >= 100.0:
+            status = "good"
+            recommendation = "hold"
+            message = "Impact-area exposure and contrast look good"
+        else:
+            status = "marginal"
+            recommendation = "darker" if clipped_pct > 2.0 or median > 180.0 else "brighter"
+            message = f"Usable, but try one step {recommendation}"
+
+        return {
+            "sample_available": True,
+            "status": status,
+            "recommendation": recommendation,
+            "message": message,
+            "median": round(median, 1),
+            "p90": round(p90, 1),
+            "contrast": round(contrast, 1),
+            "clipped_pct": round(clipped_pct, 2),
+            "dark_pct": round(dark_pct, 2),
+        }
+
     def update_image_controls(self, *, exposure_us: int, gain: float) -> dict:
         """Apply exposure and gain without stopping the rolling buffer."""
         exposure_us = int(exposure_us)

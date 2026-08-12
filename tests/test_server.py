@@ -31,6 +31,20 @@ from openflight.swing_speed import SwingSpeedEvent
 class TestCameraCaptureSettings:
     """Tests for live-safe Camera tab controls."""
 
+    def test_exposure_quality_endpoint_uses_camera_runtime(self, monkeypatch):
+        expected = {
+            "sample_available": True,
+            "status": "good",
+            "recommendation": "hold",
+        }
+        runtime = SimpleNamespace(exposure_quality=lambda: expected)
+        monkeypatch.setattr(server_module, "camera_capture_runtime", runtime)
+
+        response = server_module.app.test_client().get("/api/camera/exposure-quality")
+
+        assert response.status_code == 200
+        assert response.get_json() == expected
+
     def test_update_applies_controls_and_alignment(self, monkeypatch):
         emitted = []
         applied = []
