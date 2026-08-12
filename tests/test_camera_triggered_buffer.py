@@ -205,14 +205,16 @@ def test_live_image_controls_update_camera_without_restarting(tmp_path):
     assert runtime.settings.gain == 3.5
 
 
-def test_preview_roll_correction_does_not_modify_buffered_raw_frame(tmp_path):
+def test_preview_roll_correction_levels_sloped_line_without_modifying_raw_frame(tmp_path):
     cv2 = pytest.importorskip("cv2")
+    correction_deg = 10.0
     runtime = CameraCaptureRuntime(
         output_dir=tmp_path,
-        settings=CameraCaptureSettings(roll_correction_deg=90.0),
+        settings=CameraCaptureSettings(roll_correction_deg=correction_deg),
     )
-    image = np.zeros((9, 9), dtype=np.uint8)
-    image[2, 4] = 255
+    image = np.zeros((101, 101), dtype=np.uint8)
+    tangent = np.tan(np.radians(correction_deg))
+    cv2.line(image, (10, round(50 + 40 * tangent)), (90, round(50 - 40 * tangent)), 255, 2)
     frame = CameraFrame(
         image=image,
         sensor_timestamp_ns=1,
@@ -229,7 +231,9 @@ def test_preview_roll_correction_does_not_modify_buffered_raw_frame(tmp_path):
     assert encoded is not None
     preview = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
     assert preview.shape == image.shape
-    assert not np.array_equal(preview, image)
+    rows, columns = np.where(preview > 180)
+    slope = np.polyfit(columns, rows, 1)[0]
+    assert abs(slope) < 0.03
     assert np.array_equal(runtime._ring.latest_frame.image, image)
 
 
