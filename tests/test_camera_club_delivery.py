@@ -98,6 +98,7 @@ def _project_impact_tracks(
     aoa_deg: float,
     speed_ms: float = 35.0,
     n_features: int = 12,
+    camera_lateral_offset_m: float = 0.0,
 ):
     """Synthetic clubhead features viewed by the rear camera at impact."""
     geometry = CameraDeliveryGeometry(
@@ -105,6 +106,7 @@ def _project_impact_tracks(
         radar_height_m=0.15875,
         tee_range_m=1.524,
         ball_height_m=0.021335,
+        camera_lateral_offset_m=camera_lateral_offset_m,
     )
     ball = _Ball()
     times = np.array([-0.0035, 0.0, 0.0035])
@@ -115,7 +117,11 @@ def _project_impact_tracks(
     ball_forward = geometry.tee_range_m
     focal_px = (
         ball.diameter_px
-        * math.hypot(ball_forward, geometry.ball_height_m - geometry.camera_height_m)
+        * math.sqrt(
+            geometry.camera_lateral_offset_m**2
+            + ball_forward**2
+            + (geometry.ball_height_m - geometry.camera_height_m) ** 2
+        )
         / geometry.ball_diameter_m
     )
     pitch = math.atan2(
@@ -137,7 +143,8 @@ def _project_impact_tracks(
             vertical_m = height - geometry.camera_height_m
             camera_forward = math.cos(pitch) * forward_m + math.sin(pitch) * vertical_m
             camera_vertical = -math.sin(pitch) * forward_m + math.cos(pitch) * vertical_m
-            x_px = geometry.image_width_px / 2 + focal_px * lateral / camera_forward
+            camera_lateral = lateral - geometry.camera_lateral_offset_m
+            x_px = geometry.image_width_px / 2 + focal_px * camera_lateral / camera_forward
             y_px = geometry.image_height_px / 2 - focal_px * camera_vertical / camera_forward
             pixels.append((x_px, y_px))
             feature_ranges.append(math.hypot(forward_m, height - geometry.radar_height_m))
@@ -168,6 +175,26 @@ class TestChainedImpactDelivery:
         assert result.club_path_deg == pytest.approx(3.0, abs=0.15)
         assert result.attack_angle_deg == pytest.approx(-4.0, abs=0.15)
         assert result.n_features == 12
+
+    def test_recovers_known_velocity_with_laterally_offset_camera(self):
+        tracks, times, ranges, ball, geometry = _project_impact_tracks(
+            path_deg=3.0,
+            aoa_deg=-4.0,
+            camera_lateral_offset_m=-0.08,
+        )
+
+        result = delivery_from_feature_tracks(
+            tracks,
+            times,
+            ranges,
+            ball=ball,
+            geometry=geometry,
+            ops_club_speed_mph=35.0 * 2.23694,
+            timing_plausible=True,
+        )
+
+        assert result.club_path_deg == pytest.approx(3.0, abs=0.15)
+        assert result.attack_angle_deg == pytest.approx(-4.0, abs=0.15)
 
     def test_mirrored_capture_preserves_physical_path_sign(self):
         tracks, times, ranges, ball, geometry = _project_impact_tracks(

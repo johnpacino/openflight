@@ -1102,6 +1102,7 @@ def init_camera_capture(
     roll_correction_deg: float,
     scaler_crop: tuple[int, int, int, int] | None,
     mount_height_m: float,
+    lateral_offset_m: float,
     horizontal_offset_deg: float,
     use_gpio_trigger: bool,
 ) -> bool:
@@ -1159,6 +1160,7 @@ def init_camera_capture(
             "roll_correction_deg": settings.roll_correction_deg,
             "scaler_crop": settings.scaler_crop,
             "mount_height_m": mount_height_m,
+            "lateral_offset_m": lateral_offset_m,
             "horizontal_offset_deg": horizontal_offset_deg,
             "alignment_x_pct": 50.0,
             "alignment_y_pct": 50.0,
@@ -2693,6 +2695,9 @@ def _fuse_camera_club_delivery(shot: Shot, camera_capture) -> None:
                                 radar_height_m=calibration.radar_height_m,
                                 tee_range_m=float(calibration.tee_range_m),
                                 ball_height_m=calibration.tee_ball_height_m,
+                                camera_lateral_offset_m=float(
+                                    camera_capture_config.get("lateral_offset_m", 0.0)
+                                ),
                                 image_width_px=int(camera_capture_config["width"]),
                                 image_height_px=int(camera_capture_config["height"]),
                                 horizontal_pixel_sign=(
@@ -2775,6 +2780,9 @@ def _fuse_camera_ball_flight(shot: Shot, camera_capture) -> None:
                                 radar_height_m=calibration.radar_height_m,
                                 tee_range_m=float(calibration.tee_range_m),
                                 ball_height_m=calibration.tee_ball_height_m,
+                                camera_lateral_offset_m=float(
+                                    camera_capture_config.get("lateral_offset_m", 0.0)
+                                ),
                                 horizontal_offset_deg=float(
                                     camera_capture_config.get("horizontal_offset_deg", 0.0)
                                 ),
@@ -4197,6 +4205,15 @@ def main():
         help="Measured camera target-line correction added to horizontal launch angles.",
     )
     parser.add_argument(
+        "--camera-capture-lateral-offset-m",
+        type=float,
+        default=0.0,
+        help=(
+            "Camera optical-center lateral position relative to radar center in meters; "
+            "positive is target-right when looking downrange."
+        ),
+    )
+    parser.add_argument(
         "--camera-capture-roll-deg",
         type=float,
         default=0.0,
@@ -4792,6 +4809,7 @@ def main():
             exposure_us=args.camera_capture_exposure_us,
             gain=args.camera_capture_gain,
             mount_height_m=args.camera_capture_mount_height_m,
+            lateral_offset_m=args.camera_capture_lateral_offset_m,
             horizontal_offset_deg=args.camera_capture_horizontal_offset_deg,
             roll_correction_deg=args.camera_capture_roll_deg,
             stream=args.camera_capture_stream,

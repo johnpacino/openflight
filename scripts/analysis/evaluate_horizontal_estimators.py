@@ -78,6 +78,7 @@ def _replay(
         radar_height_m=float(radar_config["radar_height_m"]),
         tee_range_m=float(radar_config["tee_slant_range_m"]),
         ball_height_m=float(radar_config["ball_height_m"]),
+        camera_lateral_offset_m=float(camera_config.get("lateral_offset_m", 0.0)),
         horizontal_offset_deg=horizontal_offset_deg,
         image_width_px=frames.shape[2],
         image_height_px=frames.shape[1],
@@ -165,9 +166,7 @@ def main() -> int:
         source_rows = [
             row
             for row in csv.DictReader(handle)
-            if row["match_status"] == "matched"
-            and row["iwr_dump_path"]
-            and row["camera_directory"]
+            if row["match_status"] == "matched" and row["iwr_dump_path"] and row["camera_directory"]
         ]
     trackers: dict[str, ReferenceBallTracker] = {}
     rows = []
@@ -186,9 +185,7 @@ def main() -> int:
 
     for profile in ("wide_iq16", "dense_iq8", "all"):
         cohort = (
-            rows
-            if profile == "all"
-            else [row for row in rows if row["capture_profile"] == profile]
+            rows if profile == "all" else [row for row in rows if row["capture_profile"] == profile]
         )
         print(f"\n{profile} ({len(cohort)} shots)")
         print("  radar-only:    ", _metrics(cohort, "radar_deg"))

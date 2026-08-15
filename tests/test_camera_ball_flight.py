@@ -23,12 +23,13 @@ def _project_world_point(
     point: np.ndarray,
     *,
     camera_height_m: float,
+    camera_lateral_offset_m: float = 0.0,
     focal_px: float,
     pitch_rad: float,
     width: int,
     height: int,
 ) -> tuple[float, float]:
-    vector = point - np.array([0.0, 0.0, camera_height_m])
+    vector = point - np.array([camera_lateral_offset_m, 0.0, camera_height_m])
     camera_forward = math.cos(pitch_rad) * vector[1] + math.sin(pitch_rad) * vector[2]
     camera_vertical = -math.sin(pitch_rad) * vector[1] + math.cos(pitch_rad) * vector[2]
     return (
@@ -41,28 +42,37 @@ def _synthetic_path(
     horizontal_deg: float = 4.0,
     tee_x_m: float = 0.0,
     horizontal_offset_deg: float = 0.0,
+    camera_lateral_offset_m: float = 0.0,
 ):
     geometry = CameraBallGeometry(
         camera_height_m=0.20955,
         radar_height_m=0.15875,
         tee_range_m=1.524,
         ball_height_m=0.04,
+        camera_lateral_offset_m=camera_lateral_offset_m,
         horizontal_offset_deg=horizontal_offset_deg,
         image_width_px=640,
         image_height_px=400,
     )
     focal_px = 480.0
     pitch_rad = 0.0
-    tee = np.array([tee_x_m, geometry.tee_range_m, geometry.ball_height_m])
+    tee_forward_m = math.sqrt(
+        geometry.tee_range_m**2
+        - (geometry.ball_height_m - geometry.radar_height_m) ** 2
+        - tee_x_m**2
+    )
+    tee = np.array([tee_x_m, tee_forward_m, geometry.ball_height_m])
     anchor_x, anchor_y = _project_world_point(
         tee,
         camera_height_m=geometry.camera_height_m,
+        camera_lateral_offset_m=geometry.camera_lateral_offset_m,
         focal_px=focal_px,
         pitch_rad=pitch_rad,
         width=geometry.image_width_px,
         height=geometry.image_height_px,
     )
-    camera_ball_range = np.linalg.norm(tee - np.array([0.0, 0.0, geometry.camera_height_m]))
+    camera_origin = np.array([geometry.camera_lateral_offset_m, 0.0, geometry.camera_height_m])
+    camera_ball_range = np.linalg.norm(tee - camera_origin)
     anchor = ReferenceBall(
         x=anchor_x,
         y=anchor_y,
@@ -91,12 +101,13 @@ def _synthetic_path(
         x_px, y_px = _project_world_point(
             point,
             camera_height_m=geometry.camera_height_m,
+            camera_lateral_offset_m=geometry.camera_lateral_offset_m,
             focal_px=focal_px,
             pitch_rad=pitch_rad,
             width=geometry.image_width_px,
             height=geometry.image_height_px,
         )
-        camera_range = np.linalg.norm(point - np.array([0.0, 0.0, geometry.camera_height_m]))
+        camera_range = np.linalg.norm(point - camera_origin)
         diameter = focal_px * geometry.ball_diameter_m / camera_range
         candidates.append(
             BallCandidate(
@@ -192,6 +203,31 @@ def test_path_estimate_does_not_treat_lateral_ball_position_as_target_yaw():
     assert result is not None
     _score, estimate = result
     assert estimate.horizontal_deg == pytest.approx(0.0, abs=0.15)
+
+
+def test_path_estimate_accounts_for_camera_lateral_translation():
+    geometry, _anchor, model, candidates, timestamps, evidence, speed_ms = _synthetic_path(
+        horizontal_deg=4.0,
+        camera_lateral_offset_m=0.08,
+    )
+
+    result = _path_estimate(
+        path=list(enumerate(candidates)),
+        frame_indices=list(range(len(candidates))),
+        timestamps_ns=timestamps,
+        trigger_ns=0,
+        range_evidence=evidence,
+        ops_ball_speed_mph=speed_ms * 2.23694,
+        iwr_vertical_deg=20.0,
+        model=model,
+        geometry=geometry,
+        thresholds=(100, 12, 5),
+    )
+
+    assert result is not None
+    _score, estimate = result
+    assert estimate.horizontal_deg == pytest.approx(4.0, abs=0.15)
+    assert estimate.vertical_deg == pytest.approx(20.0, abs=0.25)
 
 
 def test_path_estimate_applies_setup_level_horizontal_offset():

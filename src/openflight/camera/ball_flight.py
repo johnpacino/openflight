@@ -46,11 +46,25 @@ class CameraBallGeometry:
     radar_height_m: float
     tee_range_m: float
     ball_height_m: float
+    # Camera optical-center position relative to radar center. Positive is
+    # target-right when viewed from behind the sensors looking downrange.
+    camera_lateral_offset_m: float = 0.0
     horizontal_offset_deg: float = 0.0
     roll_correction_deg: float = 0.0
     ball_diameter_m: float = BALL_DIAMETER_MM / 1000.0
     image_width_px: int = 640
     image_height_px: int = 400
+
+    @property
+    def ball_forward_m(self) -> float:
+        """Forward radar-to-ball distance derived from tee slant range."""
+        vertical = self.ball_height_m - self.radar_height_m
+        return math.sqrt(max(self.tee_range_m**2 - vertical**2, 1e-9))
+
+    @property
+    def camera_origin(self) -> np.ndarray:
+        """Camera origin in the radar-centered world coordinate system."""
+        return np.array([self.camera_lateral_offset_m, 0.0, self.camera_height_m])
 
 
 @dataclass(frozen=True)
@@ -107,9 +121,10 @@ def _camera_model(
     """Infer focal scale and pose from the stationary regulation-size ball."""
     center_x = geometry.image_width_px / 2.0
     center_y = geometry.image_height_px / 2.0
-    camera_ball_range = math.hypot(
-        geometry.tee_range_m,
-        geometry.ball_height_m - geometry.camera_height_m,
+    camera_ball_range = math.sqrt(
+        geometry.camera_lateral_offset_m**2
+        + geometry.ball_forward_m**2
+        + (geometry.ball_height_m - geometry.camera_height_m) ** 2
     )
     focal_px = anchor.diameter_px * camera_ball_range / geometry.ball_diameter_m
     ball_x = (anchor.x - center_x) / focal_px
@@ -121,9 +136,9 @@ def _camera_model(
     )
     pitch = math.atan2(
         geometry.ball_height_m - geometry.camera_height_m,
-        geometry.tee_range_m,
+        geometry.ball_forward_m,
     ) - math.atan2(ball_z, 1.0)
-    radar_from_camera = np.array([0.0, 0.0, geometry.camera_height_m - geometry.radar_height_m])
+    radar_from_camera = geometry.camera_origin - np.array([0.0, 0.0, geometry.radar_height_m])
     return focal_px, pitch, radar_from_camera
 
 
@@ -143,7 +158,7 @@ def _project(
     distance = -ray_offset + math.sqrt(discriminant)
     if distance <= 0.0:
         return None
-    return np.array([0.0, 0.0, geometry.camera_height_m]) + distance * ray
+    return geometry.camera_origin + distance * ray
 
 
 def _camera_ray(
@@ -186,7 +201,7 @@ def _project_from_ball_size(
     if not 0.25 <= camera_range_m <= 15.0:
         return None
     ray = _camera_ray(candidate, model=model, geometry=geometry)
-    return np.array([0.0, 0.0, geometry.camera_height_m]) + camera_range_m * ray
+    return geometry.camera_origin + camera_range_m * ray
 
 
 def _candidates(

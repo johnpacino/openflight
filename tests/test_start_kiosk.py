@@ -129,6 +129,8 @@ def test_camera_capture_flags_are_forwarded():
         "4",
         "--camera-capture-mount-height-m",
         "0.20955",
+        "--camera-capture-lateral-offset-m",
+        "0.0762",
         "--camera-capture-horizontal-offset-deg",
         "-0.45",
         "--camera-capture-roll-deg",
@@ -150,6 +152,7 @@ def test_camera_capture_flags_are_forwarded():
     assert "--camera-capture-exposure-us 1000" in command
     assert "--camera-capture-gain 4" in command
     assert "--camera-capture-mount-height-m 0.20955" in command
+    assert "--camera-capture-lateral-offset-m 0.0762" in command
     assert "--camera-capture-horizontal-offset-deg -0.45" in command
     assert "--camera-capture-roll-deg 2.8" in command
     assert "--camera-capture-stream main-y" in command

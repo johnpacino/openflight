@@ -105,6 +105,9 @@ class CameraDeliveryGeometry:
     radar_height_m: float
     tee_range_m: float
     ball_height_m: float
+    # Camera optical-center position relative to radar center. Positive is
+    # target-right when viewed from behind the sensors looking downrange.
+    camera_lateral_offset_m: float = 0.0
     ball_diameter_m: float = GOLF_BALL_DIAMETER_M
     image_width_px: int = 640
     image_height_px: int = 400
@@ -118,6 +121,11 @@ class CameraDeliveryGeometry:
         """Horizontal camera-to-ball distance from radar slant geometry."""
         vertical = self.ball_height_m - self.radar_height_m
         return math.sqrt(max(self.tee_range_m**2 - vertical**2, 1e-9))
+
+    @property
+    def camera_origin(self) -> np.ndarray:
+        """Camera origin in the radar-centered world coordinate system."""
+        return np.array([self.camera_lateral_offset_m, 0.0, self.camera_height_m])
 
 
 @dataclass(frozen=True)
@@ -218,9 +226,10 @@ def _pixels_to_world(
     intersected with the IWR slant-range sphere, accounting for the camera and
     radar sitting at different heights.
     """
-    camera_ball_range_m = math.hypot(
-        geometry.tee_range_m,
-        geometry.ball_height_m - geometry.camera_height_m,
+    camera_ball_range_m = math.sqrt(
+        geometry.camera_lateral_offset_m**2
+        + geometry.ball_forward_m**2
+        + (geometry.ball_height_m - geometry.camera_height_m) ** 2
     )
     focal_px = ball.diameter_px * camera_ball_range_m / geometry.ball_diameter_m
     if not math.isfinite(focal_px) or focal_px <= 0.0:
@@ -236,7 +245,7 @@ def _pixels_to_world(
     )
     pitch_rad = math.atan2(
         geometry.ball_height_m - geometry.camera_height_m,
-        geometry.tee_range_m,
+        geometry.ball_forward_m,
     ) - math.atan2(ball_z, 1.0)
     image_x = geometry.horizontal_pixel_sign * (points_px[:, 0] - center_x) / focal_px
     image_z = -(points_px[:, 1] - center_y) / focal_px
@@ -253,13 +262,13 @@ def _pixels_to_world(
         )
     )
     rays /= np.linalg.norm(rays, axis=1, keepdims=True)
-    radar_from_camera = np.array([0.0, 0.0, geometry.camera_height_m - geometry.radar_height_m])
+    radar_from_camera = geometry.camera_origin - np.array([0.0, 0.0, geometry.radar_height_m])
     ray_offset = rays @ radar_from_camera
     discriminant = ray_offset**2 - (np.dot(radar_from_camera, radar_from_camera) - radar_range_m**2)
     if np.any(discriminant < 0.0):
         raise ValueError("camera ray does not intersect IWR range sphere")
     distance = -ray_offset + np.sqrt(discriminant)
-    xyz = np.array([0.0, 0.0, geometry.camera_height_m]) + distance[:, None] * rays
+    xyz = geometry.camera_origin + distance[:, None] * rays
     # Public ordering remains lateral, vertical, forward.
     return xyz[:, (0, 2, 1)]
 

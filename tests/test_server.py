@@ -1366,6 +1366,7 @@ class TestShotToDict:
             "camera_capture_config",
             {
                 "mount_height_m": 0.20955,
+                "lateral_offset_m": 0.0762,
                 "horizontal_offset_deg": -0.45,
                 "roll_correction_deg": 2.8,
                 "width": 640,
@@ -1397,6 +1398,7 @@ class TestShotToDict:
         assert shot.experimental_camera_horizontal_status == "camera_assisted_high"
         assert shot.iwr6843_horizontal_deg == 17.9
         assert estimate_call["geometry"].horizontal_offset_deg == -0.45
+        assert estimate_call["geometry"].camera_lateral_offset_m == 0.0762
         assert estimate_call["geometry"].roll_correction_deg == 2.8
         assert estimate_call["ball_tracker"] is ball_flight_tracker
 

@@ -27,11 +27,39 @@ Power the Pi off before connecting or disconnecting the ribbon cable. Confirm
 that the cable contacts face the correct direction for both the Pi connector
 and camera board before applying power.
 
-## Mounting
+## Mounting And Sensor Offset
 
-Mount the camera directly above the IWR6843 receive antennas and point it down
-the target line. The tested antenna/camera assembly places the camera center
-about `8.25 in` (`0.20955 m`) above the hitting surface.
+Mount the camera rigidly and point it down the target line. The tested original
+assembly placed the camera directly above the IWR6843 antenna center, about
+`8.25 in` (`0.20955 m`) above the hitting surface. A laterally offset camera is
+also supported when its position is measured and passed to OpenFlight.
+
+Measure horizontally from the radar antenna center used for radar height to the
+camera lens optical center. Pass that signed distance in meters:
+
+```bash
+scripts/start-kiosk.sh \
+  --camera-capture \
+  --camera-capture-lateral-offset-m 0.0762
+```
+
+The sign is defined while standing behind the unit and looking down the target
+line:
+
+- Positive: camera is to target-right of the radar center.
+- Negative: camera is to target-left of the radar center.
+- Zero: camera and radar optical centers share the same vertical centerline.
+
+For reference, `3 in` is `0.0762 m`. Measure center-to-center rather than using
+enclosure edges. OpenFlight records this value with the session and uses it in
+camera-only ball depth, camera/IWR horizontal launch, Club Path, and Attack
+Angle geometry.
+
+This physical distance is different from
+`--camera-capture-horizontal-offset-deg`. The meter value describes where the
+camera is mounted; the degree value corrects residual camera yaw or target-line
+alignment. Do not convert the physical separation into degrees, and do not use
+the degree setting as a substitute for the measured distance.
 
 The useful image does not need to contain the golfer or the full shaft. It must
 contain:
