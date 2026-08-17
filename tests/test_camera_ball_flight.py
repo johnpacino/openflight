@@ -13,6 +13,7 @@ from openflight.camera.ball_flight import (
     _camera_model,
     _confidence_tier,
     _path_estimate,
+    _rough_path_score,
     select_camera_assisted_horizontal,
 )
 from openflight.camera.club_motion import ReferenceBall
@@ -43,6 +44,7 @@ def _synthetic_path(
     tee_x_m: float = 0.0,
     horizontal_offset_deg: float = 0.0,
     camera_lateral_offset_m: float = 0.0,
+    mirror_horizontal: bool = False,
 ):
     geometry = CameraBallGeometry(
         camera_height_m=0.20955,
@@ -51,6 +53,7 @@ def _synthetic_path(
         ball_height_m=0.04,
         camera_lateral_offset_m=camera_lateral_offset_m,
         horizontal_offset_deg=horizontal_offset_deg,
+        horizontal_pixel_sign=-1.0 if mirror_horizontal else 1.0,
         image_width_px=640,
         image_height_px=400,
     )
@@ -71,6 +74,8 @@ def _synthetic_path(
         width=geometry.image_width_px,
         height=geometry.image_height_px,
     )
+    if mirror_horizontal:
+        anchor_x = geometry.image_width_px - anchor_x
     camera_origin = np.array([geometry.camera_lateral_offset_m, 0.0, geometry.camera_height_m])
     camera_ball_range = np.linalg.norm(tee - camera_origin)
     anchor = ReferenceBall(
@@ -107,6 +112,8 @@ def _synthetic_path(
             width=geometry.image_width_px,
             height=geometry.image_height_px,
         )
+        if mirror_horizontal:
+            x_px = geometry.image_width_px - x_px
         camera_range = np.linalg.norm(point - camera_origin)
         diameter = focal_px * geometry.ball_diameter_m / camera_range
         candidates.append(
@@ -157,6 +164,44 @@ def test_path_estimate_recovers_known_horizontal_without_iwr_horizontal():
     _score, estimate = result
     assert estimate.horizontal_deg == pytest.approx(4.0, abs=0.15)
     assert estimate.vertical_deg == pytest.approx(20.0, abs=0.25)
+
+
+def test_path_estimate_recovers_physical_sign_from_mirrored_capture():
+    geometry, _anchor, model, candidates, timestamps, evidence, speed_ms = _synthetic_path(
+        horizontal_deg=4.0,
+        mirror_horizontal=True,
+    )
+
+    result = _path_estimate(
+        path=list(enumerate(candidates)),
+        frame_indices=list(range(len(candidates))),
+        timestamps_ns=timestamps,
+        trigger_ns=0,
+        range_evidence=evidence,
+        ops_ball_speed_mph=speed_ms * 2.23694,
+        iwr_vertical_deg=20.0,
+        model=model,
+        geometry=geometry,
+        thresholds=(100, 12, 5),
+    )
+
+    assert result is not None
+    _score, estimate = result
+    assert estimate.horizontal_deg == pytest.approx(4.0, abs=0.15)
+
+
+def test_rough_path_scoring_avoids_numpy_in_beam_search(monkeypatch):
+    path = [
+        (0, BallCandidate(10, 20, 10, 3, 4, 0.7, 0.8, 220)),
+        (1, BallCandidate(12, 17, 10, 3, 4, 0.7, 0.8, 220)),
+        (2, BallCandidate(14, 14, 10, 3, 4, 0.7, 0.8, 220)),
+    ]
+
+    def reject_numpy_median(*_args, **_kwargs):
+        raise AssertionError("beam-search scoring must remain scalar")
+
+    monkeypatch.setattr(np, "median", reject_numpy_median)
+    assert _rough_path_score(path) == pytest.approx(60.0)
 
 
 def test_path_estimate_recovers_horizontal_from_apparent_ball_size_without_iwr_range():

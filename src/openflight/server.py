@@ -3355,7 +3355,6 @@ def on_shot_detected(shot: Shot):
                 impact_timestamp=shot.impact_timestamp,
                 player_name=shot.player_name,
                 inclinometer=shot.inclinometer,
-                player_name=shot.player_name,
                 pipeline_ms={
                     "iwr6843": (round(iwr6843_ms, 1) if iwr6843_ms is not None else None),
                     "kld7": round(kld7_ms, 1) if kld7_ms is not None else None,

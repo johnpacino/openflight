@@ -382,7 +382,6 @@ class SessionLogger:
         impact_timestamp: Optional[float] = None,
         player_name: Optional[str] = None,
         inclinometer: Optional[Dict] = None,
-        player_name: Optional[str] = None,
     ):
         """
         Log a detected shot with all metrics.

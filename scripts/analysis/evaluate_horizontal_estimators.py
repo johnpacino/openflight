@@ -80,6 +80,7 @@ def _replay(
         ball_height_m=float(radar_config["ball_height_m"]),
         camera_lateral_offset_m=float(camera_config.get("lateral_offset_m", 0.0)),
         horizontal_offset_deg=horizontal_offset_deg,
+        horizontal_pixel_sign=-1.0 if camera_config.get("mirror_horizontal") else 1.0,
         image_width_px=frames.shape[2],
         image_height_px=frames.shape[1],
     )

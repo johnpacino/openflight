@@ -34,13 +34,20 @@ def _geo(n_frames=25, frame_period_s=4e-3):
     )
 
 
-def _track(*, impact_at_s, speed_ms=45.0, t_first=0.030, t_last=0.070):
+def _track(
+    *,
+    impact_at_s,
+    speed_ms=45.0,
+    t_first=0.030,
+    t_last=0.070,
+    apparent_tee_m=TEE_M,
+):
     """A receding ball whose fit crosses the tee range at ``impact_at_s``."""
     slope_bins = speed_ms / RES_M
     return BallTrack(
         speed_ms=speed_ms,
         slope_bins=slope_bins,
-        intercept_bins=TEE_M / RES_M - slope_bins * impact_at_s,
+        intercept_bins=apparent_tee_m / RES_M - slope_bins * impact_at_s,
         rms_bins=0.21,
         n_inliers=40,
         t_first=t_first,
@@ -56,6 +63,23 @@ class TestImpactTime:
     def test_recovers_a_known_impact_time(self, impact_at_s):
         """The measured 2026-07-25 spread was 6.7-16.3 ms."""
         got = impact_time_s(_track(impact_at_s=impact_at_s), _geo(), TEE_M)
+        assert got == pytest.approx(impact_at_s, abs=1e-9)
+
+    def test_applies_range_bias_before_intersecting_the_track(self):
+        range_bias_m = 0.066
+        impact_at_s = 0.0134
+        track = _track(
+            impact_at_s=impact_at_s,
+            apparent_tee_m=TEE_M + range_bias_m,
+        )
+
+        got = impact_time_s(
+            track,
+            _geo(),
+            TEE_M,
+            range_bias_m=range_bias_m,
+        )
+
         assert got == pytest.approx(impact_at_s, abs=1e-9)
 
     def test_no_track_is_none(self):

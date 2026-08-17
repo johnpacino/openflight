@@ -27,6 +27,7 @@ from openflight.iwr6843.shot import (
     PreparedShotDump,
     ShotMeasurement,
     geometry_from_header,
+    impact_time_s,
     prepare_shot_dump,
     process_dump,
 )
@@ -86,6 +87,7 @@ class LCMFResult:
     track_rms_bins: float | None = None
     track_inliers: int | None = None
     track_span_s: float | None = None
+    impact_t_s: float | None = None
     tdm_sign_used: int | None = None
     horizontal_deg: float | None = None
     horizontal_raw_deg: float | None = None
@@ -123,6 +125,7 @@ class LCMFResult:
             "track_rms_bins": self.track_rms_bins,
             "track_inliers": self.track_inliers,
             "track_span_s": self.track_span_s,
+            "impact_t_s": self.impact_t_s,
             "tdm_sign_used": self.tdm_sign_used,
             "horizontal_deg": self.horizontal_deg,
             "horizontal_raw_deg": self.horizontal_raw_deg,
@@ -175,6 +178,7 @@ def _result_from_track(
     status: str,
     shot: ShotMeasurement,
     *,
+    cal: Calibration,
     effective_tdm_tau_s: float = doa.TDM_TAU_S,
     effective_loop_period_s: float = tracking.LOOP_PRI_S,
 ) -> LCMFResult:
@@ -824,6 +828,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             "rejected_by_ball_tracker",
             shot,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -831,6 +836,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             "rejected_track_quality",
             shot,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -838,6 +844,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             "rejected_missing_tdm_sign",
             shot,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -906,6 +913,7 @@ def estimate_lcmf_v1(
         return _result_from_track(
             str(error).replace(" ", "_"),
             shot,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
@@ -917,12 +925,13 @@ def estimate_lcmf_v1(
         return _result_from_track(
             "rejected_no_conditioned_channel",
             shot,
+            cal=cal,
             effective_tdm_tau_s=tdm_tau_s,
             effective_loop_period_s=loop_period_s,
         )
     measured = measured_channels(channel_components, channel_evidence)
     status = "accepted_low_confidence_recovery" if recovery_override else "accepted"
-    result = _result_from_track(status, shot)
+    result = _result_from_track(status, shot, cal=cal)
     result.angle_deg = raw_angle_deg + ANGLE_CORRECTION_DEG
     result.raw_angle_deg = raw_angle_deg
     result.components_deg = components

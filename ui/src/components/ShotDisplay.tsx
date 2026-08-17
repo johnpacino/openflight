@@ -139,7 +139,13 @@ function experimentalStatus(status: string | null | undefined): string {
   return status.replace(/^rejected_/, 'rejected: ').replaceAll('_', ' ');
 }
 
-export function ShotDisplay({ shot, animate = false }: ShotDisplayProps) {
+export function ShotDisplay({
+  shot,
+  shots = [],
+  animate = false,
+  activePlayerName,
+  activeTrainingImplement,
+}: ShotDisplayProps) {
   const { unitSystem } = useUnitPreference();
   const carryRange = useMemo(() => {
     if (!shot) return null;

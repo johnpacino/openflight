@@ -531,10 +531,10 @@ def experimental_path_candidate(
 ) -> tuple[float | None, str, float | None]:
     """Fuse TX2 horizontal motion through time without midpoint branch flips.
 
-    TX2 is half a wavelength from the TX1/TX3 vertical midpoint. Each reference
-    phase is unwrapped independently in chronological frame order, then their
-    midpoint is formed. A robust pairwise-slope Cartesian fit limits the
-    damage from one noisy frame in the impact-centered measurement window.
+    TX2 is half a wavelength from the TX1/TX3 vertical midpoint. Each frame's
+    two wrapped reference phases are combined on the unit circle. Keeping the
+    result inside the physical +/-pi interval avoids inventing angles outside
+    the array's unambiguous field of view.
     """
     rows = []
     for frame in np.unique(frames):
@@ -553,15 +553,26 @@ def experimental_path_candidate(
 
     t_array = np.asarray([row[0] for row in rows])
     r_array = np.asarray([row[1] for row in rows])
-    unwrapped_tx1 = np.unwrap([row[2] for row in rows])
-    unwrapped_tx3 = np.unwrap([row[3] for row in rows])
-    midpoint = 0.5 * (unwrapped_tx1 + unwrapped_tx3)
-    midpoint -= round(float(midpoint[0]) / math.pi) * math.pi
+    tx1 = np.asarray([row[2] for row in rows], dtype=float)
+    tx3 = np.asarray([row[3] for row in rows], dtype=float)
+
+    # Follow each reference's shortest wrapped step through time, combine the
+    # continuous references, then project their midpoint back into the
+    # physical lambda/2 interval. This avoids the branch flip without asking
+    # NumPy to invent an unconstrained phase trajectory.
+    def continuous_reference(values: np.ndarray) -> np.ndarray:
+        if values.size < 2:
+            return values.copy()
+        steps = np.angle(np.exp(1j * np.diff(values)))
+        return np.concatenate(([values[0]], values[0] + np.cumsum(steps)))
+
+    midpoint = 0.5 * (continuous_reference(tx1) + continuous_reference(tx3))
+    midpoint = np.angle(np.exp(1j * midpoint))
 
     if phase_reference_rad is not None:
         if not math.isfinite(phase_reference_rad):
             raise ValueError("horizontal phase reference must be finite")
-        midpoint -= phase_reference_rad
+        midpoint = np.angle(np.exp(1j * (midpoint - phase_reference_rad)))
 
     # Board convention: positive TrackMan path is the negative TX2 phase
     # direction. LEVM TX2 is displaced lambda/2 from the TX1/TX3 phase center.

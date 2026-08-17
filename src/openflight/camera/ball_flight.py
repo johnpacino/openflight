@@ -9,6 +9,7 @@ independent comparison and fallback.
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 
 import numpy as np
@@ -50,6 +51,9 @@ class CameraBallGeometry:
     # target-right when viewed from behind the sensors looking downrange.
     camera_lateral_offset_m: float = 0.0
     horizontal_offset_deg: float = 0.0
+    # Convert saved-image horizontal pixels back to physical target direction.
+    # Mirrored operator previews use -1; unmirrored captures use +1.
+    horizontal_pixel_sign: float = 1.0
     roll_correction_deg: float = 0.0
     ball_diameter_m: float = BALL_DIAMETER_MM / 1000.0
     image_width_px: int = 640
@@ -127,7 +131,7 @@ def _camera_model(
         + (geometry.ball_height_m - geometry.camera_height_m) ** 2
     )
     focal_px = anchor.diameter_px * camera_ball_range / geometry.ball_diameter_m
-    ball_x = (anchor.x - center_x) / focal_px
+    ball_x = geometry.horizontal_pixel_sign * (anchor.x - center_x) / focal_px
     ball_z = -(anchor.y - center_y) / focal_px
     _ball_x, ball_z = deroll_normalized_offsets(
         ball_x,
@@ -169,7 +173,11 @@ def _camera_ray(
 ) -> np.ndarray:
     """Return the unit camera ray through a detected ball centroid."""
     focal_px, pitch, _radar_from_camera = model
-    image_x = (candidate.x - geometry.image_width_px / 2.0) / focal_px
+    image_x = (
+        geometry.horizontal_pixel_sign
+        * (candidate.x - geometry.image_width_px / 2.0)
+        / focal_px
+    )
     image_z = -(candidate.y - geometry.image_height_px / 2.0) / focal_px
     image_x, image_z = deroll_normalized_offsets(
         image_x,
@@ -260,14 +268,17 @@ def _candidates(
 def _rough_path_score(path: list[tuple[int, BallCandidate]]) -> float:
     if len(path) < 3:
         return 20.0 * len(path)
-    steps = np.asarray(
-        [
-            ((second.x - first.x) / (j - i), (second.y - first.y) / (j - i))
-            for (i, first), (j, second) in zip(path, path[1:])
-        ]
+    steps = [
+        ((second.x - first.x) / (j - i), (second.y - first.y) / (j - i))
+        for (i, first), (j, second) in zip(path, path[1:])
+    ]
+    median_x = statistics.median(step[0] for step in steps)
+    median_y = statistics.median(step[1] for step in steps)
+    dispersion = statistics.median(
+        math.hypot(step_x - median_x, step_y - median_y)
+        for step_x, step_y in steps
     )
-    dispersion = np.median(np.linalg.norm(steps - np.median(steps, axis=0), axis=1))
-    return 20.0 * len(path) - 2.0 * float(dispersion)
+    return 20.0 * len(path) - 2.0 * dispersion
 
 
 def _pixel_paths(
