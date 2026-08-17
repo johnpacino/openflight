@@ -1,13 +1,12 @@
 """Camera-assisted experimental club delivery (attack angle + club path).
 
 The live estimator tracks clubhead image features across several short,
-strictly pre-impact intervals. Camera pixels provide transverse motion, the
-IWR6843 club range track provides depth, and OPS club speed independently gates
-target identity and solution quality. Post-impact pixels are deliberately
-excluded because the launched ball, shaft, and deflected clubhead can otherwise
-replace the incoming clubhead. This final-approach 3D chain was selected without
-TrackMan truth and remains experimental pending a frozen source-of-truth
-validation.
+strictly pre-impact intervals. Its preferred path combines camera transverse
+motion, IWR6843 depth, and OPS club speed. When IWR club range is unavailable,
+camera perspective flow plus OPS speed closes a lower-confidence 3D fallback.
+Post-impact pixels are deliberately excluded because the launched ball, shaft,
+and deflected clubhead can otherwise replace the incoming clubhead. Both paths
+remain experimental pending a frozen source-of-truth validation.
 
 The older radar-AoA/camera-trace functions remain below for replay comparisons,
 but the OpenFlight server no longer uses their per-club correction offsets.
@@ -557,6 +556,127 @@ def _delivery_from_feature_pair(
     )
 
 
+def camera_ops_delivery_from_feature_pair(
+    feature_pixels: np.ndarray,
+    timestamps_s: np.ndarray,
+    *,
+    ball,
+    geometry: CameraDeliveryGeometry,
+    ops_club_speed_mph: float,
+) -> ApproachPairEstimate | None:
+    """Recover impact velocity from camera flow constrained by OPS speed.
+
+    A down-the-line camera measures lateral and vertical image motion but not
+    forward velocity directly. At the known contact point, the two perspective
+    flow equations plus the OPS velocity magnitude form a closed 3D solution.
+    The teed ball also supplies pitch and yaw references, so a laterally offset
+    or slightly mis-aimed enclosure does not become false club path.
+    """
+    pixels = np.asarray(feature_pixels, dtype=float)
+    times = np.asarray(timestamps_s, dtype=float)
+    if pixels.ndim != 3 or pixels.shape[1:] != (2, 2) or len(pixels) < 3:
+        return None
+    if times.shape != (2,) or not math.isfinite(float(np.diff(times)[0])):
+        return None
+    elapsed = float(times[1] - times[0])
+    if elapsed <= 0.0 or not math.isfinite(ops_club_speed_mph) or ops_club_speed_mph <= 0.0:
+        return None
+
+    camera_ball_range_m = math.sqrt(
+        geometry.camera_lateral_offset_m**2
+        + geometry.ball_forward_m**2
+        + (geometry.ball_height_m - geometry.camera_height_m) ** 2
+    )
+    focal_px = ball.diameter_px * camera_ball_range_m / geometry.ball_diameter_m
+    if not math.isfinite(focal_px) or focal_px <= 0.0:
+        return None
+
+    center_x = geometry.image_width_px / 2.0
+    center_y = geometry.image_height_px / 2.0
+
+    def normalized(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        image_x = geometry.horizontal_pixel_sign * (points[:, 0] - center_x) / focal_px
+        image_z = -(points[:, 1] - center_y) / focal_px
+        return deroll_normalized_offsets(
+            image_x,
+            image_z,
+            geometry.roll_correction_deg,
+        )
+
+    ball_x, ball_z = normalized(np.asarray([[ball.x, ball.y]], dtype=float))
+    ball_x = float(ball_x[0])
+    ball_z = float(ball_z[0])
+    expected_azimuth = math.atan2(-geometry.camera_lateral_offset_m, geometry.ball_forward_m)
+    observed_azimuth = math.atan2(ball_x, 1.0)
+    yaw_rad = expected_azimuth - observed_azimuth
+    expected_elevation = math.atan2(
+        geometry.ball_height_m - geometry.camera_height_m,
+        geometry.ball_forward_m,
+    )
+    pitch_rad = expected_elevation - math.atan2(ball_z, 1.0)
+    contact_depth_m = camera_ball_range_m / math.sqrt(1.0 + ball_x**2 + ball_z**2)
+
+    first_x, first_z = normalized(pixels[:, 0])
+    last_x, last_z = normalized(pixels[:, 1])
+    x_rate = (last_x - first_x) / elapsed
+    z_rate = (last_z - first_z) / elapsed
+    speed_ms = ops_club_speed_mph / 2.23694
+    velocities = []
+    for image_x, image_z, dx_dt, dz_dt in zip(
+        last_x,
+        last_z,
+        x_rate,
+        z_rate,
+        strict=True,
+    ):
+        # Vx = depth*du/dt + u*Vforward and likewise for Vz. Substituting
+        # both into |V|=OPS speed leaves one quadratic in camera-forward V.
+        coefficient_a = 1.0 + image_x**2 + image_z**2
+        coefficient_b = 2.0 * contact_depth_m * (image_x * dx_dt + image_z * dz_dt)
+        coefficient_c = contact_depth_m**2 * (dx_dt**2 + dz_dt**2) - speed_ms**2
+        discriminant = coefficient_b**2 - 4.0 * coefficient_a * coefficient_c
+        if discriminant < 0.0:
+            continue
+        camera_forward = (-coefficient_b + math.sqrt(discriminant)) / (2.0 * coefficient_a)
+        if camera_forward <= 0.0:
+            continue
+        camera_lateral = contact_depth_m * dx_dt + image_x * camera_forward
+        camera_vertical = contact_depth_m * dz_dt + image_z * camera_forward
+
+        horizontal_forward = (
+            math.cos(pitch_rad) * camera_forward - math.sin(pitch_rad) * camera_vertical
+        )
+        world_vertical = (
+            math.sin(pitch_rad) * camera_forward + math.cos(pitch_rad) * camera_vertical
+        )
+        world_lateral = math.cos(yaw_rad) * camera_lateral + math.sin(yaw_rad) * horizontal_forward
+        world_forward = -math.sin(yaw_rad) * camera_lateral + math.cos(yaw_rad) * horizontal_forward
+        path_deg, attack_angle_deg = _velocity_angles(
+            np.asarray([world_lateral, world_vertical, world_forward])
+        )
+        if (
+            CHAINED_FEATURE_PATH_RANGE_DEG[0] < path_deg < CHAINED_FEATURE_PATH_RANGE_DEG[1]
+            and CHAINED_FEATURE_AOA_RANGE_DEG[0]
+            < attack_angle_deg
+            < CHAINED_FEATURE_AOA_RANGE_DEG[1]
+        ):
+            velocities.append([world_lateral, world_vertical, world_forward])
+
+    if len(velocities) < 3:
+        return None
+    velocity = np.asarray(velocities)
+    center = np.median(velocity, axis=0)
+    path_deg, attack_angle_deg = _velocity_angles(center)
+    velocity_mad_mph = float(np.median(np.linalg.norm(velocity - center, axis=1)) * 2.23694)
+    return ApproachPairEstimate(
+        path_deg=path_deg,
+        attack_angle_deg=attack_angle_deg,
+        speed_ratio_ops=float(np.linalg.norm(center) * 2.23694 / ops_club_speed_mph),
+        velocity_mad_mph=velocity_mad_mph,
+        n_features=len(velocity),
+    )
+
+
 def _clubhead_pair_tracks(
     frames: np.ndarray,
     background: np.ndarray,
@@ -736,8 +856,6 @@ def estimate_chained_delivery(
     ball_tracker: ReferenceBallTracker | None = None,
 ) -> ChainedDelivery:
     """Estimate final-approach club delivery from camera, IWR, and OPS."""
-    if range_evidence is None:
-        return ChainedDelivery(status="rejected_no_iwr_range_track")
     if ops_club_speed_mph is None:
         return ChainedDelivery(status="rejected_no_ops_speed")
     if frames.ndim != 3 or len(frames) < 20:
@@ -777,9 +895,9 @@ def estimate_chained_delivery(
         )
 
     contact_camera_s = (int(timestamps_ns[impact_idx]) + int(timestamps_ns[impact_idx + 1])) / 2e9
-    track = range_evidence.track
-    radar_geo = range_evidence.geometry
-    impact_t_s = range_evidence.impact_t_s
+    track = range_evidence.track if range_evidence is not None else None
+    radar_geo = range_evidence.geometry if range_evidence is not None else None
+    impact_t_s = range_evidence.impact_t_s if range_evidence is not None else None
     pair_estimates: dict[tuple[int, int], ApproachPairEstimate] = {}
     head_thicknesses = []
     for offsets in APPROACH_PATH_OFFSETS:
@@ -798,21 +916,30 @@ def estimate_chained_delivery(
         if feature_tracks is None:
             continue
         camera_times_s = timestamps_ns[indexes].astype(float) / 1e9
-        relative_s = camera_times_s - contact_camera_s
-        radar_ranges_m = np.asarray(
-            [
-                float(track.range_at(impact_t_s + offset, radar_geo.range_res_m))
-                for offset in relative_s
-            ]
-        )
-        estimate = _delivery_from_feature_pair(
-            feature_tracks,
-            camera_times_s,
-            radar_ranges_m,
-            ball=ball,
-            geometry=geometry,
-            ops_club_speed_mph=ops_club_speed_mph,
-        )
+        if range_evidence is None:
+            estimate = camera_ops_delivery_from_feature_pair(
+                feature_tracks,
+                camera_times_s,
+                ball=ball,
+                geometry=geometry,
+                ops_club_speed_mph=ops_club_speed_mph,
+            )
+        else:
+            relative_s = camera_times_s - contact_camera_s
+            radar_ranges_m = np.asarray(
+                [
+                    float(track.range_at(impact_t_s + offset, radar_geo.range_res_m))
+                    for offset in relative_s
+                ]
+            )
+            estimate = _delivery_from_feature_pair(
+                feature_tracks,
+                camera_times_s,
+                radar_ranges_m,
+                ball=ball,
+                geometry=geometry,
+                ops_club_speed_mph=ops_club_speed_mph,
+            )
         if estimate is not None:
             pair_estimates[offsets] = estimate
 
@@ -832,6 +959,24 @@ def estimate_chained_delivery(
         attack_estimate=pair_estimates.get((-1, 0)),
         timing_plausible=timing_plausible,
     )
+    if range_evidence is None and (
+        result.attack_angle_deg is not None or result.club_path_deg is not None
+    ):
+        # Camera+OPS closes the geometry, but TrackMan has not validated this
+        # fallback yet. Keep every recovered value visible and explicitly low
+        # confidence rather than inheriting the primary estimator's tiers.
+        return ChainedDelivery(
+            **{
+                **vars(result),
+                **common,
+                "status": "camera_ops_fallback",
+                "confidence_tier": "experimental",
+                "path_confidence_tier": ("low" if result.club_path_deg is not None else "withheld"),
+                "attack_confidence_tier": (
+                    "low" if result.attack_angle_deg is not None else "withheld"
+                ),
+            }
+        )
     return ChainedDelivery(**{**vars(result), **common})
 
 

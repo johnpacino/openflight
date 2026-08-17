@@ -6,6 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+import openflight.camera.club_delivery as club_delivery_module
 from openflight.camera.club_delivery import (
     SCENE_P995_MIN,
     ApproachPairEstimate,
@@ -16,8 +17,10 @@ from openflight.camera.club_delivery import (
     TraceResult,
     _detect_impact_index,
     aoa_offset_for_club,
+    camera_ops_delivery_from_feature_pair,
     combine_approach_estimates,
     delivery_from_feature_tracks,
+    estimate_chained_delivery,
     estimate_delivery_trace,
     fuse_club_delivery,
 )
@@ -329,6 +332,174 @@ class TestChainedImpactDelivery:
         assert result.status == "chained_experimental"
         assert result.club_path_deg is not None
         assert result.attack_angle_deg is not None
+
+
+def _project_camera_ops_pair(
+    *,
+    path_deg: float,
+    aoa_deg: float,
+    speed_ms: float = 35.0,
+    camera_lateral_offset_m: float = -0.060325,
+    camera_yaw_deg: float = 3.0,
+):
+    """Project impact-adjacent club features without supplying radar range."""
+    camera_height_m = 0.2032
+    radar_height_m = 0.1524
+    ball_height_m = 0.04
+    ball_forward_m = 1.52
+    geometry = CameraDeliveryGeometry(
+        camera_height_m=camera_height_m,
+        radar_height_m=radar_height_m,
+        tee_range_m=math.hypot(ball_forward_m, ball_height_m - radar_height_m),
+        ball_height_m=ball_height_m,
+        camera_lateral_offset_m=camera_lateral_offset_m,
+        image_width_px=640,
+        image_height_px=400,
+    )
+    focal_px = 980.0
+    yaw = math.radians(camera_yaw_deg)
+    path = math.radians(path_deg)
+    aoa = math.radians(aoa_deg)
+    forward_speed = speed_ms / math.sqrt(1.0 + math.tan(path) ** 2 + math.tan(aoa) ** 2)
+    velocity = np.array(
+        [
+            forward_speed * math.tan(path),
+            forward_speed,
+            forward_speed * math.tan(aoa),
+        ]
+    )
+    times = np.array([-0.002, 0.0])
+
+    def project(world_xyz):
+        delta = world_xyz - np.array([camera_lateral_offset_m, 0.0, camera_height_m])
+        # Inverse of camera-heading rotation: world -> camera coordinates.
+        camera_x = math.cos(yaw) * delta[0] - math.sin(yaw) * delta[1]
+        camera_y = math.sin(yaw) * delta[0] + math.cos(yaw) * delta[1]
+        camera_z = delta[2]
+        return np.array(
+            [
+                geometry.image_width_px / 2 + focal_px * camera_x / camera_y,
+                geometry.image_height_px / 2 - focal_px * camera_z / camera_y,
+            ]
+        )
+
+    contact = np.array([0.0, ball_forward_m, ball_height_m])
+    ball_px = project(contact)
+    camera_ball_range = np.linalg.norm(contact - geometry.camera_origin)
+    ball = ReferenceBall(
+        x=float(ball_px[0]),
+        y=float(ball_px[1]),
+        diameter_px=focal_px * geometry.ball_diameter_m / camera_ball_range,
+        area_px=400,
+    )
+    tracks = []
+    for index in range(12):
+        feature_offset = np.array([0.001 * (index - 5.5), 0.0, 0.001 * ((index % 3) - 1)])
+        tracks.append([project(contact + feature_offset + velocity * time_s) for time_s in times])
+    return np.asarray(tracks), times, ball, geometry
+
+
+class TestCameraOpsFallback:
+    def test_recovers_known_delivery_without_iwr_range(self):
+        tracks, times, ball, geometry = _project_camera_ops_pair(
+            path_deg=3.0,
+            aoa_deg=-5.0,
+        )
+
+        result = camera_ops_delivery_from_feature_pair(
+            tracks,
+            times,
+            ball=ball,
+            geometry=geometry,
+            ops_club_speed_mph=35.0 * 2.23694,
+        )
+
+        assert result is not None
+        assert result.path_deg == pytest.approx(3.0, abs=0.25)
+        assert result.attack_angle_deg == pytest.approx(-5.0, abs=0.25)
+
+    def test_rejects_missing_or_nonphysical_ops_speed(self):
+        tracks, times, ball, geometry = _project_camera_ops_pair(
+            path_deg=3.0,
+            aoa_deg=-5.0,
+        )
+
+        assert (
+            camera_ops_delivery_from_feature_pair(
+                tracks,
+                times,
+                ball=ball,
+                geometry=geometry,
+                ops_club_speed_mph=0.0,
+            )
+            is None
+        )
+
+    def test_mirrored_capture_preserves_fallback_path_sign(self):
+        tracks, times, ball, geometry = _project_camera_ops_pair(
+            path_deg=3.0,
+            aoa_deg=-5.0,
+        )
+        mirrored_tracks = tracks.copy()
+        mirrored_tracks[:, :, 0] = geometry.image_width_px - mirrored_tracks[:, :, 0]
+        mirrored_ball = replace(ball, x=geometry.image_width_px - ball.x)
+
+        result = camera_ops_delivery_from_feature_pair(
+            mirrored_tracks,
+            times,
+            ball=mirrored_ball,
+            geometry=replace(geometry, horizontal_pixel_sign=-1.0),
+            ops_club_speed_mph=35.0 * 2.23694,
+        )
+
+        assert result is not None
+        assert result.path_deg == pytest.approx(3.0, abs=0.25)
+        assert result.attack_angle_deg == pytest.approx(-5.0, abs=0.25)
+
+    def test_live_estimator_uses_low_confidence_fallback_without_iwr_range(self, monkeypatch):
+        frames = np.full((60, 20, 20), 150, dtype=np.uint8)
+        timestamps = np.arange(60, dtype=np.int64) * 2_000_000
+        ball = ReferenceBall(10.0, 10.0, 12.0, 120)
+        estimate = ApproachPairEstimate(3.0, -5.0, 1.0, 1.0, 12)
+        monkeypatch.setattr(club_delivery_module, "detect_reference_ball", lambda _frames: ball)
+        monkeypatch.setattr(
+            club_delivery_module,
+            "_detect_impact_index",
+            lambda _frames, _ball, trigger_index: 40,
+        )
+        monkeypatch.setattr(
+            club_delivery_module,
+            "_clubhead_pair_tracks",
+            lambda *_args, **_kwargs: (np.zeros((12, 2, 2)), 5.0),
+        )
+        monkeypatch.setattr(
+            club_delivery_module,
+            "camera_ops_delivery_from_feature_pair",
+            lambda *_args, **_kwargs: estimate,
+        )
+        geometry = CameraDeliveryGeometry(
+            camera_height_m=0.2032,
+            radar_height_m=0.1524,
+            tee_range_m=1.524,
+            ball_height_m=0.04,
+            image_width_px=20,
+            image_height_px=20,
+        )
+
+        result = estimate_chained_delivery(
+            frames,
+            timestamps,
+            trigger_index=40,
+            range_evidence=None,
+            geometry=geometry,
+            ops_club_speed_mph=80.0,
+        )
+
+        assert result.status == "camera_ops_fallback"
+        assert result.attack_angle_deg == pytest.approx(-5.0)
+        assert result.club_path_deg == pytest.approx(3.0)
+        assert result.attack_confidence_tier == "low"
+        assert result.path_confidence_tier == "low"
 
 
 # ---------------------------------------------------------------------------
