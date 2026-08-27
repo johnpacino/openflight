@@ -138,8 +138,10 @@ def measure_exposure(image: np.ndarray) -> ExposureObservation:
         )
 
     height, width = pixels.shape
+    # Keep bright range/net backgrounds out of the controller. The ball and
+    # impact path are intentionally framed in the lower portion of the crop.
     region = pixels[
-        round(height * 0.45) : round(height * 0.9),
+        round(height * 0.55) : round(height * 0.95),
         round(width * 0.2) : round(width * 0.8),
     ]
     if not region.size:

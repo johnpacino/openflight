@@ -64,6 +64,21 @@ def test_measure_exposure_flags_nearly_black_view():
     assert "lens cover" in result.message
 
 
+def test_measure_exposure_ignores_bright_background_above_impact_mat():
+    image = np.full((200, 320), 20, dtype=np.uint8)
+    image[90:110, 64:256] = 255
+    image[110:190, 64:256] = np.tile(
+        np.linspace(45, 185, 192, dtype=np.uint8),
+        (80, 1),
+    )
+
+    result = measure_exposure(image)
+
+    assert result.status == "good"
+    assert result.clipped_pct is not None
+    assert result.clipped_pct < 2.0
+
+
 def test_startup_dark_scene_jumps_more_than_one_step():
     policy = AutoExposurePolicy(fps=488.0)
 
