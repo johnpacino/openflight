@@ -45,6 +45,7 @@ class ExposureStep:
 
 EXPOSURE_STEPS = (
     ExposureStep(100, 2.0),
+    ExposureStep(150, 2.0),
     ExposureStep(150, 3.0),
     ExposureStep(200, 3.0),
     ExposureStep(250, 4.0, "Outdoor sun"),

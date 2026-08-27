@@ -39,6 +39,12 @@ def test_exposure_ladder_is_monotonic_and_respects_frame_period():
         exposure_steps_for_fps(0)
 
 
+def test_exposure_ladder_bridges_bright_outdoor_sensor_floor():
+    steps = exposure_steps_for_fps(488.0)
+
+    assert any(step.exposure_us == 150 and step.gain == 2.0 for step in steps)
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [(18, "too_dark"), (110, "good"), (252, "too_bright")],
@@ -132,7 +138,7 @@ def test_steady_state_requires_confirmation_and_moves_one_step():
     assert first.status == "calibrating"
     assert not first.should_apply
     assert second.status == "adjusting"
-    assert second.target == EXPOSURE_STEPS[11]
+    assert (second.target.exposure_us, second.target.gain) == (800, 18.0)
 
 
 def test_material_steady_state_change_reenters_fast_convergence():
